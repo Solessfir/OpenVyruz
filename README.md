@@ -12,7 +12,7 @@ git submodule update --init
 msbuild Vyruz.slnx /m /t:Vyruz /p:Configuration=Development /p:Platform=x64 && .\Binaries\windows\Development\Vyruz.exe
 ```
 
-On Linux use `./GenerateProjectFiles.sh gmake` (needs `wayland-scanner`, `slangc`, Wayland/X11 dev packages and the Vulkan loader). On Windows `VULKAN_SDK` is used when set, otherwise the SDK copy under `%VULKAN_SDK%`. Shaders are Slang (`Source\Shaders\*.slang`), compiled by `slangc` at build time into SPIR-V arrays embedded in the exe.
+On Linux use `./GenerateProjectFiles.sh gmake [--cc=clang]`, then `make config=development Vyruz` (needs `wayland-scanner`, `slangc`, Vulkan headers, Wayland/X11 dev packages and the Vulkan loader; on Arch: `vulkan-headers shader-slang`). From Windows, `wsl -d archlinux -- bash Scripts/WslCheck.sh [gcc|clang]` builds a copy of the tree in WSL and runs the archive checks. On Windows `VULKAN_SDK` is used when set, otherwise the SDK copy under `%VULKAN_SDK%`. Shaders are Slang (`Source\Shaders\*.slang`), compiled by `slangc` at build time into SPIR-V arrays embedded in the exe.
 
 ## Running
 

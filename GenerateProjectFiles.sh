@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: ./GenerateProjectFiles.sh [gmake|ninja]
+# Usage: ./GenerateProjectFiles.sh [gmake|ninja] [premake options such as --cc=clang]
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,7 +13,9 @@ if [[ ! -x "${premake}" ]]; then
     echo "63edd3e7461eebdd45b500a3c7e8ad4e7a67d68f230010f9a97cbb71b4ec59c8  ${archive}" | sha256sum -c --quiet
     mkdir -p "${premake_dir}"
     tar -xzf "${archive}" -C "${premake_dir}"
+    # The release archive stores premake5 without the executable bit.
+    chmod +x "${premake}"
     rm -f "${archive}"
 fi
 
-"${premake}" --file="${root}/premake5.lua" "${action}"
+"${premake}" --file="${root}/premake5.lua" "${@:2}" "${action}"

@@ -92,20 +92,14 @@ project "GLFW"
 
     filter {}
 
-project "Vyruz"
-    kind "WindowedApp"
-    language "C++"
-    cppdialect "C++23"
+-- Each .slang file compiles to <Name>.vert.h / <Name>.frag.h SPIR-V word arrays that Render/Renderer.cpp includes,
+-- so no shader files ship next to the exe. This is its own project because gmake orders custom build outputs only
+-- before linking, not before the objects that include them.
+project "Shaders"
+    kind "Utility"
     location(path.join(Root, "Intermediate/ProjectFiles"))
-    debugdir(Root)
+    files { "Source/Shaders/*.slang" }
 
-    files { "Source/**.h", "Source/**.cpp", "Source/Shaders/*.slang" }
-    includedirs { "Source", path.join(GlfwRoot, "include"), ShaderOutputRoot }
-    defines { "GLFW_INCLUDE_VULKAN" }
-    links { "GLFW" }
-
-    -- Each .slang file compiles to <Name>.vert.h / <Name>.frag.h SPIR-V word arrays that Render/Renderer.cpp includes,
-    -- so no shader files ship next to the exe.
     filter "files:Source/Shaders/*.slang"
         buildmessage "Compiling shader %{file.name}"
         buildcommands {
@@ -114,6 +108,21 @@ project "Vyruz"
             string.format("\"%s\" \"%%{file.abspath}\" -target spirv -profile spirv_1_6 -O2 -entry fragmentMain -stage fragment -source-embed-style u32 -source-embed-name %%{file.basename}Frag -o \"%s/%%{file.basename}.frag.h\"", Slangc, ShaderOutputRoot)
         }
         buildoutputs { path.join(ShaderOutputRoot, "%{file.basename}.vert.h"), path.join(ShaderOutputRoot, "%{file.basename}.frag.h") }
+
+    filter {}
+
+project "Vyruz"
+    kind "WindowedApp"
+    language "C++"
+    cppdialect "C++23"
+    location(path.join(Root, "Intermediate/ProjectFiles"))
+    debugdir(Root)
+
+    files { "Source/**.h", "Source/**.cpp" }
+    includedirs { "Source", path.join(GlfwRoot, "include"), ShaderOutputRoot }
+    defines { "GLFW_INCLUDE_VULKAN" }
+    links { "GLFW" }
+    dependson { "Shaders" }
 
     filter "system:windows"
         entrypoint "mainCRTStartup"
