@@ -11,6 +11,10 @@
 
 class FResourceArchive;
 
+// Size of one .3DG block and one .3DI/MAP_ grid cell in world pixels.
+inline constexpr uint32_t BlockWidth = 64;
+inline constexpr uint32_t BlockHeight = 32;
+
 // Semantic tile types; values are the type IDs registered by VzCreateTypeTable at 00447430.
 enum class ETerrain : uint8_t
 {

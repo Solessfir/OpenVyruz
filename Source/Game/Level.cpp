@@ -1,5 +1,6 @@
 #include "Game/Level.h"
 
+#include "Pg/Binary.h"
 #include "Pg/ResourceArchive.h"
 
 #include <algorithm>
@@ -11,19 +12,50 @@
 
 namespace
 {
-constexpr uint32_t BlockWidth = 64;
-constexpr uint32_t BlockHeight = 32;
-constexpr uint32_t MapHeaderSize = 24;
 constexpr uint32_t MaxGridDimension = 4096;
 constexpr uint32_t MaxLayers = 16;
+constexpr size_t MapHeaderSlot = 0;
+constexpr size_t MapCellSlot = 3;
 
-template <typename T>
-T ReadLE(const std::span<const uint8_t> Data, const size_t Offset)
+// MAP_ slot 0.
+struct FMapHeader
 {
-    T Value;
-    std::memcpy(&Value, Data.data() + Offset, sizeof(T));
-    return Value;
+    uint32_t LayerCount;
+    // Original render-cache size; not a map scale.
+    uint32_t CacheWidth;
+    uint32_t CacheHeight;
+    uint32_t GridWidth;
+    uint32_t GridHeight;
+    uint32_t Reserved;
+};
+static_assert(sizeof(FMapHeader) == 24);
+
+struct F3diHeader
+{
+    uint16_t WorldExtentX;
+    uint16_t WorldExtentY;
+};
+static_assert(sizeof(F3diHeader) == 4);
+
+struct F3diRecord
+{
+    uint16_t X;
+    uint16_t Y;
+    int16_t TileId;
+};
+static_assert(sizeof(F3diRecord) == 6);
+
+// Grid size covering a world extent, as computed in LevelLoadFiles at 00429710.
+constexpr uint32_t GridWidthFromExtent(const uint32_t ExtentX)
+{
+    return ExtentX / BlockWidth + 1;
 }
+
+constexpr uint32_t GridHeightFromExtent(const uint32_t ExtentY)
+{
+    return ExtentY / BlockHeight + 1;
+}
+static_assert(GridWidthFromExtent(5056) == 80 && GridHeightFromExtent(4128) == 130);
 
 std::string ToLower(std::string_view Text)
 {
@@ -288,40 +320,38 @@ std::expected<void, std::string> Load3dx(FResourceArchive& Archive, const std::s
 std::expected<void, std::string> Load3di(FResourceArchive& Archive, const std::string& Path, FLevel& Level)
 {
     const std::optional<std::vector<uint8_t>> File = Archive.Read(Path);
-    if (!File || File->size() < 4)
+    const std::optional<F3diHeader> Header = File ? ReadStruct<F3diHeader>(*File) : std::nullopt;
+    if (!Header)
     {
         return std::unexpected(std::format("{} missing or truncated", Path));
     }
-    const std::span<const uint8_t> Data = *File;
-    Level.WorldExtentX = ReadLE<uint16_t>(Data, 0);
-    Level.WorldExtentY = ReadLE<uint16_t>(Data, 2);
-    const uint32_t Width = (Level.WorldExtentX >> 6) + 1;
-    const uint32_t Height = (Level.WorldExtentY >> 5) + 1;
+    if ((File->size() - sizeof(F3diHeader)) % sizeof(F3diRecord) != 0)
+    {
+        return std::unexpected(std::format("{}: trailing bytes", Path));
+    }
+    Level.WorldExtentX = Header->WorldExtentX;
+    Level.WorldExtentY = Header->WorldExtentY;
+    const uint32_t Width = GridWidthFromExtent(Level.WorldExtentX);
+    const uint32_t Height = GridHeightFromExtent(Level.WorldExtentY);
     Level.Cells.assign(size_t{ Width } * Height, {});
 
     // The original does not bounds-check cell coordinates; out-of-range records are rejected here.
-    for (size_t Offset = 4; Offset + 6 <= Data.size(); Offset += 6)
+    for (size_t Offset = sizeof(F3diHeader); Offset < File->size(); Offset += sizeof(F3diRecord))
     {
-        const uint32_t X = ReadLE<uint16_t>(Data, Offset);
-        const uint32_t Y = ReadLE<uint16_t>(Data, Offset + 2);
-        const int16_t TileId = ReadLE<int16_t>(Data, Offset + 4);
-        if (X >= Width || Y >= Height)
+        const F3diRecord Record = *ReadStruct<F3diRecord>(*File, Offset);
+        if (Record.X >= Width || Record.Y >= Height)
         {
-            return std::unexpected(std::format("{}: cell ({}, {}) outside {}x{} grid", Path, X, Y, Width, Height));
+            return std::unexpected(std::format("{}: cell ({}, {}) outside {}x{} grid", Path, Record.X, Record.Y, Width, Height));
         }
-        if (TileId < 0 || size_t(TileId) >= Level.TileTypes.size())
+        if (Record.TileId < 0 || size_t(Record.TileId) >= Level.TileTypes.size())
         {
             ++Level.MissingTileRefs;
             continue;
         }
-        if (const std::optional<size_t> Slot = TerrainSlot(Level.TileTypes[TileId]))
+        if (const std::optional<size_t> Slot = TerrainSlot(Level.TileTypes[Record.TileId]))
         {
-            Level.Cells[size_t{ X } * Height + Y][*Slot] = uint16_t(TileId);
+            Level.Cells[size_t{ Record.X } * Height + Record.Y][*Slot] = uint16_t(Record.TileId);
         }
-    }
-    if ((Data.size() - 4) % 6 != 0)
-    {
-        return std::unexpected(std::format("{}: trailing bytes", Path));
     }
     return {};
 }
@@ -343,7 +373,7 @@ std::expected<void, std::string> Load3dg(FResourceArchive& Archive, const std::s
 
     for (const std::vector<uint8_t>& Slot : *BlockSlots)
     {
-        if (Slot.size() >= 4 && ReadLE<uint32_t>(Slot, 0) == Gaf::Tag("BMP_"))
+        if (ReadStruct<uint32_t>(Slot) == Gaf::Tag("BMP_"))
         {
             std::optional<std::vector<Gaf::FFrame>> Blocks = Gaf::ParseBitmaps(Slot);
             if (!Blocks)
@@ -358,22 +388,23 @@ std::expected<void, std::string> Load3dg(FResourceArchive& Archive, const std::s
         return std::unexpected(std::format("{}: BLK_ blocks are not all {}x{}", Path, BlockWidth, BlockHeight));
     }
 
-    const std::vector<uint8_t>& Header = (*MapSlots)[0];
-    const std::vector<uint8_t>& Cells = (*MapSlots)[3];
-    if (Header.size() != MapHeaderSize)
+    const std::vector<uint8_t>& HeaderSlot = (*MapSlots)[MapHeaderSlot];
+    const std::vector<uint8_t>& Cells = (*MapSlots)[MapCellSlot];
+    const std::optional<FMapHeader> Header = ReadStruct<FMapHeader>(HeaderSlot);
+    if (!Header || HeaderSlot.size() != sizeof(FMapHeader))
     {
-        return std::unexpected(std::format("{}: MAP_ header is {} bytes", Path, Header.size()));
+        return std::unexpected(std::format("{}: MAP_ header is {} bytes", Path, HeaderSlot.size()));
     }
-    Level.LayerCount = ReadLE<uint32_t>(Header, 0);
-    Level.GridWidth = ReadLE<uint32_t>(Header, 12);
-    Level.GridHeight = ReadLE<uint32_t>(Header, 16);
+    Level.LayerCount = Header->LayerCount;
+    Level.GridWidth = Header->GridWidth;
+    Level.GridHeight = Header->GridHeight;
     if (Level.LayerCount == 0 || Level.LayerCount > MaxLayers || Level.GridWidth == 0 || Level.GridWidth > MaxGridDimension ||
         Level.GridHeight == 0 || Level.GridHeight > MaxGridDimension ||
-        Cells.size() != size_t{ Level.LayerCount } * Level.GridWidth * Level.GridHeight * 4)
+        Cells.size() != size_t{ Level.LayerCount } * Level.GridWidth * Level.GridHeight * sizeof(uint32_t))
     {
         return std::unexpected(std::format("{}: MAP_ size mismatch", Path));
     }
-    Level.Map.resize(Cells.size() / 4);
+    Level.Map.resize(Cells.size() / sizeof(uint32_t));
     std::memcpy(Level.Map.data(), Cells.data(), Cells.size());
     if (std::ranges::any_of(Level.Map, [&](const uint32_t Block) { return Block > Level.Blocks.size(); }))
     {
@@ -507,7 +538,7 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
     {
         return std::unexpected(Result.error());
     }
-    if (Level.GridWidth != (Level.WorldExtentX >> 6) + 1 || Level.GridHeight != (Level.WorldExtentY >> 5) + 1)
+    if (Level.GridWidth != GridWidthFromExtent(Level.WorldExtentX) || Level.GridHeight != GridHeightFromExtent(Level.WorldExtentY))
     {
         return std::unexpected(std::format("{}: MAP_ grid {}x{} does not match .3DI extents", GraphicsPath, Level.GridWidth, Level.GridHeight));
     }

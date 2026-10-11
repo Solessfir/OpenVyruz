@@ -28,6 +28,7 @@ OpenVyruz is a functional (non-matching) reimplementation of `Vyruz.exe` 1.31.01
 - Unreal-style naming: `F` for value types, `E` for enums, `b` for booleans, PascalCase for functions, variables, and files.
 - Prefer RAII, `std::span`, `std::string_view`, ranges, and `std::optional`/`std::expected` for expected failures. No exceptions for control flow; treat allocation failure as fatal.
 - All original data is untrusted input: bounds-check every offset and size read from a file before use.
+- No magic numbers. Declare on-disk layouts as plain structs with a `static_assert` on their size and read them with `ReadStruct` (`Source/Pg/Binary.h`) instead of hand-written byte offsets. Give every other constant (sizes, masks, slot indices) a named `constexpr`, derived from related constants where possible.
 - Use designated initializers for descriptors and aggregates with more than one field. End multi-line braced lists with a trailing comma.
 - Always brace `if`/`else`/`for`/`while` bodies. Blank line after a closing brace of a control block unless the next line closes the scope.
 - Float literals without trailing zeros: `1.f`, `0.5f`.
@@ -45,6 +46,10 @@ Comments explain why: original-game quirks, format constraints, engine behavior,
 ## Verification
 
 - Build: `msbuild Vyruz.slnx /m /t:Vyruz /p:Configuration=Development /p:Platform=x64`. Regenerate project files after adding or removing source files.
+- After C++ changes, also compile with Clang from the MSVC install (`ClangCL` toolset, `VC\Tools\Llvm` in the VS 18 BuildTools). This compile-only check keeps its objects apart from the MSVC build:
+  `msbuild Intermediate\ProjectFiles\Vyruz.vcxproj /t:ClCompile /p:BuildProjectReferences=false /p:MSBuildWarningsAsMessages=MSB8028 /p:Configuration=Development /p:Platform=x64 /p:PlatformToolset=ClangCL /p:IntDir="$PWD\Intermediate\ClangCheck\\"`
+- Run cppcheck on touched code and fix real findings; `useStlAlgorithm` style notes are advisory:
+  `& "C:\Program Files\Cppcheck\cppcheck.exe" --std=c++23 --enable=warning,style,performance,portability --inline-suppr --suppress=missingIncludeSystem --check-level=exhaustive -q -I Source -D_WIN32 -D_M_X64 Source`
 - Every loader gets a whole-archive check mode, like `--verify-gaf`, that decodes all relevant entries and exits non-zero on failure. Run it after touching that loader.
 - Check rendering changes visually (screenshot of the running window); compilation alone does not verify appearance.
 - Do not rebuild for comment or documentation-only changes. Report exactly what was verified and what was not.

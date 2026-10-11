@@ -163,11 +163,9 @@ int main(const int ArgCount, char** const Args)
 
     // Static level view until the game loop is ported: the MAP_ layers drawn bottom-up, scrolled with the arrow keys.
     const FSpriteSheet Blocks = Renderer.CreateSpriteSheet(Level->Blocks);
-    constexpr float BlockWidth = 64.f;
-    constexpr float BlockHeight = 32.f;
     constexpr double ScrollSpeed = 600.0;
-    const float MapWidth = Level->GridWidth * BlockWidth;
-    const float MapHeight = Level->GridHeight * BlockHeight;
+    const float MapWidth = float(Level->GridWidth * BlockWidth);
+    const float MapHeight = float(Level->GridHeight * BlockHeight);
     const auto Player = std::ranges::find_if(Level->Objects, [](const FLevelObject& Object) { return Object.ClassName == "Vyruz"; });
     double CameraX = Player != Level->Objects.end() ? Player->X - ScreenWidth * 0.5 : 0.0;
     double CameraY = Player != Level->Objects.end() ? Player->Y - ScreenHeight * 0.5 : 0.0;
@@ -194,20 +192,21 @@ int main(const int ArgCount, char** const Args)
 
         const int OriginX = int(std::floor(CameraX));
         const int OriginY = int(std::floor(CameraY));
-        const uint32_t FirstX = uint32_t(OriginX / int(BlockWidth));
-        const uint32_t FirstY = uint32_t(OriginY / int(BlockHeight));
-        const uint32_t LastX = std::min(Level->GridWidth, FirstX + uint32_t(ScreenWidth / BlockWidth) + 2);
-        const uint32_t LastY = std::min(Level->GridHeight, FirstY + uint32_t(ScreenHeight / BlockHeight) + 2);
+        const uint32_t FirstX = uint32_t(OriginX) / BlockWidth;
+        const uint32_t FirstY = uint32_t(OriginY) / BlockHeight;
+        const uint32_t EndX = std::min(Level->GridWidth, (uint32_t(OriginX) + uint32_t(ScreenWidth) - 1) / BlockWidth + 1);
+        const uint32_t EndY = std::min(Level->GridHeight, (uint32_t(OriginY) + uint32_t(ScreenHeight) - 1) / BlockHeight + 1);
         for (uint32_t Layer = 0; Layer < Level->LayerCount; ++Layer)
         {
             const uint32_t* const Cells = Level->Map.data() + size_t{ Layer } * Level->GridWidth * Level->GridHeight;
-            for (uint32_t Y = FirstY; Y < LastY; ++Y)
+            for (uint32_t Y = FirstY; Y < EndY; ++Y)
             {
-                for (uint32_t X = FirstX; X < LastX; ++X)
+                for (uint32_t X = FirstX; X < EndX; ++X)
                 {
+                    // MAP_ block indices are 1-based; 0 leaves the cell empty.
                     if (const uint32_t Block = Cells[size_t{ Y } * Level->GridWidth + X])
                     {
-                        Renderer.DrawSprite(Blocks, Block - 1, X * BlockWidth - OriginX, Y * BlockHeight - OriginY);
+                        Renderer.DrawSprite(Blocks, Block - 1, float(int(X * BlockWidth) - OriginX), float(int(Y * BlockHeight) - OriginY));
                     }
                 }
             }

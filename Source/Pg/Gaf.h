@@ -32,7 +32,8 @@ constexpr uint32_t Tag(const char (&Text)[5])
     return uint32_t(uint8_t(Text[0])) | uint32_t(uint8_t(Text[1])) << 8 | uint32_t(uint8_t(Text[2])) << 16 | uint32_t(uint8_t(Text[3])) << 24;
 }
 
-using FSlots = std::array<std::vector<uint8_t>, 4>;
+inline constexpr size_t SlotCount = 4;
+using FSlots = std::array<std::vector<uint8_t>, SlotCount>;
 
 // Decoded slot streams of the first DATA entry with the given tag (GafParseSlots at 0047bf00). A missing entry yields empty slots.
 std::optional<FSlots> ReadEntrySlots(std::span<const uint8_t> File, uint32_t EntryTag);

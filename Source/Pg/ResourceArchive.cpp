@@ -1,5 +1,7 @@
 #include "Pg/ResourceArchive.h"
 
+#include "Pg/Binary.h"
+
 #include <algorithm>
 #include <bit>
 #include <cstring>
@@ -7,24 +9,42 @@
 namespace
 {
 constexpr uint32_t ArchiveMagic = 0x5F584B5F; // "_KX_"
-constexpr uint32_t HeaderSize = 32;
-constexpr uint32_t EntrySize = 12;
 constexpr uint8_t EntryFlagInverted = 1;
+// Any non-zero key encrypts the tables; key 1 also stores flagged entries bitwise-inverted.
+constexpr uint8_t KeyInvertsData = 1;
+constexpr size_t RotationMask = 7;
 
-template <typename T>
-T ReadLE(const uint8_t* const Data)
+struct FArchiveHeader
 {
-    T Value;
-    std::memcpy(&Value, Data, sizeof(T));
-    return Value;
-}
+    uint16_t EntryCount;
+    uint8_t bHasMagic;
+    uint8_t Key;
+    uint32_t EntryTableOffset;
+    uint32_t EntryTableSize;
+    uint32_t NameTableOffset;
+    uint32_t NameTableSize;
+    uint32_t DataOffset;
+    uint32_t DataSize;
+    uint32_t Magic;
+};
+static_assert(sizeof(FArchiveHeader) == 32);
+
+struct FEntryRecord
+{
+    int16_t NameOffset;
+    uint8_t Unused;
+    uint8_t Flags;
+    uint32_t Offset;
+    uint32_t Size;
+};
+static_assert(sizeof(FEntryRecord) == 12);
 
 // RscCryptTable decrypt direction: byte i is rotated right by (i & 7), then inverted.
 void DecryptTable(std::vector<uint8_t>& Table)
 {
     for (size_t Index = 0; Index < Table.size(); ++Index)
     {
-        Table[Index] = static_cast<uint8_t>(~std::rotr(Table[Index], static_cast<int>(Index & 7)));
+        Table[Index] = static_cast<uint8_t>(~std::rotr(Table[Index], static_cast<int>(Index & RotationMask)));
     }
 }
 
@@ -60,64 +80,55 @@ bool FResourceArchive::Open(const std::filesystem::path& Path)
     File = std::ifstream(Path, std::ios::binary);
     std::error_code Error;
     const uint64_t FileSize = std::filesystem::file_size(Path, Error);
-    uint8_t Header[HeaderSize];
-    if (!File || Error || !ReadAt(File, 0, Header, HeaderSize))
+    FArchiveHeader Header;
+    if (!File || Error || !ReadAt(File, 0, &Header, sizeof(Header)))
     {
         return false;
     }
 
-    const uint16_t EntryCount = ReadLE<uint16_t>(Header + 0x00);
-    const bool bHasMagic = Header[0x02] != 0;
-    // Key 1 means the tables are encrypted and flagged entries are stored bitwise-inverted.
-    const uint8_t Key = Header[0x03];
-    const uint32_t EntryTableOffset = ReadLE<uint32_t>(Header + 0x04);
-    const uint32_t EntryTableSize = ReadLE<uint32_t>(Header + 0x08);
-    const uint32_t NameTableOffset = ReadLE<uint32_t>(Header + 0x0C);
-    const uint32_t NameTableSize = ReadLE<uint32_t>(Header + 0x10);
-    const uint32_t DataOffset = ReadLE<uint32_t>(Header + 0x14);
-    const uint32_t Magic = ReadLE<uint32_t>(Header + 0x1C);
-
-    if ((bHasMagic && Magic != ArchiveMagic) || EntryTableSize < uint64_t{ EntryCount } * EntrySize ||
-        uint64_t{ EntryTableOffset } + EntryTableSize > FileSize || uint64_t{ NameTableOffset } + NameTableSize > FileSize)
+    if ((Header.bHasMagic && Header.Magic != ArchiveMagic) || Header.EntryTableSize < uint64_t{ Header.EntryCount } * sizeof(FEntryRecord) ||
+        uint64_t{ Header.EntryTableOffset } + Header.EntryTableSize > FileSize || uint64_t{ Header.NameTableOffset } + Header.NameTableSize > FileSize)
     {
         return false;
     }
 
-    std::vector<uint8_t> EntryTable(EntryTableSize);
-    std::vector<uint8_t> NameTable(NameTableSize);
-    if (!ReadAt(File, EntryTableOffset, EntryTable.data(), EntryTableSize) || !ReadAt(File, NameTableOffset, NameTable.data(), NameTableSize))
+    std::vector<uint8_t> EntryTable(Header.EntryTableSize);
+    std::vector<uint8_t> NameTable(Header.NameTableSize);
+    if (!ReadAt(File, Header.EntryTableOffset, EntryTable.data(), EntryTable.size()) || !ReadAt(File, Header.NameTableOffset, NameTable.data(), NameTable.size()))
     {
         return false;
     }
-    if (Key != 0)
+    if (Header.Key != 0)
     {
         DecryptTable(EntryTable);
         DecryptTable(NameTable);
     }
-    bInvertedData = Key == 1;
+    bInvertedData = Header.Key == KeyInvertsData;
 
-    for (uint32_t Index = 0; Index < EntryCount; ++Index)
+    for (uint32_t Index = 0; Index < Header.EntryCount; ++Index)
     {
-        const uint8_t* const Record = EntryTable.data() + Index * EntrySize;
-        const int16_t NameOffset = ReadLE<int16_t>(Record + 0);
-        const FEntry Entry{
-            .Offset = ReadLE<uint32_t>(Record + 4),
-            .Size = ReadLE<uint32_t>(Record + 8),
-            .Flags = Record[3],
-        };
-
-        const auto NameEnd = NameOffset >= 0 ? std::find(NameTable.begin() + NameOffset, NameTable.end(), uint8_t{ 0 }) : NameTable.end();
-        if (NameOffset < 0 || NameEnd == NameTable.end() || uint64_t{ DataOffset } + Entry.Offset + Entry.Size > FileSize)
+        // The size check above guarantees every record fits.
+        const FEntryRecord Record = *ReadStruct<FEntryRecord>(EntryTable, Index * sizeof(FEntryRecord));
+        if (Record.NameOffset < 0 || size_t(Record.NameOffset) >= NameTable.size() || uint64_t{ Header.DataOffset } + Record.Offset + Record.Size > FileSize)
+        {
+            Entries.clear();
+            return false;
+        }
+        const auto NameStart = NameTable.begin() + Record.NameOffset;
+        const auto NameEnd = std::find(NameStart, NameTable.end(), uint8_t{ 0 });
+        if (NameEnd == NameTable.end())
         {
             Entries.clear();
             return false;
         }
 
-        const std::string_view Name(reinterpret_cast<const char*>(NameTable.data() + NameOffset), NameEnd - (NameTable.begin() + NameOffset));
-        FEntry Stored = Entry;
-        Stored.Offset += DataOffset;
+        const std::string_view Name(reinterpret_cast<const char*>(&*NameStart), NameEnd - NameStart);
         // vz-data.rsc stores v-turret-gun-udg.gaf twice with identical bytes; the first copy wins.
-        Entries.emplace(NormalizeName(Name), Stored);
+        Entries.emplace(NormalizeName(Name), FEntry{
+            .Offset = Header.DataOffset + Record.Offset,
+            .Size = Record.Size,
+            .Flags = Record.Flags,
+        });
     }
     return true;
 }

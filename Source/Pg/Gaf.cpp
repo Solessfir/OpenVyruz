@@ -1,29 +1,82 @@
 #include "Pg/Gaf.h"
 
+#include "Pg/Binary.h"
+
 #include <array>
 #include <cstring>
 
 namespace
 {
-constexpr uint32_t RecordHeaderSize = 16;
 constexpr uint32_t VersionMagic = 0x19990208;
-constexpr uint32_t SlotCount = 4;
-constexpr uint32_t SlotDescriptorSize = 24;
 constexpr uint32_t MethodStored = 0;
 constexpr uint32_t MethodLzss = 0x100;
-constexpr uint32_t FrameRecordSize = 44;
-constexpr uint32_t BitmapHeaderSize = 0x44;
+constexpr uint32_t SlotAlignment = 4;
 constexpr uint32_t MaxFrameDimension = 4096;
+constexpr uint32_t BytesPerPixel = 2;
+constexpr size_t GobFrameSlot = 0;
+constexpr size_t GobBitmapSlot = 1;
 
-using Gaf::Tag;
-
-template <typename T>
-T ReadLE(const std::span<const uint8_t> Data, const size_t Offset)
+// Header of every GAF record (GAF_, HEAD, DATA and each DATA entry); Size excludes the header.
+struct FRecordHeader
 {
-    T Value;
-    std::memcpy(&Value, Data.data() + Offset, sizeof(T));
-    return Value;
-}
+    uint32_t Tag;
+    uint32_t Size;
+    uint32_t Version;
+    uint32_t Extra;
+};
+static_assert(sizeof(FRecordHeader) == 16);
+
+// One of the four slot descriptors opening a DATA entry payload.
+struct FSlotDescriptor
+{
+    uint32_t Method;
+    uint32_t Reserved0[2];
+    uint32_t StoredSize;
+    uint32_t DecodedSize;
+    uint32_t Reserved1;
+};
+static_assert(sizeof(FSlotDescriptor) == 24);
+
+// BMP_ chunk header; the RGB555 pixels follow, rows tightly packed.
+struct FBitmapHeader
+{
+    uint32_t Tag;
+    // Pixel byte count padded up to a multiple of 4.
+    uint32_t PaddedSize;
+    uint32_t Signature;
+    uint32_t HeaderExtSize;
+    uint32_t SignatureRepeat;
+    uint32_t Type;
+    uint32_t Depth;
+    uint32_t DepthRepeat;
+    uint32_t Width;
+    uint32_t Height;
+    // Runtime DirectDraw stride, not the on-disk one.
+    uint32_t Stride;
+    uint32_t Reserved0[2];
+    uint32_t MaxX;
+    uint32_t MaxY;
+    uint16_t ColorKey;
+    uint16_t Padding;
+    uint32_t Reserved1;
+};
+static_assert(sizeof(FBitmapHeader) == 0x44);
+
+// GOB_ slot 0 record, one per frame.
+struct FFrameRecord
+{
+    int32_t One;
+    int32_t Width;
+    int32_t Height;
+    int32_t Reserved0;
+    int32_t TrimX;
+    int32_t TrimY;
+    int32_t Reserved1;
+    int32_t NegativeRight;
+    int32_t NegativeBottom;
+    int32_t Reserved2[2];
+};
+static_assert(sizeof(FFrameRecord) == 44);
 
 struct FRecord
 {
@@ -34,16 +87,16 @@ struct FRecord
 
 std::optional<FRecord> ReadRecord(const std::span<const uint8_t> Data, const size_t Offset)
 {
-    if (Offset + RecordHeaderSize > Data.size() || ReadLE<uint32_t>(Data, Offset + 8) != VersionMagic)
+    const std::optional<FRecordHeader> Header = ReadStruct<FRecordHeader>(Data, Offset);
+    if (!Header || Header->Version != VersionMagic || Header->Size > Data.size() - Offset - sizeof(FRecordHeader))
     {
         return std::nullopt;
     }
-    const uint32_t Size = ReadLE<uint32_t>(Data, Offset + 4);
-    if (Size > Data.size() - Offset - RecordHeaderSize)
-    {
-        return std::nullopt;
-    }
-    return FRecord{ ReadLE<uint32_t>(Data, Offset), ReadLE<uint32_t>(Data, Offset + 12), Data.subspan(Offset + RecordHeaderSize, Size) };
+    return FRecord{
+        .Tag = Header->Tag,
+        .Extra = Header->Extra,
+        .Payload = Data.subspan(Offset + sizeof(FRecordHeader), Header->Size),
+    };
 }
 
 // GAF_ -> HEAD (table of contents, skipped) -> DATA -> first child with the wanted tag.
@@ -51,18 +104,18 @@ std::optional<FRecord> ReadRecord(const std::span<const uint8_t> Data, const siz
 std::optional<FRecord> FindDataEntry(const std::span<const uint8_t> File, const uint32_t WantedTag)
 {
     const std::optional<FRecord> Root = ReadRecord(File, 0);
-    if (!Root || Root->Tag != Tag("GAF_"))
+    if (!Root || Root->Tag != Gaf::Tag("GAF_"))
     {
         return std::nullopt;
     }
-    const std::optional<FRecord> Head = ReadRecord(File, RecordHeaderSize);
-    if (!Head || Head->Tag != Tag("HEAD"))
+    const std::optional<FRecord> Head = ReadRecord(File, sizeof(FRecordHeader));
+    if (!Head || Head->Tag != Gaf::Tag("HEAD"))
     {
         return std::nullopt;
     }
-    const size_t DataOffset = RecordHeaderSize * 2 + Head->Payload.size();
+    const size_t DataOffset = sizeof(FRecordHeader) * 2 + Head->Payload.size();
     const std::optional<FRecord> Data = ReadRecord(File, DataOffset);
-    if (!Data || Data->Tag != Tag("DATA"))
+    if (!Data || Data->Tag != Gaf::Tag("DATA"))
     {
         return std::nullopt;
     }
@@ -79,34 +132,32 @@ std::optional<FRecord> FindDataEntry(const std::span<const uint8_t> File, const 
         {
             return Entry;
         }
-        Offset += RecordHeaderSize + Entry->Payload.size();
+        Offset += sizeof(FRecordHeader) + Entry->Payload.size();
     }
     return FRecord{};
 }
 
-// Entry payload (GOB_, BLK_, MAP_): 4 slot descriptors, then each non-empty slot's stream on a 4-byte boundary (GafParseSlots at 0047bf00).
+// Entry payload (GOB_, BLK_, MAP_): slot descriptors, then each non-empty slot's stream on a 4-byte boundary (GafParseSlots at 0047bf00).
 std::optional<Gaf::FSlots> ReadSlots(const std::span<const uint8_t> Entry)
 {
-    if (Entry.size() < SlotCount * SlotDescriptorSize)
+    const std::optional<std::array<FSlotDescriptor, Gaf::SlotCount>> Descriptors = ReadStruct<std::array<FSlotDescriptor, Gaf::SlotCount>>(Entry);
+    if (!Descriptors)
     {
         return std::nullopt;
     }
 
     Gaf::FSlots Slots;
-    size_t Cursor = SlotCount * SlotDescriptorSize;
-    for (uint32_t Slot = 0; Slot < SlotCount; ++Slot)
+    size_t Cursor = sizeof(*Descriptors);
+    for (size_t Slot = 0; Slot < Gaf::SlotCount; ++Slot)
     {
-        const size_t Descriptor = Slot * SlotDescriptorSize;
-        const uint32_t Method = ReadLE<uint32_t>(Entry, Descriptor + 0x00);
-        const uint32_t StoredSize = ReadLE<uint32_t>(Entry, Descriptor + 0x0C);
-        const uint32_t DecodedSize = ReadLE<uint32_t>(Entry, Descriptor + 0x10);
-        if (DecodedSize == 0)
+        const FSlotDescriptor& Descriptor = (*Descriptors)[Slot];
+        if (Descriptor.DecodedSize == 0)
         {
             continue;
         }
 
-        Cursor = (Cursor + 3) & ~size_t{ 3 };
-        const size_t InputSize = Method == MethodStored ? DecodedSize : StoredSize;
+        Cursor = (Cursor + SlotAlignment - 1) & ~size_t{ SlotAlignment - 1 };
+        const size_t InputSize = Descriptor.Method == MethodStored ? Descriptor.DecodedSize : Descriptor.StoredSize;
         if (InputSize > Entry.size() || Cursor > Entry.size() - InputSize)
         {
             return std::nullopt;
@@ -114,13 +165,13 @@ std::optional<Gaf::FSlots> ReadSlots(const std::span<const uint8_t> Entry)
         const std::span<const uint8_t> Input = Entry.subspan(Cursor, InputSize);
         Cursor += InputSize;
 
-        if (Method == MethodStored)
+        if (Descriptor.Method == MethodStored)
         {
             Slots[Slot].assign(Input.begin(), Input.end());
         }
-        else if (Method == MethodLzss)
+        else if (Descriptor.Method == MethodLzss)
         {
-            std::optional<std::vector<uint8_t>> Decoded = Gaf::LzssDecode(Input, DecodedSize);
+            std::optional<std::vector<uint8_t>> Decoded = Gaf::LzssDecode(Input, Descriptor.DecodedSize);
             if (!Decoded)
             {
                 return std::nullopt;
@@ -139,11 +190,20 @@ std::optional<Gaf::FSlots> ReadSlots(const std::span<const uint8_t> Entry)
 std::optional<std::vector<uint8_t>> Gaf::LzssDecode(const std::span<const uint8_t> Input, const size_t OutputSize)
 {
     constexpr uint32_t RingSize = 4096;
-    constexpr uint32_t RingStart = 0xFEE;
+    constexpr uint8_t RingFill = ' ';
+    // A control byte is loaded with this marker above its 8 flag bits; once shifted out, the next control byte is due.
+    constexpr uint32_t ControlMarker = 0xFF00;
+    constexpr uint32_t ControlExhausted = 0x100;
+    constexpr uint8_t MatchOffsetHighMask = 0xF0;
+    constexpr uint8_t MatchLengthMask = 0x0F;
+    constexpr uint32_t MinMatchLength = 3;
+    // Okumura layout: writing starts one maximum match length before the end of the ring (0xFEE).
+    constexpr uint32_t RingStart = RingSize - (MatchLengthMask + MinMatchLength);
+    static_assert(RingStart == 0xFEE);
 
-    // The original only clears the first 0xFEE bytes to spaces and leaves the tail from the previous call.
+    // The original only fills the first RingStart bytes and leaves the tail from the previous call.
     std::array<uint8_t, RingSize> Ring{};
-    std::memset(Ring.data(), ' ', RingStart);
+    std::memset(Ring.data(), RingFill, RingStart);
     uint32_t RingPos = RingStart;
 
     std::vector<uint8_t> Output;
@@ -153,14 +213,13 @@ std::optional<std::vector<uint8_t>> Gaf::LzssDecode(const std::span<const uint8_
     while (Output.size() < OutputSize)
     {
         Flags >>= 1;
-        // The high byte marks how many flag bits are left in the current control byte.
-        if ((Flags & 0x100) == 0)
+        if ((Flags & ControlExhausted) == 0)
         {
             if (In >= Input.size())
             {
                 break;
             }
-            Flags = Input[In++] | 0xFF00;
+            Flags = Input[In++] | ControlMarker;
         }
 
         if (Flags & 1)
@@ -182,8 +241,8 @@ std::optional<std::vector<uint8_t>> Gaf::LzssDecode(const std::span<const uint8_
             }
             const uint8_t Low = Input[In++];
             const uint8_t High = Input[In++];
-            uint32_t MatchPos = Low | (High & 0xF0) << 4;
-            const uint32_t MatchLength = (High & 0x0F) + 3;
+            uint32_t MatchPos = Low | (High & MatchOffsetHighMask) << 4;
+            const uint32_t MatchLength = (High & MatchLengthMask) + MinMatchLength;
             for (uint32_t Index = 0; Index < MatchLength && Output.size() < OutputSize; ++Index)
             {
                 const uint8_t Byte = Ring[MatchPos & (RingSize - 1)];
@@ -222,24 +281,21 @@ std::optional<std::vector<Gaf::FFrame>> Gaf::ParseBitmaps(const std::span<const 
     size_t Offset = 0;
     while (Offset < Bitmaps.size())
     {
-        if (Offset + BitmapHeaderSize > Bitmaps.size() || ReadLE<uint32_t>(Bitmaps, Offset) != Tag("BMP_"))
+        const std::optional<FBitmapHeader> Header = ReadStruct<FBitmapHeader>(Bitmaps, Offset);
+        if (!Header || Header->Tag != Gaf::Tag("BMP_") || Header->Width == 0 || Header->Height == 0 || Header->Width > MaxFrameDimension ||
+            Header->Height > MaxFrameDimension || Header->PaddedSize < Header->Width * Header->Height * BytesPerPixel ||
+            Header->PaddedSize > Bitmaps.size() - Offset - sizeof(FBitmapHeader))
         {
             return std::nullopt;
         }
-        FFrame Frame;
-        Frame.Width = ReadLE<uint32_t>(Bitmaps, Offset + 0x20);
-        Frame.Height = ReadLE<uint32_t>(Bitmaps, Offset + 0x24);
-        Frame.ColorKey = ReadLE<uint16_t>(Bitmaps, Offset + 0x3C);
-        // The size field is the pixel byte count padded up to a multiple of 4.
-        const uint32_t PaddedBytes = ReadLE<uint32_t>(Bitmaps, Offset + 0x04);
-        if (Frame.Width == 0 || Frame.Height == 0 || Frame.Width > MaxFrameDimension || Frame.Height > MaxFrameDimension ||
-            PaddedBytes < Frame.Width * Frame.Height * 2 || PaddedBytes > Bitmaps.size() - Offset - BitmapHeaderSize)
-        {
-            return std::nullopt;
-        }
-        Frame.Pixels.resize(Frame.Width * Frame.Height);
-        std::memcpy(Frame.Pixels.data(), Bitmaps.data() + Offset + BitmapHeaderSize, Frame.Pixels.size() * 2);
-        Offset += BitmapHeaderSize + PaddedBytes;
+        FFrame Frame{
+            .Width = Header->Width,
+            .Height = Header->Height,
+            .ColorKey = Header->ColorKey,
+        };
+        Frame.Pixels.resize(size_t{ Frame.Width } * Frame.Height);
+        std::memcpy(Frame.Pixels.data(), Bitmaps.data() + Offset + sizeof(FBitmapHeader), Frame.Pixels.size() * BytesPerPixel);
+        Offset += sizeof(FBitmapHeader) + Header->PaddedSize;
         Frames.push_back(std::move(Frame));
     }
     return Frames;
@@ -252,19 +308,17 @@ std::optional<std::vector<Gaf::FFrame>> Gaf::LoadFrames(const std::span<const ui
     {
         return std::nullopt;
     }
-    std::optional<std::vector<FFrame>> Frames = ParseBitmaps((*Slots)[1]);
+    std::optional<std::vector<FFrame>> Frames = ParseBitmaps((*Slots)[GobBitmapSlot]);
     if (!Frames)
     {
         return std::nullopt;
     }
-    const std::span<const uint8_t> Metadata = (*Slots)[0];
     for (size_t Index = 0; Index < Frames->size(); ++Index)
     {
-        const size_t Record = Index * FrameRecordSize;
-        if (Record + FrameRecordSize <= Metadata.size())
+        if (const std::optional<FFrameRecord> Record = ReadStruct<FFrameRecord>((*Slots)[GobFrameSlot], Index * sizeof(FFrameRecord)))
         {
-            (*Frames)[Index].TrimX = ReadLE<int32_t>(Metadata, Record + 0x10);
-            (*Frames)[Index].TrimY = ReadLE<int32_t>(Metadata, Record + 0x14);
+            (*Frames)[Index].TrimX = Record->TrimX;
+            (*Frames)[Index].TrimY = Record->TrimY;
         }
     }
     return Frames;
