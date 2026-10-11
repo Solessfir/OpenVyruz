@@ -7,6 +7,7 @@
 #include <expected>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 class FResourceArchive;
@@ -36,11 +37,39 @@ enum class ETerrain : uint8_t
     Water,
 };
 
+// Ordered properties retain repeated fields, named TYPE/ADD blocks, and bare directives.
+struct FLevelPropertyBlock
+{
+    std::string_view Find(std::string_view Field) const;
+
+    std::string Kind;
+    std::string Name;
+    std::vector<std::pair<std::string, std::string>> Fields;
+    std::vector<FLevelPropertyBlock> Children;
+};
+
+inline constexpr int ObjectDirectionCount = 24;
+
 struct FLevelObject
 {
     std::string ClassName;
     float X = 0.f;
     float Y = 0.f;
+    float Altitude = 0.f;
+    int BoundingBoxSize = 0;
+    std::string Behaviour;
+    std::string GafPath;
+    std::string ShadowGafPath;
+    // Original 1-based ANM_ indices; zero disables that animation.
+    int GafIndex = 0;
+    int ShadowIndex = 0;
+    // ObjectDirectionCount means no .3DO direction override.
+    int Direction = ObjectDirectionCount;
+    bool bInGround = false;
+    bool bZShadow = false;
+    bool bDirectional = false;
+    std::string SubType;
+    FLevelPropertyBlock Properties;
 };
 
 struct FLevel

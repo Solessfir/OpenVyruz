@@ -253,9 +253,9 @@ void FRenderer::CreateDevice()
 
 void FRenderer::CreatePipeline()
 {
-    if (SpritePipeline != VK_NULL_HANDLE)
+    for (const VkPipeline Pipeline : SpritePipelines)
     {
-        vkDestroyPipeline(Device, SpritePipeline, nullptr);
+        vkDestroyPipeline(Device, Pipeline, nullptr);
     }
 
     VkShaderModule VertexModule;
@@ -298,7 +298,7 @@ void FRenderer::CreatePipeline()
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
-    const VkPipelineColorBlendAttachmentState BlendAttachment{
+    VkPipelineColorBlendAttachmentState BlendAttachment{
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
     };
     const VkPipelineColorBlendStateCreateInfo ColorBlend{
@@ -331,7 +331,18 @@ void FRenderer::CreatePipeline()
         .pDynamicState = &DynamicState,
         .layout = PipelineLayout,
     };
-    Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &PipelineInfo, nullptr, &SpritePipeline), "vkCreateGraphicsPipelines");
+    for (size_t Index = 0; Index < std::size(SpritePipelines); ++Index)
+    {
+        // Original hardware blend states at 00496280: mode 6 adds light, mode 8 darkens with inverse source RGB.
+        const bool bAdditive = Index == static_cast<size_t>(ESpriteBlend::Additive);
+        BlendAttachment.blendEnable = Index != static_cast<size_t>(ESpriteBlend::Opaque);
+        BlendAttachment.srcColorBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO;
+        BlendAttachment.dstColorBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        BlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        BlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &PipelineInfo, nullptr, &SpritePipelines[Index]), "vkCreateGraphicsPipelines");
+    }
+
     vkDestroyShaderModule(Device, VertexModule, nullptr);
     vkDestroyShaderModule(Device, FragmentModule, nullptr);
     PipelineFormat = SwapchainFormat;
@@ -725,11 +736,11 @@ bool FRenderer::BeginFrame()
     };
     vkCmdSetViewport(Cmd, 0, 1, &Viewport);
     vkCmdSetScissor(Cmd, 0, 1, &Scissor);
-    vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, SpritePipeline);
     return true;
 }
 
-void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInSheet, const float X, const float Y)
+void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInSheet, const float X, const float Y, const bool bMirrorX, const bool bMirrorY,
+    const ESpriteBlend Blend)
 {
     if (Sheet.Texture >= Textures.size() || FrameIndexInSheet >= Sheet.Frames.size())
     {
@@ -737,11 +748,20 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
     }
     const VkCommandBuffer Cmd = Frames[FrameIndex].CommandBuffer;
     const FSpriteFrame& Frame = Sheet.Frames[FrameIndexInSheet];
+    // DrawGobFrame at 00466f40 mirrors around the sprite origin, including the cropped bitmap offset.
+    const float Left = X + (bMirrorX ? -float(Frame.TrimX) - Frame.Width : float(Frame.TrimX));
+    const float Top = Y + (bMirrorY ? -float(Frame.TrimY) - Frame.Height : float(Frame.TrimY));
+    if (Left >= ScreenWidth || Top >= ScreenHeight || Left + Frame.Width <= 0.f || Top + Frame.Height <= 0.f)
+    {
+        return;
+    }
+
     const FSpritePush Push{
-        .Rect = { X + Frame.TrimX, Y + Frame.TrimY, float(Frame.Width), float(Frame.Height) },
-        .UvRect = { Frame.U0, Frame.V0, Frame.U1, Frame.V1 },
+        .Rect = { Left, Top, float(Frame.Width), float(Frame.Height) },
+        .UvRect = { bMirrorX ? Frame.U1 : Frame.U0, bMirrorY ? Frame.V1 : Frame.V0, bMirrorX ? Frame.U0 : Frame.U1, bMirrorY ? Frame.V0 : Frame.V1 },
         .ScreenSize = { ScreenWidth, ScreenHeight },
     };
+    vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, SpritePipelines[static_cast<size_t>(Blend)]);
     vkCmdBindDescriptorSets(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, PipelineLayout, 0, 1, &Textures[Sheet.Texture].DescriptorSet, 0, nullptr);
     vkCmdPushConstants(Cmd, PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Push), &Push);
     vkCmdDraw(Cmd, 4, 1, 0, 0);
@@ -809,7 +829,11 @@ void FRenderer::Shutdown()
         vkFreeMemory(Device, Texture.Memory, nullptr);
     }
     Textures.clear();
-    vkDestroyPipeline(Device, SpritePipeline, nullptr);
+    for (const VkPipeline Pipeline : SpritePipelines)
+    {
+        vkDestroyPipeline(Device, Pipeline, nullptr);
+    }
+
     vkDestroyPipelineLayout(Device, PipelineLayout, nullptr);
     vkDestroyDescriptorPool(Device, DescriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(Device, DescriptorSetLayout, nullptr);

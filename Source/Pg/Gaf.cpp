@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstring>
+#include <limits>
 
 namespace
 {
@@ -15,6 +16,13 @@ constexpr uint32_t MaxFrameDimension = 4096;
 constexpr uint32_t BytesPerPixel = 2;
 constexpr size_t GobFrameSlot = 0;
 constexpr size_t GobBitmapSlot = 1;
+constexpr size_t AnimationHeaderSlot = 0;
+constexpr size_t AnimationFrameSlot = 2;
+constexpr size_t NameGroupSlot = 0;
+constexpr size_t NameRecordSlot = 2;
+constexpr size_t NameTextSlot = 3;
+constexpr uint32_t MirrorXFlag = 0x100;
+constexpr uint32_t MirrorYFlag = 0x200;
 
 // Header of every GAF record (GAF_, HEAD, DATA and each DATA entry); Size excludes the header.
 struct FRecordHeader
@@ -77,6 +85,42 @@ struct FFrameRecord
     int32_t Reserved2[2];
 };
 static_assert(sizeof(FFrameRecord) == 44);
+
+struct FAnimationRecord
+{
+    uint32_t FrameCount;
+    uint32_t Flags;
+    uint32_t LoopStart;
+    int32_t Reserved[5];
+};
+static_assert(sizeof(FAnimationRecord) == 32);
+
+struct FAnimationFrameRecord
+{
+    uint32_t BitmapIndex;
+    int32_t OffsetX;
+    int32_t OffsetY;
+    uint32_t DrawFlags;
+    uint32_t EventFlags;
+    uint32_t EventValue;
+    int32_t Duration;
+};
+static_assert(sizeof(FAnimationFrameRecord) == 28);
+
+struct FNameGroupRecord
+{
+    uint32_t Count;
+    uint32_t Tag;
+};
+static_assert(sizeof(FNameGroupRecord) == 8);
+
+struct FNameRecord
+{
+    uint32_t Size;
+    uint32_t Index;
+    uint32_t Reserved;
+};
+static_assert(sizeof(FNameRecord) == 12);
 
 struct FRecord
 {
@@ -322,4 +366,101 @@ std::optional<std::vector<Gaf::FFrame>> Gaf::LoadFrames(const std::span<const ui
         }
     }
     return Frames;
+}
+
+std::optional<std::vector<Gaf::FAnimation>> Gaf::LoadAnimations(const std::span<const uint8_t> File, const size_t BitmapCount)
+{
+    const std::optional<FSlots> Slots = ReadEntrySlots(File, Tag("ANM_"));
+    const std::optional<FSlots> Names = ReadEntrySlots(File, Tag("NAM_"));
+    if (!Slots || !Names || (*Slots)[AnimationHeaderSlot].size() % sizeof(FAnimationRecord) != 0 ||
+        (*Slots)[AnimationFrameSlot].size() % sizeof(FAnimationFrameRecord) != 0 ||
+        (*Names)[NameGroupSlot].size() % sizeof(FNameGroupRecord) != 0 || (*Names)[NameRecordSlot].size() % sizeof(FNameRecord) != 0)
+    {
+        return std::nullopt;
+    }
+
+    const size_t AnimationCount = (*Slots)[AnimationHeaderSlot].size() / sizeof(FAnimationRecord);
+    std::vector<FAnimation> Animations(AnimationCount);
+    size_t FrameOffset = 0;
+    for (size_t Index = 0; Index < AnimationCount; ++Index)
+    {
+        const FAnimationRecord Record = *ReadStruct<FAnimationRecord>((*Slots)[AnimationHeaderSlot], Index * sizeof(FAnimationRecord));
+        if (Record.FrameCount > ((*Slots)[AnimationFrameSlot].size() - FrameOffset) / sizeof(FAnimationFrameRecord))
+        {
+            return std::nullopt;
+        }
+
+        FAnimation& Animation = Animations[Index];
+        Animation.Frames.reserve(Record.FrameCount);
+        for (uint32_t FrameIndex = 0; FrameIndex < Record.FrameCount; ++FrameIndex)
+        {
+            // UpdateAnimation at 0045e7e0 negates ANM offsets before DrawGobFrame applies the mirrored GOB crop.
+            const FAnimationFrameRecord Frame = *ReadStruct<FAnimationFrameRecord>((*Slots)[AnimationFrameSlot], FrameOffset);
+            const bool bMirrorX = (Frame.DrawFlags & MirrorXFlag) != 0;
+            const bool bMirrorY = (Frame.DrawFlags & MirrorYFlag) != 0;
+            if (Frame.BitmapIndex > BitmapCount || (bMirrorX && Frame.OffsetX == std::numeric_limits<int32_t>::min()) ||
+                (bMirrorY && Frame.OffsetY == std::numeric_limits<int32_t>::min()))
+            {
+                return std::nullopt;
+            }
+
+            Animation.Frames.push_back(FAnimationFrame{
+                .BitmapIndex = Frame.BitmapIndex,
+                .OffsetX = bMirrorX ? -Frame.OffsetX : Frame.OffsetX,
+                .OffsetY = bMirrorY ? -Frame.OffsetY : Frame.OffsetY,
+                .DrawFlags = Frame.DrawFlags,
+                .bMirrorX = bMirrorX,
+                .bMirrorY = bMirrorY,
+            });
+            FrameOffset += sizeof(FAnimationFrameRecord);
+        }
+    }
+
+    if (FrameOffset != (*Slots)[AnimationFrameSlot].size())
+    {
+        return std::nullopt;
+    }
+
+    size_t NameOffset = 0;
+    size_t TextOffset = 0;
+    for (size_t GroupOffset = 0; GroupOffset < (*Names)[NameGroupSlot].size(); GroupOffset += sizeof(FNameGroupRecord))
+    {
+        const FNameGroupRecord Group = *ReadStruct<FNameGroupRecord>((*Names)[NameGroupSlot], GroupOffset);
+        if (Group.Count > ((*Names)[NameRecordSlot].size() - NameOffset) / sizeof(FNameRecord))
+        {
+            return std::nullopt;
+        }
+
+        for (uint32_t NameIndex = 0; NameIndex < Group.Count; ++NameIndex)
+        {
+            const FNameRecord Name = *ReadStruct<FNameRecord>((*Names)[NameRecordSlot], NameOffset);
+            if (Name.Size == 0 || Name.Size > (*Names)[NameTextSlot].size() - TextOffset)
+            {
+                return std::nullopt;
+            }
+
+            const char* Text = reinterpret_cast<const char*>((*Names)[NameTextSlot].data() + TextOffset);
+            const char* End = static_cast<const char*>(std::memchr(Text, '\0', Name.Size));
+            if (!End || (Group.Tag == Tag("ANM_") && (Name.Index == 0 || Name.Index > AnimationCount)))
+            {
+                return std::nullopt;
+            }
+
+            if (Group.Tag == Tag("ANM_"))
+            {
+                Animations[Name.Index - 1].Name.assign(Text, End);
+            }
+
+            NameOffset += sizeof(FNameRecord);
+            TextOffset += Name.Size;
+        }
+    }
+
+    if (NameOffset != (*Names)[NameRecordSlot].size() || TextOffset != (*Names)[NameTextSlot].size())
+    {
+        return std::nullopt;
+    }
+
+    // shortcut: visual frame metadata only; decode durations and events when the original animation update is ported.
+    return Animations;
 }

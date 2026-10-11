@@ -30,6 +30,14 @@ struct FSpriteSheet
     std::vector<FSpriteFrame> Frames;
 };
 
+enum class ESpriteBlend : uint8_t
+{
+    Opaque,
+    Additive,
+    InverseSourceColor,
+    Count,
+};
+
 class FRenderer
 {
 public:
@@ -41,7 +49,8 @@ public:
     // Returns false when nothing can be drawn this frame (minimized or swapchain being rebuilt).
     bool BeginFrame();
     // X/Y is the top-left of the untrimmed sprite cell in screen pixels.
-    void DrawSprite(const FSpriteSheet& Sheet, size_t FrameIndex, float X, float Y);
+    void DrawSprite(const FSpriteSheet& Sheet, size_t FrameIndex, float X, float Y, bool bMirrorX = false, bool bMirrorY = false,
+        ESpriteBlend Blend = ESpriteBlend::Opaque);
     void EndFrame();
 
 private:
@@ -92,7 +101,7 @@ private:
     VkDescriptorSetLayout DescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
     VkPipelineLayout PipelineLayout = VK_NULL_HANDLE;
-    VkPipeline SpritePipeline = VK_NULL_HANDLE;
+    VkPipeline SpritePipelines[static_cast<size_t>(ESpriteBlend::Count)]{};
     VkFormat PipelineFormat = VK_FORMAT_UNDEFINED;
     std::vector<FTexture> Textures;
 

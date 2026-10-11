@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 // Original pg-engine GAF container (pgga9902.cpp / pggob.cpp). Format notes live in README.md.
@@ -26,6 +27,26 @@ struct FFrame
 
 // Decodes every sprite frame of the GOB_ entry in a .GAF file.
 std::optional<std::vector<FFrame>> LoadFrames(std::span<const uint8_t> File);
+
+struct FAnimationFrame
+{
+    // Original GOB indices are 1-based; zero is an invisible frame.
+    uint32_t BitmapIndex = 0;
+    int32_t OffsetX = 0;
+    int32_t OffsetY = 0;
+    uint32_t DrawFlags = 0;
+    bool bMirrorX = false;
+    bool bMirrorY = false;
+};
+
+struct FAnimation
+{
+    std::string Name;
+    std::vector<FAnimationFrame> Frames;
+};
+
+// ANM_ visual frames and NAM_ names, in original animation-index order. Offsets already account for frame mirroring.
+std::optional<std::vector<FAnimation>> LoadAnimations(std::span<const uint8_t> File, size_t BitmapCount);
 
 constexpr uint32_t Tag(const char (&Text)[5])
 {

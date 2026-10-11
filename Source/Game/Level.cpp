@@ -4,11 +4,15 @@
 #include "Pg/ResourceArchive.h"
 
 #include <algorithm>
+#include <cassert>
 #include <charconv>
+#include <cmath>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <optional>
-#include <unordered_set>
+#include <ranges>
+#include <unordered_map>
 
 namespace
 {
@@ -16,6 +20,9 @@ constexpr uint32_t MaxGridDimension = 4096;
 constexpr uint32_t MaxLayers = 16;
 constexpr size_t MapHeaderSlot = 0;
 constexpr size_t MapCellSlot = 3;
+constexpr size_t MaxPropertyDepth = 64;
+constexpr size_t MaxClassDepth = 256;
+constexpr int MaxObjectAnimationIndex = std::numeric_limits<int>::max() - ObjectDirectionCount;
 
 // MAP_ slot 0.
 struct FMapHeader
@@ -101,8 +108,13 @@ std::optional<int> ParseInt(const std::string_view Text)
 {
     int Value = 0;
     const std::string_view Trimmed = Trim(Text);
+    if (Trimmed.empty())
+    {
+        return std::nullopt;
+    }
+
     const auto [End, Error] = std::from_chars(Trimmed.data(), Trimmed.data() + Trimmed.size(), Value);
-    if (Error != std::errc{} || End == Trimmed.data())
+    if (Error != std::errc{} || End != Trimmed.data() + Trimmed.size())
     {
         return std::nullopt;
     }
@@ -168,31 +180,19 @@ std::optional<size_t> TerrainSlot(const ETerrain Type)
 }
 
 // Block grammar shared by .3DC/.3DO/.3DP: "KIND [", "KIND name [", "]", "field = value", "TAG [inline value]", bare directives.
-struct FBlock
-{
-    std::string Kind;
-    std::string Name;
-    std::vector<std::pair<std::string, std::string>> Fields;
-    std::vector<FBlock> Children;
-
-    std::string_view Find(const std::string_view Field) const
-    {
-        for (const auto& [Key, Value] : Fields)
-        {
-            if (ToLower(Key) == ToLower(Field))
-            {
-                return Value;
-            }
-        }
-        return {};
-    }
-};
+using FBlock = FLevelPropertyBlock;
 
 std::expected<FBlock, std::string> ParseBlocks(const std::string_view Text)
 {
     FBlock Root;
     std::vector<FBlock*> Stack{ &Root };
-    for (const std::string_view Line : SplitLines(Text))
+    const std::vector<std::string_view> Lines = SplitLines(Text);
+    if (Lines.empty() || Lines.front() != "1.3")
+    {
+        return std::unexpected("unknown block file format");
+    }
+
+    for (const std::string_view Line : Lines)
     {
         if (Line == "]")
         {
@@ -223,6 +223,11 @@ std::expected<FBlock, std::string> ParseBlocks(const std::string_view Text)
                 .Kind = std::string(Head.substr(0, Space)),
                 .Name = Space == std::string_view::npos ? std::string() : std::string(Trim(Head.substr(Space))),
             };
+            if (Stack.size() >= MaxPropertyDepth)
+            {
+                return std::unexpected("property nesting limit exceeded");
+            }
+
             Stack.back()->Children.push_back(std::move(Child));
             Stack.push_back(&Stack.back()->Children.back());
             continue;
@@ -243,6 +248,193 @@ std::expected<FBlock, std::string> ParseBlocks(const std::string_view Text)
         return std::unexpected("unterminated block");
     }
     return Root;
+}
+
+bool IsAttribute(const FBlock& Block)
+{
+    const std::string Kind = ToLower(Block.Kind);
+    return Kind == "type" || Kind == "add" || Kind == "create";
+}
+
+// LoadObjectClassLibrary at 0040a010 appends attributes; LevelLoad3do at 00413d80 overrides each inherited attribute once.
+void MergeProperties(FBlock& Target, const FBlock& Source, const bool bInstance = false)
+{
+    for (const auto& [Key, Value] : Source.Fields)
+    {
+        const std::string LowerKey = ToLower(Key);
+        if (LowerKey == "override-attributes")
+        {
+            std::erase_if(Target.Children, IsAttribute);
+        }
+        else if (LowerKey == "override-objects" || LowerKey == "override-random-objects")
+        {
+            const std::string_view Directive = LowerKey == "override-objects" ? "have" : "random";
+            std::erase_if(Target.Fields, [&](const auto& Field) { return ToLower(Field.first.substr(0, Field.first.find_first_of(" \t"))) == Directive; });
+        }
+    }
+
+    std::erase_if(Target.Fields, [&](const auto& Field)
+    {
+        const std::string Key = ToLower(Field.first.substr(0, Field.first.find_first_of(" \t")));
+        if (Key == "have" || Key == "random")
+        {
+            return false;
+        }
+
+        return std::ranges::any_of(Source.Fields, [&](const auto& Override) { return ToLower(Field.first) == ToLower(Override.first); });
+    });
+    Target.Fields.insert(Target.Fields.end(), Source.Fields.begin(), Source.Fields.end());
+
+    const size_t InheritedCount = Target.Children.size();
+    std::vector<bool> Used(InheritedCount);
+    for (const FBlock& Child : Source.Children)
+    {
+        const bool bAttribute = IsAttribute(Child);
+        size_t Match = InheritedCount;
+        if (!bAttribute || bInstance)
+        {
+            for (size_t Index = InheritedCount; Index > 0; --Index)
+            {
+                const size_t Candidate = Index - 1;
+                if (!Used[Candidate] && ToLower(Target.Children[Candidate].Kind) == ToLower(Child.Kind) &&
+                    ToLower(Target.Children[Candidate].Name) == ToLower(Child.Name))
+                {
+                    Match = Candidate;
+                    break;
+                }
+            }
+        }
+
+        if (Match != InheritedCount)
+        {
+            Used[Match] = true;
+            MergeProperties(Target.Children[Match], Child, bInstance);
+        }
+        else
+        {
+            Target.Children.push_back(Child);
+        }
+    }
+}
+
+enum class EClassResolution : uint8_t { Unresolved, Resolving, Resolved };
+
+struct FClassDefinition
+{
+    FBlock Defaults;
+    FBlock Declared;
+    FBlock Resolved;
+    EClassResolution State = EClassResolution::Unresolved;
+};
+
+using FClassLibrary = std::unordered_map<std::string, FClassDefinition>;
+
+std::expected<void, std::string> ResolveClass(FClassLibrary& Classes, const std::string& Name, const size_t Depth = 0)
+{
+    const auto Found = Classes.find(Name);
+    if (Found == Classes.end())
+    {
+        return std::unexpected(std::format("missing class '{}'", Name));
+    }
+
+    FClassDefinition& Class = Found->second;
+    if (Class.State == EClassResolution::Resolved)
+    {
+        return {};
+    }
+
+    if (Class.State == EClassResolution::Resolving)
+    {
+        return std::unexpected(std::format("class inheritance cycle at '{}'", Name));
+    }
+
+    if (Depth >= MaxClassDepth)
+    {
+        return std::unexpected(std::format("class inheritance limit at '{}'", Name));
+    }
+
+    Class.State = EClassResolution::Resolving;
+    Class.Resolved = Class.Defaults;
+    if (const std::string_view Parent = Class.Declared.Find("Derived-From"); !Parent.empty())
+    {
+        const std::string ParentName = ToLower(Parent);
+        if (std::expected<void, std::string> Result = ResolveClass(Classes, ParentName, Depth + 1); !Result)
+        {
+            return std::unexpected(std::format("class '{}': {}", Name, Result.error()));
+        }
+
+        // Derived-From copies the entire parent record, replacing even the child's library defaults.
+        Class.Resolved = Classes.at(ParentName).Resolved;
+    }
+
+    MergeProperties(Class.Resolved, Class.Declared);
+    Class.Resolved.Kind = Class.Declared.Kind;
+    Class.Resolved.Name = Class.Declared.Name;
+    Class.State = EClassResolution::Resolved;
+    return {};
+}
+
+bool CheckClassResolution()
+{
+    const FBlock Defaults{ .Fields = { { "Altitude", "4" }, { "Library-only", "1" } } };
+    FClassLibrary Classes;
+    Classes.emplace("parent", FClassDefinition{ .Declared = {
+        .Fields = { { "Altitude", "8" } },
+        .Children = {
+            { .Kind = "Energy", .Fields = { { "Initial", "10" }, { "Max", "20" } } },
+            { .Kind = "TYPE", .Name = "Explosion", .Fields = { { "Name", "First" } } },
+            { .Kind = "TYPE", .Name = "Explosion", .Fields = { { "Name", "Second" } } },
+        },
+    } });
+    Classes.emplace("child", FClassDefinition{ .Defaults = Defaults, .Declared = {
+        .Fields = { { "Derived-From", "parent" }, { "Altitude", "12" } },
+        .Children = {
+            { .Kind = "Energy", .Fields = { { "Initial", "15" } } },
+            { .Kind = "TYPE", .Name = "Explosion", .Fields = { { "Name", "Third" } } },
+        },
+    } });
+    if (!ResolveClass(Classes, "child"))
+    {
+        return false;
+    }
+
+    FBlock Result = Classes.at("child").Resolved;
+    if (Result.Find("Altitude") != "12" || !Result.Find("Library-only").empty() || Result.Children.size() != 4 ||
+        Result.Children[0].Find("Initial") != "15" || Result.Children[0].Find("Max") != "20")
+    {
+        return false;
+    }
+
+    MergeProperties(Result, { .Fields = { { "Altitude", "16" } }, .Children = {
+        { .Kind = "TYPE", .Name = "Explosion", .Fields = { { "Name", "Instance" } } },
+    } }, true);
+    if (Result.Find("Altitude") != "16" || Result.Children.size() != 4 || Result.Children.back().Find("Name") != "Instance")
+    {
+        return false;
+    }
+
+    MergeProperties(Result, { .Fields = { { "Override-Attributes", "" } } });
+    if (Result.Children.size() != 1)
+    {
+        return false;
+    }
+
+    MergeProperties(Result, { .Fields = { { "HAVE\tGun", "" }, { "RANDOM Ammo 1 2", "" } } });
+    MergeProperties(Result, { .Fields = { { "HAVE\tGun", "" } } });
+    if (std::ranges::count_if(Result.Fields, [](const auto& Field) { return Field.first == "HAVE\tGun"; }) != 2)
+    {
+        return false;
+    }
+
+    MergeProperties(Result, { .Fields = { { "Override-Objects", "" }, { "Override-Random-Objects", "" } } });
+    if (std::ranges::any_of(Result.Fields, [](const auto& Field) { return Field.first == "HAVE\tGun" || Field.first == "RANDOM Ammo 1 2"; }))
+    {
+        return false;
+    }
+
+    Classes.emplace("cycle", FClassDefinition{ .Declared = { .Fields = { { "Derived-From", "cycle" } } } });
+    Classes.emplace("missing", FClassDefinition{ .Declared = { .Fields = { { "Derived-From", "unknown" } } } });
+    return !ResolveClass(Classes, "cycle") && !ResolveClass(Classes, "missing");
 }
 
 std::expected<std::string, std::string> ReadText(FResourceArchive& Archive, const std::string& Path)
@@ -413,6 +605,24 @@ std::expected<void, std::string> Load3dg(FResourceArchive& Archive, const std::s
     return {};
 }
 
+std::optional<float> ParseFloat(const std::string_view Text)
+{
+    const std::string_view Number = Trim(Text);
+    if (Number.empty())
+    {
+        return std::nullopt;
+    }
+
+    float Value = 0.f;
+    const auto [End, Error] = std::from_chars(Number.data(), Number.data() + Number.size(), Value);
+    if (Error != std::errc{} || End != Number.data() + Number.size() || !std::isfinite(Value))
+    {
+        return std::nullopt;
+    }
+
+    return Value;
+}
+
 std::optional<std::pair<float, float>> ParsePosition(const std::string_view Text)
 {
     const size_t Comma = Text.find(',');
@@ -420,21 +630,103 @@ std::optional<std::pair<float, float>> ParsePosition(const std::string_view Text
     {
         return std::nullopt;
     }
-    float X = 0.f;
-    float Y = 0.f;
-    const std::string_view First = Trim(Text.substr(0, Comma));
-    const std::string_view Second = Trim(Text.substr(Comma + 1));
-    if (std::from_chars(First.data(), First.data() + First.size(), X).ec != std::errc{} ||
-        std::from_chars(Second.data(), Second.data() + Second.size(), Y).ec != std::errc{})
+    const std::optional<float> X = ParseFloat(Text.substr(0, Comma));
+    const std::optional<float> Y = ParseFloat(Text.substr(Comma + 1));
+    if (!X || !Y)
     {
         return std::nullopt;
     }
-    return std::pair{ X, Y };
+
+    // Object initialization at 0041a870 truncates positions to signed 32-bit coordinates.
+    constexpr double MinCoordinate = std::numeric_limits<int32_t>::min();
+    constexpr double MaxCoordinate = std::numeric_limits<int32_t>::max();
+    if (double(*X) < MinCoordinate || double(*X) > MaxCoordinate || double(*Y) < MinCoordinate || double(*Y) > MaxCoordinate)
+    {
+        return std::nullopt;
+    }
+    return std::pair{ *X, *Y };
 }
+
+// ParseObjectDirection at 00407970: eight compass points with three intermediate steps each.
+std::optional<int> ParseDirection(const std::string_view Text)
+{
+    if (Text.empty())
+    {
+        return ObjectDirectionCount;
+    }
+
+    static constexpr std::string_view Directions[] = { "sw", "s", "se", "e", "ne", "n", "nw", "w" };
+    constexpr int CompassStep = ObjectDirectionCount / std::size(Directions);
+    const std::string Lower = ToLower(Text);
+    const size_t Separator = Lower.find('_');
+    const std::string_view Compass = std::string_view(Lower).substr(0, Separator);
+    const auto Found = std::ranges::find(Directions, Compass);
+    const std::optional<int> Offset = Separator == std::string::npos ? std::optional<int>(0) : ParseInt(std::string_view(Lower).substr(Separator + 1));
+    if (Found == std::end(Directions) || !Offset || *Offset < 0 || *Offset >= CompassStep)
+    {
+        return std::nullopt;
+    }
+
+    return int(Found - std::begin(Directions)) * CompassStep + *Offset;
+}
+
+std::optional<int> ParseAnimationIndex(const std::string_view Text)
+{
+    const std::optional<int> Index = Text.empty() ? std::optional<int>(0) : ParseInt(Text);
+    return Index && *Index >= 0 && *Index <= MaxObjectAnimationIndex ? Index : std::nullopt;
+}
+
+bool CheckLevelProperties()
+{
+    return CheckClassResolution() && ParsePosition("2147483520, -2147483648") && !ParsePosition("2147483648, 0") &&
+        !ParsePosition("0, -2147483904") && !ParsePosition("nan, 0") && ParseDirection("SE_2") == 8 && !ParseDirection("SE_3") &&
+        ParseAnimationIndex("1") == 1 && !ParseAnimationIndex("-1") && !ParseAnimationIndex("2147483647");
+}
+
+// LoadObjectGaf at 00403fe0 searches the current zone before COMMON, independently of the class library's origin.
+std::expected<std::string, std::string> ResolveGafPath(const std::vector<std::string>& Names, const std::string_view Zone, const std::string_view Name)
+{
+    if (Name.empty())
+    {
+        return std::string();
+    }
+
+    for (const std::string_view Root : { Zone, std::string_view("common") })
+    {
+        const std::string Path = ToLower(std::format("{}\\data\\{}", Root, Name));
+        if (std::ranges::find(Names, Path) != Names.end())
+        {
+            return Path;
+        }
+    }
+
+    return std::unexpected(std::format("missing object GAF '{}' in {} or common", Name, Zone));
+}
+}
+
+std::string_view FLevelPropertyBlock::Find(const std::string_view Field) const
+{
+    const std::string LowerField = ToLower(Field);
+    for (const auto& [Key, Value] : std::views::reverse(Fields))
+    {
+        if (ToLower(Key) == LowerField)
+        {
+            return Value;
+        }
+    }
+
+    return {};
 }
 
 std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const std::string_view LevelPath)
 {
+    static const bool bClassesChecked = CheckLevelProperties();
+    assert(bClassesChecked);
+    if (!bClassesChecked)
+    {
+        return std::unexpected("class resolution self-check failed");
+    }
+
     const size_t Separator = LevelPath.rfind('\\');
     if (Separator == std::string_view::npos)
     {
@@ -465,30 +757,11 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
     }
     Level.Name = Objects->Find("LEVEL-NAME");
     Level.Id = Objects->Find("LEVEL-ID");
-    for (const FBlock& Block : Objects->Children)
-    {
-        if (Block.Kind != "CREATE-OBJECT")
-        {
-            continue;
-        }
-        const std::optional<std::pair<float, float>> Position = ParsePosition(Block.Find("Position"));
-        if (!Position)
-        {
-            return std::unexpected(std::format("{}.3do: object without a valid Position", Base));
-        }
-        Level.Objects.push_back({ .ClassName = std::string(Block.Find("Class-name")), .X = Position->first, .Y = Position->second });
-    }
-    if (ParseInt(Objects->Find("OBJECT-COUNT")) != int(Level.Objects.size()))
-    {
-        return std::unexpected(std::format("{}.3do: OBJECT-COUNT does not match {} objects", Base, Level.Objects.size()));
-    }
-
-    // Every instance must name a class from the COMMON or zone libraries, and every class parent must exist.
-    std::unordered_set<std::string> Classes;
-    std::vector<std::pair<std::string, std::string>> Parents;
+    FClassLibrary Classes;
+    const std::vector<std::string> ArchiveNames = Archive.GetNames();
     const std::string CommonPrefix = "common\\";
     const std::string ZonePrefix = ToLower(Zone) + "\\";
-    for (const std::string& Name : Archive.GetNames())
+    for (const std::string& Name : ArchiveNames)
     {
         if (!Name.ends_with(".3dc") || Name.find('\\') != Name.rfind('\\') || (!Name.starts_with(CommonPrefix) && !Name.starts_with(ZonePrefix)))
         {
@@ -499,36 +772,109 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
         {
             return std::unexpected(std::format("{}: {}", Name, Library.error()));
         }
+        FBlock Defaults;
         for (const FBlock& Block : Library->Children)
         {
-            if (Block.Kind != "OBJECT-CLASS")
+            if (ToLower(Block.Kind) == "default-property")
+            {
+                MergeProperties(Defaults, Block);
+                continue;
+            }
+
+            if (ToLower(Block.Kind) != "object-class")
             {
                 continue;
             }
             const std::string ClassName = ToLower(Block.Find("Name"));
-            if (!Classes.insert(ClassName).second)
+            if (ClassName.empty())
+            {
+                return std::unexpected(std::format("{}: unnamed class", Name));
+            }
+
+            if (!Classes.emplace(ClassName, FClassDefinition{ .Defaults = Defaults, .Declared = Block }).second)
             {
                 return std::unexpected(std::format("{}: duplicate class '{}'", Name, ClassName));
             }
-            if (const std::string_view Parent = Block.Find("Derived-From"); !Parent.empty())
-            {
-                Parents.emplace_back(ClassName, ToLower(Parent));
-            }
         }
     }
-    for (const auto& [Child, Parent] : Parents)
+    for (const auto& [ClassName, Class] : Classes)
     {
-        if (!Classes.contains(Parent))
+        if (std::expected<void, std::string> Result = ResolveClass(Classes, ClassName); !Result)
         {
-            return std::unexpected(std::format("class '{}' derives from missing '{}'", Child, Parent));
+            return std::unexpected(Result.error());
         }
     }
-    for (const FLevelObject& Object : Level.Objects)
+
+    for (const FBlock& Block : Objects->Children)
     {
-        if (!Classes.contains(ToLower(Object.ClassName)))
+        if (ToLower(Block.Kind) != "create-object")
         {
-            return std::unexpected(std::format("{}.3do: unknown class '{}'", Base, Object.ClassName));
+            continue;
         }
+
+        const std::string ClassName(Block.Find("Class-name"));
+        const auto Class = Classes.find(ToLower(ClassName));
+        if (Class == Classes.end())
+        {
+            return std::unexpected(std::format("{}.3do: unknown class '{}'", Base, ClassName));
+        }
+
+        FBlock Properties = Class->second.Resolved;
+        MergeProperties(Properties, Block, true);
+        const std::optional<std::pair<float, float>> Position = ParsePosition(Properties.Find("Position"));
+        const std::string_view AltitudeText = Properties.Find("Altitude");
+        const std::optional<float> Altitude = AltitudeText.empty() ? std::optional<float>(0.f) : ParseFloat(AltitudeText);
+        const auto IntegerProperty = [&](const std::string_view Field)
+        {
+            const std::string_view Value = Properties.Find(Field);
+            return Value.empty() ? std::optional<int>(0) : ParseInt(Value);
+        };
+        const std::optional<int> GafIndex = ParseAnimationIndex(Properties.Find("GAF-index"));
+        const std::optional<int> ShadowIndex = ParseAnimationIndex(Properties.Find("Shadow-index"));
+        const std::optional<int> BoundingBoxSize = IntegerProperty("Bounding-box-size");
+        const std::optional<int> InGround = IntegerProperty("In-ground");
+        const std::optional<int> ZShadow = IntegerProperty("Z-shadow");
+        const std::optional<int> Direction = ParseDirection(Properties.Find("Dir"));
+        if (!Position || !Altitude || !GafIndex || !ShadowIndex ||
+            !BoundingBoxSize || *BoundingBoxSize < 0 || !InGround || !ZShadow || !Direction)
+        {
+            return std::unexpected(std::format("{}.3do: invalid rendering properties for '{}'", Base, ClassName));
+        }
+
+        const std::expected<std::string, std::string> GafPath = ResolveGafPath(ArchiveNames, Zone, Properties.Find("GAF-name"));
+        const std::expected<std::string, std::string> ShadowGafPath = ResolveGafPath(ArchiveNames, Zone, Properties.Find("Shadow-GAF"));
+        if (!GafPath || !ShadowGafPath)
+        {
+            return std::unexpected(std::format("class '{}': {}", ClassName, !GafPath ? GafPath.error() : ShadowGafPath.error()));
+        }
+
+        const std::string_view SubTypeText = Properties.Find("Sub-type");
+        const std::string SubType = ToLower(SubTypeText.empty() ? ParentDirectory(Properties.Find("GAF-name")) : SubTypeText);
+        // AnimInitializeGraphics at 00417b30 allocates 24 consecutive directional animations for these subtypes.
+        static constexpr std::string_view DirectionalTypes[] = { "ammo", "cop", "vyruz", "walker", "burner", "jeep", "roller", "turret", "tank" };
+        Level.Objects.push_back({
+            .ClassName = ClassName,
+            .X = Position->first,
+            .Y = Position->second,
+            .Altitude = *Altitude,
+            .BoundingBoxSize = *BoundingBoxSize,
+            .Behaviour = std::string(Properties.Find("Behaviour")),
+            .GafPath = *GafPath,
+            .ShadowGafPath = *ShadowGafPath,
+            .GafIndex = *GafIndex,
+            .ShadowIndex = *ShadowIndex,
+            .Direction = *Direction,
+            .bInGround = *InGround != 0,
+            .bZShadow = *ZShadow != 0,
+            .bDirectional = std::ranges::find(DirectionalTypes, SubType) != std::end(DirectionalTypes),
+            .SubType = SubType,
+            .Properties = std::move(Properties),
+        });
+    }
+
+    if (ParseInt(Objects->Find("OBJECT-COUNT")) != int(Level.Objects.size()))
+    {
+        return std::unexpected(std::format("{}.3do: OBJECT-COUNT does not match {} objects", Base, Level.Objects.size()));
     }
 
     // LevelGet3dgPath at 0041ebe0 prefers the .3DO 3DG-FILENAME, relative to the zone folder.

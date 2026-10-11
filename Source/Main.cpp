@@ -12,10 +12,101 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace
 {
+constexpr int64_t SpriteDepthLayerCount = 4;
+constexpr int64_t SpriteDepthLayerMask = SpriteDepthLayerCount - 1;
+constexpr int64_t BodyDepthLayer = 0;
+constexpr int64_t ShadowDepthLayer = 1;
+constexpr int64_t InGroundDepthLayer = 3;
+constexpr int64_t ZShadowDepthOffset = 64;
+constexpr uint32_t AnimationBlendMask = 0xFE;
+constexpr uint32_t AdditiveDrawMode = 6;
+constexpr uint32_t InverseSourceDrawMode = 8;
+constexpr int FourWayDirectionCount = 4;
+
+// ObjectDraw at 00431ae0 gives In-ground precedence over the Z-shadow depth bias.
+constexpr int64_t SpriteDepth(const int64_t GroundY, const bool bShadow, const bool bInGround, const bool bZShadow)
+{
+    const bool bShiftDepth = !bShadow && !bInGround && bZShadow;
+    const int64_t DepthY = bShiftDepth ? std::max(int64_t{ 0 }, GroundY - ZShadowDepthOffset) : GroundY;
+    const int64_t Layer = bShadow || bShiftDepth ? ShadowDepthLayer : bInGround ? InGroundDepthLayer : BodyDepthLayer;
+    return DepthY * SpriteDepthLayerCount + Layer;
+}
+static_assert(SpriteDepth(100, false, false, false) == 400);
+static_assert(SpriteDepth(100, true, true, true) == 401);
+static_assert(SpriteDepth(100, false, true, true) == 403);
+static_assert(SpriteDepth(100, false, false, true) == 145);
+static_assert(SpriteDepth(32, false, false, true) == 1);
+
+// LevelCompositeSprites at 00420070 flushes all layer-3 ground decals before shadows and bodies.
+constexpr bool SpriteDrawsBefore(const int64_t LeftDepth, const int64_t RightDepth)
+{
+    const bool bLeftGround = (LeftDepth & SpriteDepthLayerMask) == InGroundDepthLayer;
+    const bool bRightGround = (RightDepth & SpriteDepthLayerMask) == InGroundDepthLayer;
+    return bLeftGround != bRightGround ? bLeftGround : LeftDepth < RightDepth;
+}
+static_assert(SpriteDrawsBefore(SpriteDepth(2915, false, true, true), SpriteDepth(2903, true, false, false)));
+static_assert(!SpriteDrawsBefore(SpriteDepth(2903, true, false, false), SpriteDepth(2915, false, true, true)));
+static_assert(SpriteDrawsBefore(SpriteDepth(2903, false, false, false), SpriteDepth(2903, true, false, false)));
+
+int ObjectPoseCount(const FLevelObject& Object, const bool bShadow)
+{
+    if (Object.SubType == "spider" || (!bShadow && Object.SubType == "heli"))
+    {
+        return FourWayDirectionCount;
+    }
+
+    return !bShadow && Object.bDirectional ? ObjectDirectionCount : 1;
+}
+
+size_t ObjectAnimationIndex(const FLevelObject& Object, const bool bShadow)
+{
+    const int PoseCount = ObjectPoseCount(Object, bShadow);
+    const int Direction = Object.Direction < ObjectDirectionCount ? Object.Direction : 0;
+    // HeliSelectBodyPose at 004334e0 uses movement speed rather than facing; its initial pose is zero.
+    const int Offset = PoseCount > 1 && Object.SubType != "heli" ? Direction / (ObjectDirectionCount / PoseCount) : 0;
+    return size_t((bShadow ? Object.ShadowIndex : Object.GafIndex) - 1 + Offset);
+}
+
+bool IsSupportedDrawMode(const uint32_t Flags)
+{
+    const uint32_t Mode = Flags & AnimationBlendMask;
+    return Mode == 0 || Mode == AdditiveDrawMode || Mode == InverseSourceDrawMode;
+}
+
+struct FObjectGaf
+{
+    std::vector<Gaf::FFrame> Bitmaps;
+    std::vector<Gaf::FAnimation> Animations;
+};
+
+std::optional<FObjectGaf> LoadObjectGaf(FResourceArchive& Archive, const std::string_view Path)
+{
+    const std::optional<std::vector<uint8_t>> File = Archive.Read(Path);
+    if (!File)
+    {
+        return std::nullopt;
+    }
+
+    std::optional<std::vector<Gaf::FFrame>> Bitmaps = Gaf::LoadFrames(*File);
+    if (!Bitmaps)
+    {
+        return std::nullopt;
+    }
+
+    std::optional<std::vector<Gaf::FAnimation>> Animations = Gaf::LoadAnimations(*File, Bitmaps->size());
+    if (!Animations)
+    {
+        return std::nullopt;
+    }
+
+    return FObjectGaf{ .Bitmaps = std::move(*Bitmaps), .Animations = std::move(*Animations) };
+}
+
 // Decodes every .gaf in the archive; any failure means the loader or format notes are wrong.
 int VerifyGafs(FResourceArchive& Archive)
 {
@@ -28,16 +119,15 @@ int VerifyGafs(FResourceArchive& Archive)
         {
             continue;
         }
-        const std::optional<std::vector<uint8_t>> File = Archive.Read(Name);
-        const std::optional<std::vector<Gaf::FFrame>> Frames = File ? Gaf::LoadFrames(*File) : std::nullopt;
-        if (!Frames)
+        const std::optional<FObjectGaf> Gaf = LoadObjectGaf(Archive, Name);
+        if (!Gaf)
         {
             std::printf("FAIL %s\n", Name.c_str());
             ++Failed;
             continue;
         }
         ++Decoded;
-        FrameCount += Frames->size();
+        FrameCount += Gaf->Bitmaps.size();
     }
     std::printf("GAF: %d decoded (%zu frames), %d failed\n", Decoded, FrameCount, Failed);
     return Failed == 0 ? 0 : 1;
@@ -48,6 +138,7 @@ int VerifyLevels(FResourceArchive& Archive)
 {
     int Loaded = 0;
     int Failed = 0;
+    std::unordered_map<std::string, std::vector<Gaf::FAnimation>> CheckedGafs;
     for (const std::string& Name : Archive.GetNames())
     {
         if (!Name.ends_with(".3do"))
@@ -63,6 +154,47 @@ int VerifyLevels(FResourceArchive& Archive)
             continue;
         }
         bool bGafsOk = true;
+        for (const FLevelObject& Object : Level->Objects)
+        {
+            for (const std::string* const Path : { &Object.GafPath, &Object.ShadowGafPath })
+            {
+                if (!Path->empty() && !CheckedGafs.contains(*Path))
+                {
+                    std::optional<FObjectGaf> Gaf = LoadObjectGaf(Archive, *Path);
+                    if (!Gaf)
+                    {
+                        std::printf("FAIL %s: object GAF %s\n", LevelPath.c_str(), Path->c_str());
+                        bGafsOk = false;
+                    }
+                    else
+                    {
+                        CheckedGafs.emplace(*Path, std::move(Gaf->Animations));
+                    }
+                }
+
+                const int BaseIndex = Path == &Object.GafPath ? Object.GafIndex : Object.ShadowIndex;
+                const bool bShadow = Path == &Object.ShadowGafPath;
+                const int PoseCount = ObjectPoseCount(Object, bShadow);
+                if (BaseIndex > 0 && CheckedGafs.contains(*Path))
+                {
+                    const auto& Animations = CheckedGafs.at(*Path);
+                    if (size_t(BaseIndex - 1 + PoseCount) > Animations.size())
+                    {
+                        std::printf("FAIL %s: animation range for %s in %s\n", LevelPath.c_str(), Object.ClassName.c_str(), Path->c_str());
+                        bGafsOk = false;
+                        continue;
+                    }
+
+                    const auto& Frames = Animations[ObjectAnimationIndex(Object, bShadow)].Frames;
+                    if (!Frames.empty() && Frames.front().BitmapIndex != 0 && !IsSupportedDrawMode(Frames.front().DrawFlags))
+                    {
+                        std::printf("FAIL %s: sprite blend for %s in %s\n", LevelPath.c_str(), Object.ClassName.c_str(), Path->c_str());
+                        bGafsOk = false;
+                    }
+                }
+            }
+        }
+
         for (const std::string& GafPath : Level->AnimGafs)
         {
             const std::optional<std::vector<uint8_t>> File = Archive.Read(GafPath);
@@ -86,6 +218,92 @@ int VerifyLevels(FResourceArchive& Archive)
     }
     std::printf("Levels: %d loaded, %d failed\n", Loaded, Failed);
     return Failed == 0 && Loaded > 0 ? 0 : 1;
+}
+
+struct FObjectSprite
+{
+    size_t SheetIndex = 0;
+    Gaf::FAnimationFrame Frame;
+    float X = 0.f;
+    float Y = 0.f;
+    int64_t Depth = 0;
+    ESpriteBlend Blend = ESpriteBlend::Opaque;
+};
+
+struct FObjectSprites
+{
+    std::vector<FSpriteSheet> Sheets;
+    std::vector<FObjectSprite> Sprites;
+};
+
+// shortcut: initial poses only, use the behaviour update for animation state changes and attachments.
+std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive& Archive, FRenderer& Renderer, const FLevel& Level)
+{
+    FObjectSprites Result;
+    std::unordered_map<std::string, size_t> SheetIndices;
+    std::vector<std::vector<Gaf::FAnimation>> Animations;
+    for (const FLevelObject& Object : Level.Objects)
+    {
+        for (const bool bShadow : { true, false })
+        {
+            const std::string& Path = bShadow ? Object.ShadowGafPath : Object.GafPath;
+            const int BaseIndex = bShadow ? Object.ShadowIndex : Object.GafIndex;
+            if (Path.empty() || BaseIndex == 0)
+            {
+                continue;
+            }
+
+            auto [Sheet, bInserted] = SheetIndices.try_emplace(Path, Result.Sheets.size());
+            if (bInserted)
+            {
+                std::optional<FObjectGaf> Gaf = LoadObjectGaf(Archive, Path);
+                if (!Gaf)
+                {
+                    return std::unexpected("Cannot decode object GAF " + Path);
+                }
+
+                Result.Sheets.push_back(Renderer.CreateSpriteSheet(Gaf->Bitmaps));
+                Animations.push_back(std::move(Gaf->Animations));
+            }
+
+            const auto& GafAnimations = Animations[Sheet->second];
+            const size_t Index = ObjectAnimationIndex(Object, bShadow);
+            if (Index >= GafAnimations.size())
+            {
+                if (GafAnimations.empty() && Result.Sheets[Sheet->second].Frames.empty())
+                {
+                    continue;
+                }
+
+                return std::unexpected("Invalid animation index for " + Object.ClassName + " in " + Path);
+            }
+
+            const Gaf::FAnimation& Animation = GafAnimations[Index];
+            if (Animation.Frames.empty() || Animation.Frames.front().BitmapIndex == 0)
+            {
+                continue;
+            }
+
+            const uint32_t DrawMode = Animation.Frames.front().DrawFlags & AnimationBlendMask;
+            if (!IsSupportedDrawMode(Animation.Frames.front().DrawFlags))
+            {
+                return std::unexpected("Unsupported sprite blend for " + Object.ClassName + " in " + Path);
+            }
+
+            const int64_t GroundY = int64_t(Object.Y);
+            Result.Sprites.push_back({
+                .SheetIndex = Sheet->second,
+                .Frame = Animation.Frames.front(),
+                .X = Object.X,
+                .Y = Object.Y - (bShadow ? 0.f : Object.Altitude),
+                .Depth = SpriteDepth(GroundY, bShadow, Object.bInGround, Object.bZShadow),
+                .Blend = DrawMode == AdditiveDrawMode ? ESpriteBlend::Additive : DrawMode == InverseSourceDrawMode ? ESpriteBlend::InverseSourceColor : ESpriteBlend::Opaque,
+            });
+        }
+    }
+
+    std::stable_sort(Result.Sprites.begin(), Result.Sprites.end(), [](const FObjectSprite& A, const FObjectSprite& B) { return SpriteDrawsBefore(A.Depth, B.Depth); });
+    return Result;
 }
 }
 
@@ -163,13 +381,23 @@ int main(const int ArgCount, char** const Args)
 
     // Static level view until the game loop is ported: the MAP_ layers drawn bottom-up, scrolled with the arrow keys.
     const FSpriteSheet Blocks = Renderer.CreateSpriteSheet(Level->Blocks);
+    const std::expected<FObjectSprites, std::string> Objects = CreateObjectSprites(Archive, Renderer, *Level);
+    if (!Objects)
+    {
+        std::fprintf(stderr, "%s\n", Objects.error().c_str());
+        Renderer.Shutdown();
+        glfwDestroyWindow(Window);
+        glfwTerminate();
+        return 1;
+    }
+
     constexpr double ScrollSpeed = 600.0;
     const float MapWidth = float(Level->GridWidth * BlockWidth);
     const float MapHeight = float(Level->GridHeight * BlockHeight);
     const auto Player = std::ranges::find_if(Level->Objects, [](const FLevelObject& Object) { return Object.ClassName == "Vyruz"; });
     double CameraX = Player != Level->Objects.end() ? Player->X - ScreenWidth * 0.5 : 0.0;
     double CameraY = Player != Level->Objects.end() ? Player->Y - ScreenHeight * 0.5 : 0.0;
-    std::printf("%s: %s\n", LevelPath.c_str(), Level->Name.c_str());
+    std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
     std::fflush(stdout);
 
     double LastTime = glfwGetTime();
@@ -210,6 +438,13 @@ int main(const int ArgCount, char** const Args)
                     }
                 }
             }
+        }
+
+        for (const FObjectSprite& Sprite : Objects->Sprites)
+        {
+            const Gaf::FAnimationFrame& Frame = Sprite.Frame;
+            Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + Frame.OffsetX - OriginX,
+                Sprite.Y + Frame.OffsetY - OriginY, Frame.bMirrorX, Frame.bMirrorY, Sprite.Blend);
         }
 
         Renderer.EndFrame();

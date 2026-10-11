@@ -118,6 +118,16 @@ tightly cropped directional frames to wobble when centered independently.
 `vyruz_gaf_extract.py --atlas ... --canvas 96x96` restores those crops to a
 common frame before atlas packing.
 
+`ANM_` slot 0 contains 32-byte animation records: frame count, flags, loop start, and five reserved words. Slot 2 concatenates their 28-byte visual frame records in animation order: 1-based GOB index (zero is invisible), signed X/Y hotspot offsets, draw flags, event flags, event value, and duration. `UpdateAnimation` (`0045e7e0`) negates the hotspot X for draw flag `0x100` and Y for `0x200`.
+
+`NAM_` slot 0 contains 8-byte groups (name count, target tag). Slot 2 contains 12-byte name records (stored string size, 1-based target index, reserved), and slot 3 contains NUL-terminated strings padded to their stored size. Name order is not animation order; resolve each name through its target index.
+
+`DrawAnimationFrame` (`0045eab0`) adds the animation hotspot to the supplied screen position. `DrawGobFrame` (`00466f40`) then adds the GOB crop, using `-(trim_x + width)` or `-(trim_y + height)` for mirrored axes. Object bodies are raised by altitude while shadows stay at ground level. `RadixSortDrawList` (`0047f780`) and `FlushSortedSprites` (`00466c80`) draw ascending depth keys with stable ordering for equal keys. Normal bodies use `ground_y * 4`, shadows use `ground_y * 4 | 1`, and `In-ground` bodies use layer 3. `Z-shadow` shifts the body's depth Y back by 64 pixels, clamped to zero, and uses layer 1 without moving the sprite. `In-ground` takes precedence over that depth shift.
+
+The object draw passes the full animation draw flags to the bitmap renderer. `DrawTexturedPolygon` (`00496280`) implements modes 6/7 as additive `ONE + ONE` and modes 8/9 as `ZERO + INVSRCCOLOR`: shadows darken the existing scene with `destination * (1 - source_rgb)`. Bit 0 enables color keying. Shadow masks must retain their RGB values rather than being drawn as opaque grayscale sprites.
+
+Depth sorting is only the queue order. `LevelCompositeSprites` (`00420070`) first calls `LevelFlushSpriteLayer` (`0041fec0`) for layer 3 with a threshold beyond the visible region, drawing all `In-ground` decals before the remaining sprite layers. It then interleaves terrain with layers 1, 2, and 0. A flat sort across all four layers incorrectly draws floor decals over nearby shadows, producing bright speckles.
+
 Some animation GAFs also carry an `SMP_` entry containing uncompressed sound
 effects. Each sample is a `SND_` record with this 36-byte header followed by
 interleaved PCM (unsigned 8-bit or signed little-endian 16-bit):
@@ -228,13 +238,11 @@ or `ADD Weapon` blocks. Bare directives include `HAVE`, `RANDOM`,
 `DIFFICULTY.3DC` is the one library that also uses repeated top-level
 assignments.
 
-`DEFAULT-PROPERTY` supplies per-library class defaults. `OBJECT-CLASS` fields
-include `Name`, `GAF-name`, `Behaviour`, `Bounding-Box-Size`, and optional
-`Derived-From`. The compiler merges defaults, resolved parent data, child data,
-and finally `.3DO` instance overrides. Singleton nested blocks merge by
-`(kind,name)`; repeated blocks remain ordered repetitions. Missing parents,
-cycles, duplicate class definitions, and missing instance classes are emitted
-as diagnostics instead of being silently discarded.
+`DEFAULT-PROPERTY` supplies per-library class defaults. `OBJECT-CLASS` fields include `Name`, `GAF-name`, `Behaviour`, scalar `Bounding-Box-Size`, and optional `Derived-From`. `LoadObjectClassLibrary` (`0040a010`) starts with the library defaults, then replaces the entire class record with the resolved parent's record when `Derived-From` is present, then applies the class fields. Unrelated child-library defaults therefore do not survive inheritance. `.3DO` instance overrides are applied last. Class `TYPE` and `ADD` blocks add repeated attributes; instance `TYPE` overrides select the first unused matching inherited attribute. `Override-Attributes` clears inherited attributes. Missing parents, cycles, duplicate class definitions, and missing instance classes are errors.
+
+`LoadObjectGaf` (`00403fe0`) resolves relative `GAF-name` and `Shadow-GAF` under the current zone's `Data` directory first, then `Common\Data`, regardless of the class library's directory. `GAF-index` and `Shadow-index` are 1-based animation indices; zero disables that animation. Directional behaviours select from consecutive animation indices. `.3DO` `Dir` uses 24 directions: SW=0, S=3, SE=6, E=9, NE=12, N=15, NW=18, W=21, with an optional `_0`/`_1`/`_2` suffix added to the base direction (`ParseObjectDirection`, `00407970`).
+
+`AnimInitializeGraphics` (`00417b30`) gives the player and other 24-direction subtypes consecutive body animations, with a single shadow animation. Heli uses four body animations and one shadow; `HeliSelectBodyPose` (`004334e0`) selects its body pose from movement speed and accumulated state, starting at pose zero. Spider uses four body and four shadow animations, selected by `direction / 6`. Unspecified startup direction is zero (SW).
 
 Known files per zone: `DECOR.3DC`, `ITEM.3DC`, `SPECIFIC.3DC`. For T1U1 the
 compiler loads all eight `COMMON` libraries plus those three `UNDERGROUND`

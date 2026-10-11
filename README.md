@@ -60,9 +60,9 @@ The game needs the original `vz-data.rsc`, which is not included. Pass the direc
 ./Binaries/linux/Development/Vyruz <path to vz-data.rsc>
 ```
 
-`--verify-gaf` decodes every `.gaf` in `vz-data.rsc` and exits non-zero on any failure. `--verify-levels` loads all 25 levels (`.3DX`, `.3DI`, `.3DO` against the `.3DC` class libraries, `.3DG`) plus their animated map GAFs and exits non-zero on any failure.
+`--verify-gaf` decodes every `.gaf` in `vz-data.rsc`, including animation frames, hotspots, mirror flags and names, and exits non-zero on any failure. `--verify-levels` loads all 25 levels (`.3DX`, `.3DI`, `.3DO` with resolved `.3DC` class properties, `.3DG`), checks their object and shadow GAFs and animation indices, and decodes their animated map GAFs.
 
-Without a verify flag the window shows a level's static map, scrolled with the arrow keys and centered on the player start. `--level <zone>\<name>` picks the level (default `underground\t1u1`).
+Without a verify flag the window shows a level's static map and placed objects, scrolled with the arrow keys and centered on the player start. Object bodies and grounded shadows use their initial animation pose, original hotspots, mirrored crops, altitude and depth ordering. `--level <zone>\<name>` picks the level (default `underground\t1u1`). This is a static preview: behaviour updates, animated map objects, weapon attachments and object occlusion by the baked map are not implemented yet.
 
 ## Layout
 
