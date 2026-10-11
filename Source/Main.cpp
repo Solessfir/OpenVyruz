@@ -1,3 +1,4 @@
+#include "Pg/Gaf.h"
 #include "Pg/ResourceArchive.h"
 
 #include <GLFW/glfw3.h>
@@ -424,10 +425,50 @@ void Destroy(FVulkan& Vk)
 }
 }
 
+// Decodes every .gaf in the archive; any failure means the loader or format notes are wrong.
+int VerifyGafs(FResourceArchive& Archive)
+{
+    int Decoded = 0;
+    int Failed = 0;
+    size_t FrameCount = 0;
+    for (const std::string& Name : Archive.GetNames())
+    {
+        if (!Name.ends_with(".gaf"))
+        {
+            continue;
+        }
+        const std::optional<std::vector<uint8_t>> File = Archive.Read(Name);
+        const std::optional<std::vector<Gaf::FFrame>> Frames = File ? Gaf::LoadFrames(*File) : std::nullopt;
+        if (!Frames)
+        {
+            std::printf("FAIL %s\n", Name.c_str());
+            ++Failed;
+            continue;
+        }
+        ++Decoded;
+        FrameCount += Frames->size();
+    }
+    std::printf("GAF: %d decoded (%zu frames), %d failed\n", Decoded, FrameCount, Failed);
+    return Failed == 0 ? 0 : 1;
+}
+
 int main(const int ArgCount, char** const Args)
 {
-    // The original data lives next to the original exe; pass another directory as the first argument.
-    const std::filesystem::path DataRoot = ArgCount > 1 ? Args[1] : "Game/Vyruz";
+    // The original data lives next to the original exe; pass another directory as an argument.
+    std::filesystem::path DataRoot = "Game/Vyruz";
+    bool bVerifyGafs = false;
+    for (int Index = 1; Index < ArgCount; ++Index)
+    {
+        if (std::strcmp(Args[Index], "--verify-gaf") == 0)
+        {
+            bVerifyGafs = true;
+        }
+        else
+        {
+            DataRoot = Args[Index];
+        }
+    }
+
     FResourceArchive Archive;
     if (!Archive.Open(DataRoot / "vz-data.rsc"))
     {
@@ -442,6 +483,10 @@ int main(const int ArgCount, char** const Args)
     }
     std::printf("vz-data.rsc: %zu entries\n", Archive.GetEntryCount());
     std::fflush(stdout);
+    if (bVerifyGafs)
+    {
+        return VerifyGafs(Archive);
+    }
 
     if (!glfwInit())
     {

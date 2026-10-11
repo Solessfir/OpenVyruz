@@ -21,6 +21,18 @@ public:
 
     size_t GetEntryCount() const { return Entries.size(); }
 
+    // Normalized (lowercase, backslash) names of every entry.
+    std::vector<std::string> GetNames() const
+    {
+        std::vector<std::string> Names;
+        Names.reserve(Entries.size());
+        for (const auto& [Name, Entry] : Entries)
+        {
+            Names.push_back(Name);
+        }
+        return Names;
+    }
+
 private:
     struct FEntry
     {
