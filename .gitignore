@@ -1,3 +1,5 @@
+.idea/
+.vscode/
 Binaries/
 Intermediate/
 External/Premake/
