@@ -1,0 +1,102 @@
+#pragma once
+
+#include "Pg/Gaf.h"
+
+#include <GLFW/glfw3.h>
+
+#include <cstdint>
+#include <vector>
+
+// The original game renders at 640x480 (VZCONF.TXT video-driver-device-mode); the window letterboxes that space.
+inline constexpr float ScreenWidth = 640.0f;
+inline constexpr float ScreenHeight = 480.0f;
+
+struct FSpriteFrame
+{
+    float U0 = 0.0f;
+    float V0 = 0.0f;
+    float U1 = 0.0f;
+    float V1 = 0.0f;
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+    int32_t TrimX = 0;
+    int32_t TrimY = 0;
+};
+
+// All frames of one GAF packed into a single texture.
+struct FSpriteSheet
+{
+    uint32_t Texture = UINT32_MAX;
+    std::vector<FSpriteFrame> Frames;
+};
+
+class FRenderer
+{
+public:
+    bool Init(GLFWwindow* Window);
+    void Shutdown();
+
+    FSpriteSheet CreateSpriteSheet(const std::vector<Gaf::FFrame>& Frames);
+
+    // Returns false when nothing can be drawn this frame (minimized or swapchain being rebuilt).
+    bool BeginFrame();
+    // X/Y is the top-left of the untrimmed sprite cell in screen pixels.
+    void DrawSprite(const FSpriteSheet& Sheet, size_t FrameIndex, float X, float Y);
+    void EndFrame();
+
+private:
+    static constexpr uint32_t FramesInFlight = 2;
+
+    struct FFrame
+    {
+        VkCommandBuffer CommandBuffer = VK_NULL_HANDLE;
+        VkSemaphore ImageAcquired = VK_NULL_HANDLE;
+        VkFence InFlight = VK_NULL_HANDLE;
+    };
+
+    struct FTexture
+    {
+        VkImage Image = VK_NULL_HANDLE;
+        VkDeviceMemory Memory = VK_NULL_HANDLE;
+        VkImageView View = VK_NULL_HANDLE;
+        VkDescriptorSet DescriptorSet = VK_NULL_HANDLE;
+    };
+
+    void CreateInstance();
+    void CreateDevice();
+    void CreatePipeline();
+    bool CreateSwapchain();
+    void DestroySwapchainResources();
+    uint32_t FindMemoryType(uint32_t TypeBits, VkMemoryPropertyFlags Properties) const;
+    uint32_t CreateTexture(uint32_t Width, uint32_t Height, const std::vector<uint32_t>& Rgba);
+
+    GLFWwindow* Window = nullptr;
+    VkInstance Instance = VK_NULL_HANDLE;
+    VkSurfaceKHR Surface = VK_NULL_HANDLE;
+    VkPhysicalDevice PhysicalDevice = VK_NULL_HANDLE;
+    VkDevice Device = VK_NULL_HANDLE;
+    uint32_t QueueFamily = 0;
+    VkQueue Queue = VK_NULL_HANDLE;
+    VkCommandPool CommandPool = VK_NULL_HANDLE;
+
+    VkSwapchainKHR Swapchain = VK_NULL_HANDLE;
+    VkFormat SwapchainFormat = VK_FORMAT_UNDEFINED;
+    VkExtent2D SwapchainExtent{};
+    std::vector<VkImage> SwapchainImages;
+    std::vector<VkImageView> SwapchainViews;
+    // One per swapchain image, so a semaphore is never reused while the presentation engine still holds it.
+    std::vector<VkSemaphore> RenderFinished;
+    bool bSwapchainValid = false;
+
+    VkSampler Sampler = VK_NULL_HANDLE;
+    VkDescriptorSetLayout DescriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
+    VkPipelineLayout PipelineLayout = VK_NULL_HANDLE;
+    VkPipeline SpritePipeline = VK_NULL_HANDLE;
+    VkFormat PipelineFormat = VK_FORMAT_UNDEFINED;
+    std::vector<FTexture> Textures;
+
+    FFrame Frames[FramesInFlight];
+    uint32_t FrameIndex = 0;
+    uint32_t ImageIndex = 0;
+};

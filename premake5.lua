@@ -2,6 +2,8 @@ local Root = path.getabsolute(_MAIN_SCRIPT_DIR)
 local GlfwRoot = path.join(Root, "External/glfw")
 local GeneratedRoot = path.join(Root, "Intermediate/Generated/GLFW")
 local VulkanSdk = os.getenv("VULKAN_SDK")
+local ShaderOutputRoot = path.join(Root, "Intermediate/Generated/Shaders")
+local Slangc = (os.ishost("windows") and VulkanSdk) and path.join(VulkanSdk, "Bin/slangc.exe") or "slangc"
 
 workspace "Vyruz"
     architecture "x86_64"
@@ -97,10 +99,21 @@ project "Vyruz"
     location(path.join(Root, "Intermediate/ProjectFiles"))
     debugdir(Root)
 
-    files { "Source/**.h", "Source/**.cpp" }
-    includedirs { "Source", path.join(GlfwRoot, "include") }
+    files { "Source/**.h", "Source/**.cpp", "Source/Shaders/*.slang" }
+    includedirs { "Source", path.join(GlfwRoot, "include"), ShaderOutputRoot }
     defines { "GLFW_INCLUDE_VULKAN" }
     links { "GLFW" }
+
+    -- Each .slang file compiles to <Name>.vert.h / <Name>.frag.h SPIR-V word arrays that Render/Renderer.cpp includes,
+    -- so no shader files ship next to the exe.
+    filter "files:Source/Shaders/*.slang"
+        buildmessage "Compiling shader %{file.name}"
+        buildcommands {
+            "{MKDIR} \"" .. ShaderOutputRoot .. "\"",
+            string.format("\"%s\" \"%%{file.abspath}\" -target spirv -profile spirv_1_6 -O2 -entry vertexMain -stage vertex -source-embed-style u32 -source-embed-name %%{file.basename}Vert -o \"%s/%%{file.basename}.vert.h\"", Slangc, ShaderOutputRoot),
+            string.format("\"%s\" \"%%{file.abspath}\" -target spirv -profile spirv_1_6 -O2 -entry fragmentMain -stage fragment -source-embed-style u32 -source-embed-name %%{file.basename}Frag -o \"%s/%%{file.basename}.frag.h\"", Slangc, ShaderOutputRoot)
+        }
+        buildoutputs { path.join(ShaderOutputRoot, "%{file.basename}.vert.h"), path.join(ShaderOutputRoot, "%{file.basename}.frag.h") }
 
     filter "system:windows"
         entrypoint "mainCRTStartup"
