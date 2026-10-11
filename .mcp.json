@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ghydra": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "bridge_mcp_hydra.py"]
+    }
+  }
+}
