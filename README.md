@@ -18,16 +18,20 @@ On Linux use `./GenerateProjectFiles.sh gmake` (needs `wayland-scanner`, `slangc
 
 The exe needs the original `vz-data.rsc`. Pass the directory containing it as an argument; the default is `../Vyruz/Game/Vyruz`, the original-data repository checked out next to this one.
 
-`--verify-gaf` decodes every `.gaf` in `vz-data.rsc` and exits non-zero on any failure.
+`--verify-gaf` decodes every `.gaf` in `vz-data.rsc` and exits non-zero on any failure. `--verify-levels` loads all 25 levels (`.3DX`, `.3DI`, `.3DO` against the `.3DC` class libraries, `.3DG`) plus their animated map GAFs and exits non-zero on any failure.
+
+Without a verify flag the window shows a level's static map, scrolled with the arrow keys and centered on the player start. `--level <zone>\<name>` picks the level (default `underground\t1u1`).
 
 ## Layout
 
 | Path | Contents |
 |---|---|
 | `Source\Pg\` | Reimplementation of the original `pg\lib\` engine library (archive, GAF, LZSS) |
+| `Source\Game\` | Reimplementation of the original `vzed\` game code (level loader) |
 | `Source\Render\` | Vulkan renderer replacing the original Direct3D 6 path |
 | `Source\Shaders\` | Slang shaders |
 | `Docs\DataFormats.md` | Reverse-engineered data formats |
+| `Docs\MainLoop.md` | Startup, level loading and frame loop of the original exe |
 | `External\` | Third-party submodules (GLFW) |
 
 ## Original Module Map

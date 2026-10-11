@@ -63,6 +63,6 @@ Comments explain why: original-game quirks, format constraints, engine behavior,
 
 ## Current state
 
-Implemented: Premake + GLFW + Vulkan window with letterboxed 640x480 space; `.rsc` archive reader (`Source/Pg/ResourceArchive`); GAF/LZSS sprite loader (`Source/Pg/Gaf`, all 178 GAFs decode); sprite-sheet packing and a textured-quad sprite pipeline (`Source/Render/Renderer`); a temporary sprite viewer in `Main.cpp`.
+Implemented: Premake + GLFW + Vulkan window with letterboxed 640x480 space; `.rsc` archive reader (`Source/Pg/ResourceArchive`); GAF/LZSS sprite loader (`Source/Pg/Gaf`, all 178 GAFs decode); sprite-sheet packing and a textured-quad sprite pipeline (`Source/Render/Renderer`); level loader for `.3DX/.3DI/.3DO/.3DC/.3DG` (`Source/Game/Level`, all 25 levels pass `--verify-levels`); a static scrollable level view in `Main.cpp`. The original startup and frame loop are documented in [Docs/MainLoop.md](Docs/MainLoop.md).
 
-Next: trace `VzRun` (`00446e20`) and the main loop (`vzed\loop.cpp`, tick rate, update/draw order), then port the level loader so the window shows a real level.
+Next: spawn the `.3DO` objects with their `.3DC` classes (property merge order per DataFormats) and draw their GAFs, then port the frame loop's variable millisecond step and the game update (`FUN_004406e0`).

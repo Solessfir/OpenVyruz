@@ -15,10 +15,7 @@ constexpr uint32_t FrameRecordSize = 44;
 constexpr uint32_t BitmapHeaderSize = 0x44;
 constexpr uint32_t MaxFrameDimension = 4096;
 
-constexpr uint32_t Tag(const char (&Text)[5])
-{
-    return uint32_t(uint8_t(Text[0])) | uint32_t(uint8_t(Text[1])) << 8 | uint32_t(uint8_t(Text[2])) << 16 | uint32_t(uint8_t(Text[3])) << 24;
-}
+using Gaf::Tag;
 
 template <typename T>
 T ReadLE(const std::span<const uint8_t> Data, const size_t Offset)
@@ -87,22 +84,22 @@ std::optional<FRecord> FindDataEntry(const std::span<const uint8_t> File, const 
     return FRecord{};
 }
 
-// GOB_ payload: 4 slot descriptors, then each non-empty slot's stream on a 4-byte boundary (GAF_TYPE_PARSER at 0047bf..).
-std::optional<std::array<std::vector<uint8_t>, SlotCount>> ReadSlots(const std::span<const uint8_t> Gob)
+// Entry payload (GOB_, BLK_, MAP_): 4 slot descriptors, then each non-empty slot's stream on a 4-byte boundary (GafParseSlots at 0047bf00).
+std::optional<Gaf::FSlots> ReadSlots(const std::span<const uint8_t> Entry)
 {
-    if (Gob.size() < SlotCount * SlotDescriptorSize)
+    if (Entry.size() < SlotCount * SlotDescriptorSize)
     {
         return std::nullopt;
     }
 
-    std::array<std::vector<uint8_t>, SlotCount> Slots;
+    Gaf::FSlots Slots;
     size_t Cursor = SlotCount * SlotDescriptorSize;
     for (uint32_t Slot = 0; Slot < SlotCount; ++Slot)
     {
         const size_t Descriptor = Slot * SlotDescriptorSize;
-        const uint32_t Method = ReadLE<uint32_t>(Gob, Descriptor + 0x00);
-        const uint32_t StoredSize = ReadLE<uint32_t>(Gob, Descriptor + 0x0C);
-        const uint32_t DecodedSize = ReadLE<uint32_t>(Gob, Descriptor + 0x10);
+        const uint32_t Method = ReadLE<uint32_t>(Entry, Descriptor + 0x00);
+        const uint32_t StoredSize = ReadLE<uint32_t>(Entry, Descriptor + 0x0C);
+        const uint32_t DecodedSize = ReadLE<uint32_t>(Entry, Descriptor + 0x10);
         if (DecodedSize == 0)
         {
             continue;
@@ -110,11 +107,11 @@ std::optional<std::array<std::vector<uint8_t>, SlotCount>> ReadSlots(const std::
 
         Cursor = (Cursor + 3) & ~size_t{ 3 };
         const size_t InputSize = Method == MethodStored ? DecodedSize : StoredSize;
-        if (InputSize > Gob.size() || Cursor > Gob.size() - InputSize)
+        if (InputSize > Entry.size() || Cursor > Entry.size() - InputSize)
         {
             return std::nullopt;
         }
-        const std::span<const uint8_t> Input = Gob.subspan(Cursor, InputSize);
+        const std::span<const uint8_t> Input = Entry.subspan(Cursor, InputSize);
         Cursor += InputSize;
 
         if (Method == MethodStored)
@@ -205,25 +202,22 @@ std::optional<std::vector<uint8_t>> Gaf::LzssDecode(const std::span<const uint8_
     return Output;
 }
 
-std::optional<std::vector<Gaf::FFrame>> Gaf::LoadFrames(const std::span<const uint8_t> File)
+std::optional<Gaf::FSlots> Gaf::ReadEntrySlots(const std::span<const uint8_t> File, const uint32_t EntryTag)
 {
-    const std::optional<FRecord> Gob = FindDataEntry(File, Tag("GOB_"));
-    if (!Gob)
+    const std::optional<FRecord> Entry = FindDataEntry(File, EntryTag);
+    if (!Entry)
     {
         return std::nullopt;
     }
-    if (Gob->Tag == 0)
+    if (Entry->Tag == 0)
     {
-        return std::vector<FFrame>{};
+        return FSlots{};
     }
-    const std::optional<std::array<std::vector<uint8_t>, SlotCount>> Slots = ReadSlots(Gob->Payload);
-    if (!Slots)
-    {
-        return std::nullopt;
-    }
-    const std::span<const uint8_t> Metadata = (*Slots)[0];
-    const std::span<const uint8_t> Bitmaps = (*Slots)[1];
+    return ReadSlots(Entry->Payload);
+}
 
+std::optional<std::vector<Gaf::FFrame>> Gaf::ParseBitmaps(const std::span<const uint8_t> Bitmaps)
+{
     std::vector<FFrame> Frames;
     size_t Offset = 0;
     while (Offset < Bitmaps.size())
@@ -246,14 +240,32 @@ std::optional<std::vector<Gaf::FFrame>> Gaf::LoadFrames(const std::span<const ui
         Frame.Pixels.resize(Frame.Width * Frame.Height);
         std::memcpy(Frame.Pixels.data(), Bitmaps.data() + Offset + BitmapHeaderSize, Frame.Pixels.size() * 2);
         Offset += BitmapHeaderSize + PaddedBytes;
+        Frames.push_back(std::move(Frame));
+    }
+    return Frames;
+}
 
-        const size_t Record = Frames.size() * FrameRecordSize;
+std::optional<std::vector<Gaf::FFrame>> Gaf::LoadFrames(const std::span<const uint8_t> File)
+{
+    const std::optional<FSlots> Slots = ReadEntrySlots(File, Tag("GOB_"));
+    if (!Slots)
+    {
+        return std::nullopt;
+    }
+    std::optional<std::vector<FFrame>> Frames = ParseBitmaps((*Slots)[1]);
+    if (!Frames)
+    {
+        return std::nullopt;
+    }
+    const std::span<const uint8_t> Metadata = (*Slots)[0];
+    for (size_t Index = 0; Index < Frames->size(); ++Index)
+    {
+        const size_t Record = Index * FrameRecordSize;
         if (Record + FrameRecordSize <= Metadata.size())
         {
-            Frame.TrimX = ReadLE<int32_t>(Metadata, Record + 0x10);
-            Frame.TrimY = ReadLE<int32_t>(Metadata, Record + 0x14);
+            (*Frames)[Index].TrimX = ReadLE<int32_t>(Metadata, Record + 0x10);
+            (*Frames)[Index].TrimY = ReadLE<int32_t>(Metadata, Record + 0x14);
         }
-        Frames.push_back(std::move(Frame));
     }
     return Frames;
 }

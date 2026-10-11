@@ -1,9 +1,12 @@
+#include "Game/Level.h"
 #include "Pg/Gaf.h"
 #include "Pg/ResourceArchive.h"
 #include "Render/Renderer.h"
 
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -40,16 +43,49 @@ int VerifyGafs(FResourceArchive& Archive)
     return Failed == 0 ? 0 : 1;
 }
 
-FSpriteSheet LoadSpriteSheet(FResourceArchive& Archive, FRenderer& Renderer, const char* const Name)
+// Loads every level in the archive plus the animated map GAFs its .3DX references.
+int VerifyLevels(FResourceArchive& Archive)
 {
-    const std::optional<std::vector<uint8_t>> File = Archive.Read(Name);
-    const std::optional<std::vector<Gaf::FFrame>> Frames = File ? Gaf::LoadFrames(*File) : std::nullopt;
-    if (!Frames)
+    int Loaded = 0;
+    int Failed = 0;
+    for (const std::string& Name : Archive.GetNames())
     {
-        std::fprintf(stderr, "Cannot load %s\n", Name);
-        return {};
+        if (!Name.ends_with(".3do"))
+        {
+            continue;
+        }
+        const std::string LevelPath = Name.substr(0, Name.size() - 4);
+        const std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
+        if (!Level)
+        {
+            std::printf("FAIL %s: %s\n", LevelPath.c_str(), Level.error().c_str());
+            ++Failed;
+            continue;
+        }
+        bool bGafsOk = true;
+        for (const std::string& GafPath : Level->AnimGafs)
+        {
+            const std::optional<std::vector<uint8_t>> File = Archive.Read(GafPath);
+            if (!File || !Gaf::LoadFrames(*File))
+            {
+                std::printf("FAIL %s: animated map GAF %s\n", LevelPath.c_str(), GafPath.c_str());
+                bGafsOk = false;
+            }
+        }
+        if (!bGafsOk)
+        {
+            ++Failed;
+            continue;
+        }
+        // Index 0 is the unused placeholder; any other untyped descriptor never reaches a .3DI slot.
+        const ptrdiff_t Untyped = std::ranges::count(Level->TileTypes, ETerrain::None) - 1;
+        std::printf("%-16s %ux%u, %u layers, %zu blocks, %zu tile types (%td untyped), %zu objects, %u missing tile refs, \"%s\"\n", LevelPath.c_str(),
+            Level->GridWidth, Level->GridHeight, Level->LayerCount, Level->Blocks.size(), Level->TileTypes.size() - 1, Untyped, Level->Objects.size(),
+            Level->MissingTileRefs, Level->Name.c_str());
+        ++Loaded;
     }
-    return Renderer.CreateSpriteSheet(*Frames);
+    std::printf("Levels: %d loaded, %d failed\n", Loaded, Failed);
+    return Failed == 0 && Loaded > 0 ? 0 : 1;
 }
 }
 
@@ -57,12 +93,22 @@ int main(const int ArgCount, char** const Args)
 {
     // Defaults to the original-data repository checked out next to this one; pass another directory as an argument.
     std::filesystem::path DataRoot = "../Vyruz/Game/Vyruz";
+    std::string LevelPath = "underground\\t1u1";
     bool bVerifyGafs = false;
+    bool bVerifyLevels = false;
     for (int Index = 1; Index < ArgCount; ++Index)
     {
         if (std::strcmp(Args[Index], "--verify-gaf") == 0)
         {
             bVerifyGafs = true;
+        }
+        else if (std::strcmp(Args[Index], "--verify-levels") == 0)
+        {
+            bVerifyLevels = true;
+        }
+        else if (std::strcmp(Args[Index], "--level") == 0 && Index + 1 < ArgCount)
+        {
+            LevelPath = Args[++Index];
         }
         else
         {
@@ -88,6 +134,16 @@ int main(const int ArgCount, char** const Args)
     {
         return VerifyGafs(Archive);
     }
+    if (bVerifyLevels)
+    {
+        return VerifyLevels(Archive);
+    }
+    const std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
+    if (!Level)
+    {
+        std::fprintf(stderr, "Cannot load level: %s\n", Level.error().c_str());
+        return 1;
+    }
 
     if (!glfwInit())
     {
@@ -105,30 +161,56 @@ int main(const int ArgCount, char** const Args)
     FRenderer Renderer;
     Renderer.Init(Window);
 
-    // Sprite viewer until the game loop is ported: every player ship frame in a grid, plus a looping explosion.
-    const FSpriteSheet Ship = LoadSpriteSheet(Archive, Renderer, "COMMON\\DATA\\OBJECT\\VYRUZ\\VZ.GAF");
-    const FSpriteSheet Explosion = LoadSpriteSheet(Archive, Renderer, "COMMON\\DATA\\OBJECT\\FX\\EXPLO.GAF");
-    constexpr double AnimationFps = 15.0;
-    constexpr float CellSize = 64.0f;
+    // Static level view until the game loop is ported: the MAP_ layers drawn bottom-up, scrolled with the arrow keys.
+    const FSpriteSheet Blocks = Renderer.CreateSpriteSheet(Level->Blocks);
+    constexpr float BlockWidth = 64.f;
+    constexpr float BlockHeight = 32.f;
+    constexpr double ScrollSpeed = 600.0;
+    const float MapWidth = Level->GridWidth * BlockWidth;
+    const float MapHeight = Level->GridHeight * BlockHeight;
+    const auto Player = std::ranges::find_if(Level->Objects, [](const FLevelObject& Object) { return Object.ClassName == "Vyruz"; });
+    double CameraX = Player != Level->Objects.end() ? Player->X - ScreenWidth * 0.5 : 0.0;
+    double CameraY = Player != Level->Objects.end() ? Player->Y - ScreenHeight * 0.5 : 0.0;
+    std::printf("%s: %s\n", LevelPath.c_str(), Level->Name.c_str());
+    std::fflush(stdout);
 
+    double LastTime = glfwGetTime();
     while (!glfwWindowShouldClose(Window))
     {
         glfwPollEvents();
+        const double Now = glfwGetTime();
+        const double Step = (Now - LastTime) * ScrollSpeed;
+        LastTime = Now;
+        CameraX += (glfwGetKey(Window, GLFW_KEY_RIGHT) - glfwGetKey(Window, GLFW_KEY_LEFT)) * Step;
+        CameraY += (glfwGetKey(Window, GLFW_KEY_DOWN) - glfwGetKey(Window, GLFW_KEY_UP)) * Step;
+        CameraX = std::clamp(CameraX, 0.0, std::max(0.0, double(MapWidth - ScreenWidth)));
+        CameraY = std::clamp(CameraY, 0.0, std::max(0.0, double(MapHeight - ScreenHeight)));
+
         if (!Renderer.BeginFrame())
         {
             glfwWaitEventsTimeout(0.1);
             continue;
         }
 
-        const int Columns = static_cast<int>(ScreenWidth / CellSize);
-        for (size_t Index = 0; Index < Ship.Frames.size(); ++Index)
+        const int OriginX = int(std::floor(CameraX));
+        const int OriginY = int(std::floor(CameraY));
+        const uint32_t FirstX = uint32_t(OriginX / int(BlockWidth));
+        const uint32_t FirstY = uint32_t(OriginY / int(BlockHeight));
+        const uint32_t LastX = std::min(Level->GridWidth, FirstX + uint32_t(ScreenWidth / BlockWidth) + 2);
+        const uint32_t LastY = std::min(Level->GridHeight, FirstY + uint32_t(ScreenHeight / BlockHeight) + 2);
+        for (uint32_t Layer = 0; Layer < Level->LayerCount; ++Layer)
         {
-            Renderer.DrawSprite(Ship, Index, static_cast<float>(Index % Columns) * CellSize, static_cast<float>(Index / Columns) * CellSize);
-        }
-        if (!Explosion.Frames.empty())
-        {
-            const size_t Frame = static_cast<size_t>(glfwGetTime() * AnimationFps) % Explosion.Frames.size();
-            Renderer.DrawSprite(Explosion, Frame, ScreenWidth * 0.5f - 64.0f, ScreenHeight - 160.0f);
+            const uint32_t* const Cells = Level->Map.data() + size_t{ Layer } * Level->GridWidth * Level->GridHeight;
+            for (uint32_t Y = FirstY; Y < LastY; ++Y)
+            {
+                for (uint32_t X = FirstX; X < LastX; ++X)
+                {
+                    if (const uint32_t Block = Cells[size_t{ Y } * Level->GridWidth + X])
+                    {
+                        Renderer.DrawSprite(Blocks, Block - 1, X * BlockWidth - OriginX, Y * BlockHeight - OriginY);
+                    }
+                }
+            }
         }
 
         Renderer.EndFrame();

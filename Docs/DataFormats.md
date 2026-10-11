@@ -150,6 +150,8 @@ Example sizes: `TURRET-GUN-UDG.GAF` 86,508 bytes on disk → 146,804 bytes decom
 
 Depends on: Generic GAF Record Format, LZSS, BMP_ Chunk Format.
 
+Loaded by the generic `GafLoad` (`00453960`); `GafReadData` dispatches each DATA entry by tag (`GOB_ ANM_ FNT_ RNG_ SMP_ BLK_ MAP_ NAM_` are type indices 0-7) and `GafParseSlots` (`0047bf00`) decodes the four slot streams for every type. The path comes from the `.3DO` `3DG-FILENAME`, relative to the zone folder. All 25 levels decode with every BLK_ block 64x32, every MAP_ index within the BLK_ count, and MAP_ grid dimensions equal to the `.3DI` formulas (`--verify-levels`).
+
 `DATA` holds two entries: `BLK_` (tile bitmaps) and `MAP_` (tile grid). Each entry body opens with a **96-byte, 4-slot descriptor**, not a single stream like sprite `GOB_`:
 
 ```
@@ -251,6 +253,8 @@ Plain text, line-based (not block grammar). Per level. Two sections:
 entry, `ref` may be only a short alias and may not equal the GAF basename;
 resolve its semantic folder and animation asset through `gaf_files[flag - 1]`.
 
+The file starts with a `1.0` version line ("Unknown .3dx file format" otherwise); `#` starts a comment anywhere on a line. GAF paths are absolute editor paths (`d:\vzed\levels\game\underground\data\anim\obstacle\rightbeton.gaf`); `LevelLoad3dx` (`00429d80`) keeps the last three components under the zone data folder, giving the archive path `UNDERGROUND\DATA\ANIM\OBSTACLE\RIGHTBETON.GAF`. This resolves every GAF of all 25 levels. A descriptor's semantic type is the name of the folder holding its file (`...\bitmap\rightwall\gouffre002.tga` -> `RightWall`), matched against the names registered by `VzCreateTypeTable`; every descriptor of every level resolves to one of the 15 terrain types.
+
 `tile_id` range in a level's `.3DI` always matches its `.3DX` texture count exactly (e.g. T1C1: both 176).
 
 ## .3DI - Sparse Tilemap
@@ -301,7 +305,7 @@ The original runtime cell is 12 bytes:
 | `+0x06` | `uint16` | slot 3: walls, Obstacle, WallCorner, Ground+Wall |
 | `+0x08` | pointer | runtime dynamic/decor linked list; not stored in `.3DI` |
 
-The semantic type IDs returned by `FUN_00447430` are:
+The semantic type IDs registered by `VzCreateTypeTable` (`00447430`) are:
 
 | ID | Type | ID | Type |
 |---:|---|---:|---|
