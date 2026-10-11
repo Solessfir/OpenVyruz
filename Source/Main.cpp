@@ -1,3 +1,5 @@
+#include "Pg/ResourceArchive.h"
+
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
@@ -422,8 +424,25 @@ void Destroy(FVulkan& Vk)
 }
 }
 
-int main()
+int main(const int ArgCount, char** const Args)
 {
+    // The original data lives next to the original exe; pass another directory as the first argument.
+    const std::filesystem::path DataRoot = ArgCount > 1 ? Args[1] : "Game/Vyruz";
+    FResourceArchive Archive;
+    if (!Archive.Open(DataRoot / "vz-data.rsc"))
+    {
+        std::fprintf(stderr, "Cannot open %s\n", (DataRoot / "vz-data.rsc").string().c_str());
+        return 1;
+    }
+    const std::optional<std::vector<uint8_t>> Config = Archive.Read("VZCONF.TXT");
+    if (!Config || Config->empty() || (*Config)[0] != '#')
+    {
+        std::fprintf(stderr, "vz-data.rsc is unreadable: VZCONF.TXT missing or corrupt\n");
+        return 1;
+    }
+    std::printf("vz-data.rsc: %zu entries\n", Archive.GetEntryCount());
+    std::fflush(stdout);
+
     if (!glfwInit())
     {
         std::fprintf(stderr, "glfwInit failed\n");
