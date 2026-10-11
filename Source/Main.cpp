@@ -55,8 +55,8 @@ FSpriteSheet LoadSpriteSheet(FResourceArchive& Archive, FRenderer& Renderer, con
 
 int main(const int ArgCount, char** const Args)
 {
-    // The original data lives next to the original exe; pass another directory as an argument.
-    std::filesystem::path DataRoot = "Game/Vyruz";
+    // Defaults to the original-data repository checked out next to this one; pass another directory as an argument.
+    std::filesystem::path DataRoot = "../Vyruz/Game/Vyruz";
     bool bVerifyGafs = false;
     for (int Index = 1; Index < ArgCount; ++Index)
     {

@@ -1,0 +1,68 @@
+# OpenVyruz Agent Guide
+
+## Scope
+
+Applies to the whole repository. The current user request takes precedence over this file. Read [README.md](README.md) and [Docs/DataFormats.md](Docs/DataFormats.md) before architectural changes.
+
+## Project direction
+
+OpenVyruz is a functional (non-matching) reimplementation of `Vyruz.exe` 1.31.01. The goal is a native Windows 11 and Linux (Wayland first) game that loads the original `vz-data.rsc` and can be completed 100%. Version 1 covers the single-player campaign plus the intro and cutscenes; multiplayer is out of scope.
+
+- Gameplay must match the original: same fixed tick rate, RNG, integer and fixed-point math, and evaluation order. Only the platform layer (window, input, audio, file I/O, rendering) is redesigned.
+- The original rendered with hardware Direct3D 6 at 640x480x16. The port uses a full Vulkan 1.3 renderer (dynamic rendering, synchronization2) that reproduces the original render states, drawn in the original 640x480 coordinate space and letterboxed.
+- No original game files, extracted assets, or decompiler output dumps are ever committed. The data lives in the separate original-data repository (`the original-data repository`, `Game\Vyruz\`).
+
+## Reverse-engineering workflow
+
+- `Vyruz.exe` is analyzed live in Ghidra through the `ghydra` MCP server (`.mcp.json`; instance project `Vyruz`, usually port 8193). Ghidra must be open on `Vyruz.exe` first.
+- The binary is MSVC C++ written in C style (almost no methods, no RTTI). Recover structure from `__FILE__` anchors; see the module map in README.
+- Read the decompiled code to understand behavior, then write clean, idiomatic port code. Never paste raw decompiler output into the repository.
+- When a function's behavior is understood, rename it in Ghidra (and its key globals), then save the program with `programs_save`. Reference the original address in a short comment on the port code that reimplements it, e.g. `RscFileRead at 004559f0`.
+- The binary is the ground truth. The Python scripts and notes in the original-data repository are hypotheses: verify every format detail against the exe or raw bytes before relying on it. Correct `Docs/DataFormats.md` when either turns out wrong.
+- There is no ASLR, so live process memory addresses equal Ghidra addresses; reading a running original game is a valid way to establish ground truth.
+- Name port modules after the original source files (`pg\lib\pg\pgfile.cpp` -> `Source/Pg/...`, `vzed\engine.cpp` -> `Source/Game/...`).
+
+## C++ rules
+
+- C++23 on MSVC, Clang, and GCC. Prefer `constexpr` for pure operations; `consteval` only when the contract requires compile-time evaluation.
+- Unreal-style naming: `F` for value types, `E` for enums, `b` for booleans, PascalCase for functions, variables, and files.
+- Prefer RAII, `std::span`, `std::string_view`, ranges, and `std::optional`/`std::expected` for expected failures. No exceptions for control flow; treat allocation failure as fatal.
+- All original data is untrusted input: bounds-check every offset and size read from a file before use.
+- Use designated initializers for descriptors and aggregates with more than one field. End multi-line braced lists with a trailing comma.
+- Always brace `if`/`else`/`for`/`while` bodies. Blank line after a closing brace of a control block unless the next line closes the scope.
+- Float literals without trailing zeros: `1.f`, `0.5f`.
+- Mark member functions `const` when they leave observable state unchanged. Declare member functions before data members, public then private.
+- Keep headers self-contained and third-party types out of public APIs where practical.
+
+Comments explain why: original-game quirks, format constraints, engine behavior, or lifetime rules. Do not narrate what the code does. Keep comments short and never split a sentence just to fit a column.
+
+## Dependencies
+
+- Add dependencies only when the current work needs them. Source dependencies are pinned Git submodules under `External/` (GLFW is upstream `glfw/glfw`; switch to a fork only when a concrete need appears).
+- Premake is downloaded by `GenerateProjectFiles` into ignored `External/Premake/` with a pinned version and SHA-256. Never commit tool binaries.
+- The Vulkan SDK comes from `VULKAN_SDK`, falling back to `%VULKAN_SDK%`.
+
+## Verification
+
+- Build: `msbuild Vyruz.slnx /m /t:Vyruz /p:Configuration=Development /p:Platform=x64`. Regenerate project files after adding or removing source files.
+- Every loader gets a whole-archive check mode, like `--verify-gaf`, that decodes all relevant entries and exits non-zero on failure. Run it after touching that loader.
+- Check rendering changes visually (screenshot of the running window); compilation alone does not verify appearance.
+- Do not rebuild for comment or documentation-only changes. Report exactly what was verified and what was not.
+
+## Documentation and writing
+
+- Keep `README.md` current for build, run, and layout changes; put format knowledge in `Docs/DataFormats.md` and other docs under `Docs/` with PascalCase names.
+- Never use em dashes or en dashes; use a hyphen or rewrite.
+- Preserve exact path casing for Linux.
+
+## Git
+
+- Work on a feature branch; committing and amending unpushed commits there is allowed. Never push, force-push, or rewrite pushed history without an explicit request.
+- Commit messages are short natural titles, no `feat:`-style prefixes, no body, no `Co-authored-by` trailers.
+- Submodule revisions are intentional locks.
+
+## Current state
+
+Implemented: Premake + GLFW + Vulkan window with letterboxed 640x480 space; `.rsc` archive reader (`Source/Pg/ResourceArchive`); GAF/LZSS sprite loader (`Source/Pg/Gaf`, all 178 GAFs decode); sprite-sheet packing and a textured-quad sprite pipeline (`Source/Render/Renderer`); a temporary sprite viewer in `Main.cpp`.
+
+Next: trace `VzRun` (`00446e20`) and the main loop (`vzed\loop.cpp`, tick rate, update/draw order), then port the level loader so the window shows a real level.

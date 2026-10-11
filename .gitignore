@@ -1,0 +1,9 @@
+Binaries/
+Intermediate/
+External/Premake/
+*.sln
+*.slnx
+*.vcxproj*
+.vs/
+Makefile
+*.make
