@@ -6,17 +6,59 @@ C++23, Premake5, GLFW, Vulkan 1.3, Slang shaders.
 
 ## Building
 
-```powershell
-git submodule update --init
-.\GenerateProjectFiles.bat vs2026    # downloads Premake on first run, writes Vyruz.slnx
-msbuild Vyruz.slnx /m /t:Vyruz /p:Configuration=Development /p:Platform=x64 && .\Binaries\windows\Development\Vyruz.exe
+Clone with submodules (GLFW), or fetch them afterwards:
+
+```bash
+git clone --recursive https://github.com/Solessfir/OpenVyruz.git
+git submodule update --init    # if cloned without --recursive
 ```
 
-On Linux use `./GenerateProjectFiles.sh gmake [--cc=clang]`, then `make config=development Vyruz` (needs `wayland-scanner`, `slangc`, Vulkan headers, Wayland/X11 dev packages and the Vulkan loader; on Arch: `vulkan-headers shader-slang`). From Windows, `wsl -d archlinux -- bash Scripts/WslCheck.sh [gcc|clang]` builds a copy of the tree in WSL and runs the archive checks. On Windows `VULKAN_SDK` is used when set, otherwise the SDK copy under `%VULKAN_SDK%`. Shaders are Slang (`Source\Shaders\*.slang`), compiled by `slangc` at build time into SPIR-V arrays embedded in the exe.
+The project generators download a pinned Premake on first run. Shaders are Slang (`Source/Shaders/*.slang`), compiled by `slangc` at build time into SPIR-V arrays embedded in the executable.
+
+Configurations: `Debug`, `Development` (optimized with symbols), `Shipping`.
+
+### Windows
+
+Requirements:
+
+- Visual Studio 2026 or its Build Tools, with the "Desktop development with C++" workload
+- Vulkan SDK 1.3 or newer, which provides `slangc`. `VULKAN_SDK` is used when set; otherwise the generator falls back to `%VULKAN_SDK%`
+
+```powershell
+.\GenerateProjectFiles.bat vs2026
+msbuild Vyruz.slnx /m /t:Vyruz /p:Configuration=Development /p:Platform=x64
+```
+
+The executable is written to `Binaries\windows\Development\Vyruz.exe`. You can also open `Vyruz.slnx` in Visual Studio or Rider.
+
+### Linux
+
+Requirements: GCC 14+ or Clang 18+, GNU Make, `slangc`, Vulkan headers and loader, and the Wayland and X11 development packages (`wayland-scanner` included). On Arch:
+
+```bash
+sudo pacman -Syu --needed base-devel vulkan-headers vulkan-icd-loader shader-slang wayland libxkbcommon libx11 libxrandr libxinerama libxcursor libxi
+```
+
+```bash
+./GenerateProjectFiles.sh gmake               # add --cc=clang to build with Clang
+make config=development Vyruz -j"$(nproc)"
+```
+
+The executable is written to `Binaries/linux/Development/Vyruz`.
+
+From Windows, `wsl -d archlinux -- bash Scripts/WslCheck.sh [gcc|clang]` builds a copy of the tree inside WSL and runs the archive checks.
 
 ## Running
 
-The exe needs the original `vz-data.rsc`. Pass the directory containing it as an argument; the default is `../Vyruz/Game/Vyruz`, the original-data repository checked out next to this one.
+The game needs the original `vz-data.rsc`, which is not included. Pass the directory containing it as the argument; the default is `../Vyruz/Game/Vyruz`, the original-data repository checked out next to this one.
+
+```powershell
+.\Binaries\windows\Development\Vyruz.exe <path to vz-data.rsc>
+```
+
+```bash
+./Binaries/linux/Development/Vyruz <path to vz-data.rsc>
+```
 
 `--verify-gaf` decodes every `.gaf` in `vz-data.rsc` and exits non-zero on any failure. `--verify-levels` loads all 25 levels (`.3DX`, `.3DI`, `.3DO` against the `.3DC` class libraries, `.3DG`) plus their animated map GAFs and exits non-zero on any failure.
 
@@ -44,3 +86,7 @@ The original source file names survive in `__FILE__` strings, and MSVC links eac
 | `00413800-0044967f` | `vzed\` game: `3do`, `anim`, `surprise`, `decor`, `misc`, `engine-damage`, `engine`, `loop`, `i3de`, with unanchored game files in between (largest gap `0041cf40-00433930`, 288 functions, between `surprise` and `decor`) |
 | `00449700-00481350` | `pg\lib\` engine: `pg\` core (io, mem, file, font, bmp, video, input, data, dialog, snd, audio, text, gob, cursor, gaf, cmap), `dx\` and `hw\` DirectX backends |
 | `004813b0-0050879b` | after `hwtimer`: MSVC CRT and static libraries, but also unanchored pg code such as `LzssDecode` (`0049ace0`) |
+
+## License
+
+Licensed under the [MIT License](LICENSE).
