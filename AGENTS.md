@@ -63,7 +63,7 @@ Comments explain why: original-game quirks, format constraints, engine behavior,
 
 ## Git
 
-- Work on a feature branch; committing and amending unpushed commits there is allowed. Never push, force-push, or rewrite pushed history without an explicit request.
+- Work directly on `main`; do not create feature branches. Committing and amending unpushed commits is allowed. Never push, force-push, or rewrite pushed history without an explicit request.
 - Commit messages are short natural titles, no `feat:`-style prefixes, no body, no `Co-authored-by` trailers.
 - Submodule revisions are intentional locks.
 
