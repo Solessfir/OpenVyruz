@@ -96,6 +96,36 @@ struct FObjectBody
 
 inline constexpr int PlayerPoseCount = 48;
 
+// A collectable item: an indestructible Item-kind object with a TYPE Item block.
+struct FPickup
+{
+    size_t ObjectIndex = 0;
+    FCollisionCircle Circle;
+    float AddEnergy = 0.f;
+    float AddShield = 0.f;
+    float AddMoney = 0.f;
+    std::string AmmoType;
+    float AddAmmo = 0.f;
+};
+
+struct FAmmoStock
+{
+    std::string Name;
+    float Count = 0.f;
+    float Max = 0.f;
+};
+
+// The player's Energy, Shield, money and ammo, as the item pickup branch of EngineUpdateObjects (004406e0) changes them.
+struct FPlayerInventory
+{
+    float Energy = 0.f;
+    float EnergyMax = 0.f;
+    float Shield = 0.f;
+    float ShieldMax = 0.f;
+    float Money = 0.f;
+    std::vector<FAmmoStock> Ammo;
+};
+
 // Live keyboard semantics of ReadPlayerInput (00438540): turning and strafing combine.
 FPlayerCommand PlayerCommandFromKeys(bool bForward, bool bBackward, bool bTurnLeft, bool bTurnRight, bool bStrafeLeft, bool bStrafeRight);
 // Demo semantics of ReplayPlayerInput (00438800): strafing cancels turning.
@@ -105,6 +135,10 @@ std::expected<FMovementClass, std::string> ReadMovementClass(const FLevelObject&
 FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class);
 // Every collidable object except the player; classes without movement properties keep zeroed fields like the original class record.
 std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level);
+std::vector<FPickup> CreatePickups(const FLevel& Level);
+FPlayerInventory CreateInventory(const FLevelObject& Player);
+// Collects every pickup the player's circle touches; returns how many were taken and marks them removed in the level.
+size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level);
 // One game step of the player's part of EngineUpdateObjects (004406e0). Bodies are the other collidable objects; Self skips one of them.
 void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
     const FLevel& Level, std::span<FObjectBody> Bodies = {}, const FObjectBody* Self = nullptr);

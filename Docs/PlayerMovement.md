@@ -42,3 +42,11 @@ The new collision centre is converted back to the world, clamped to `[1, extent 
 An object hit is resolved by `ObjectPush` (`00436dd0`). Moving away from the contact accepts the move, as for terrain. A target with zero `Friction-factor` is immovable and reflects the mover's velocity component along the contact normal, scaled by `Elasticity`. Otherwise both exchange that component weighted by `Weight / 10`, and the target is flagged as pushed: its velocity then carries it with friction until its speed drops below 1.
 
 The port treats static scenery with a bounding box as solid. Pickups, gates, lifts, keys, teleports and actors are left out until their behaviours exist, and the demo replay stays terrain-only: the recording shoots barrels and crates and shoves pallets, so its path crosses their start positions.
+
+## Object kinds and pickups
+
+`CreateObject` (`00413800`) gives each object a kind: the class `Sub-type` when set, otherwise the name of the folder holding its `GAF-name`, looked up in the type table (`OBJECT\ITEM\items.GAF` is an Item, `OBJECT\VYRUZ\VZ.GAF` the player). Kinds `0x10`-`0x20` are Ammo, FX, Item, Lift, Gate, Thing, Cop, StaticGen, Vyruz, Walker, Burner, Jeep, Roller, Heli, Turret, Spider and Tank. Crates and pickups are both Items.
+
+When the player touches an object with an item attribute, `EngineUpdateObjects` lets it pass and applies the item: `Add-NRJ` while energy is below 95% of its maximum, `Add-Money` always, `Add-Shield` while shield is below its maximum, and ammo through `FUN_00444540`. If anything applied, `FUN_00444660` consumes the item.
+
+The port collects indestructible Items with a `TYPE Item` block; the exe tells pickups from crates by an item-attribute flag that is not decoded yet. Ammo fills up to the stock's maximum; the exact ammo rule in `FUN_00444540`, item respawn and the pickup messages and sounds are not ported yet. `--verify-game` reports how many pickups the recorded demo path collects.

@@ -499,6 +499,8 @@ int main(const int ArgCount, char** const Args)
     std::optional<FPlayerState> Player;
     std::optional<FTerrainCollision> Terrain;
     std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+    std::vector<FPickup> Pickups = CreatePickups(*Level);
+    FPlayerInventory Inventory = PlayerObject != Level->Objects.end() ? CreateInventory(*PlayerObject) : FPlayerInventory{};
     if (PlayerObject != Level->Objects.end())
     {
         std::expected<FMovementClass, std::string> Class = ReadMovementClass(*PlayerObject);
@@ -539,6 +541,11 @@ int main(const int ArgCount, char** const Args)
                     Pressed(GLFW_KEY_A), Pressed(GLFW_KEY_D));
                 StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies);
                 StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
+                if (CollectPickups(*Player, *PlayerClass, Inventory, Pickups, *Level) != 0)
+                {
+                    std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
+                    std::fflush(stdout);
+                }
             }
             else
             {
@@ -617,7 +624,7 @@ int main(const int ArgCount, char** const Args)
         for (const FObjectSprite& Sprite : Objects->Sprites)
         {
             const Gaf::FAnimationFrame& Frame = Sprite.Frame;
-            if (Frame.BitmapIndex == 0)
+            if (Frame.BitmapIndex == 0 || Level->Objects[Sprite.ObjectIndex].bRemoved)
             {
                 continue;
             }

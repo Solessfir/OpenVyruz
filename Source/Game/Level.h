@@ -69,6 +69,8 @@ struct FLevelObject
     bool bInGround = false;
     bool bZShadow = false;
     bool bDirectional = false;
+    // Collected pickups and destroyed objects stay in the list so indices remain stable.
+    bool bRemoved = false;
     std::string SubType;
     FLevelPropertyBlock Properties;
 };

@@ -483,6 +483,28 @@ EBounce Push(FPlayerState& Mover, const FMovementClass& MoverClass, const FPlaye
     return EBounce::Bounced;
 }
 
+const FLevelPropertyBlock* FindBlock(const FLevelPropertyBlock& Block, std::string_view Kind);
+
+const FLevelPropertyBlock* FindItemBlock(const FLevelObject& Object)
+{
+    for (const FLevelPropertyBlock& Child : Object.Properties.Children)
+    {
+        if (Child.Kind == "TYPE" && Child.Name == "Item")
+        {
+            return &Child;
+        }
+    }
+
+    return nullptr;
+}
+
+// ponytail: crates also carry item blocks for the surprises they drop; the exe tells them apart by an item-attribute flag that is not decoded
+// yet, so pickups are recognised by being indestructible.
+bool IsPickup(const FLevelObject& Object)
+{
+    return Object.SubType == "item" && FindItemBlock(Object) && ParseLevelFloat(Object.Properties.Find("Indestructible")).value_or(0.f) != 0.f;
+}
+
 const FLevelPropertyBlock* FindBlock(const FLevelPropertyBlock& Block, const std::string_view Kind)
 {
     for (const FLevelPropertyBlock& Child : Block.Children)
@@ -706,14 +728,10 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
     {
         const FLevelObject& Object = Level.Objects[Index];
         // ponytail: only static scenery for now; enemies, pickups, gates and lifts join once their behaviours move, collect or open them.
-        const auto IsSpecial = [&Object](const FLevelPropertyBlock& Block)
-        {
-            // Pickups are indestructible items; crates also carry item blocks for the surprises they drop.
-            constexpr std::array<std::string_view, 4> SpecialTypes = { "Gate", "Lift", "Key", "Teleport" };
-            const bool bPickup = Block.Name == "Item" && ParseLevelFloat(Object.Properties.Find("Indestructible")).value_or(0.f) != 0.f;
-            return Block.Kind == "TYPE" && (bPickup || std::ranges::contains(SpecialTypes, Block.Name));
-        };
-        if (Object.BoundingBoxSize <= 0 || Object.Behaviour != "Fixed" || std::ranges::any_of(Object.Properties.Children, IsSpecial))
+        // Kinds come from the class Sub-type or the GAF folder (CreateObject at 00413800). ponytail: actors, lifts and gates join once their
+        // behaviours move or open them; pickups are collected instead of blocking.
+        constexpr std::array<std::string_view, 6> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller" };
+        if (Object.BoundingBoxSize <= 0 || !std::ranges::contains(SolidKinds, Object.SubType) || IsPickup(Object))
         {
             continue;
         }
@@ -912,6 +930,10 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
     // so the recorded path crosses where those objects started.
     FPlayerState Player = SpawnPlayer(*Object, *Class);
     FPlayerState FreeRun = Player;
+    FLevel PickupLevel = *Level;
+    std::vector<FPickup> Pickups = CreatePickups(PickupLevel);
+    FPlayerInventory Inventory = CreateInventory(*Object);
+    size_t Collected = 0;
     FreeRun.Position = { .X = Records.front().X, .Y = Records.front().Y };
     FreeRun.Center = CollisionFromWorld(FreeRun.Position);
     size_t FreeRunSteps = Records.size() - 1;
@@ -948,6 +970,9 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
 
         StepPlayer(Player, *Class, { .Thrust = Command.Thrust, .Strafe = Command.Strafe }, Step, *Terrain, *Level);
         const float Error = std::hypot(Player.Position.X - Next.X, Player.Position.Y - Next.Y);
+        // Pickups along the recorded path, collected from the recorded position.
+        FPlayerState Recorded{ .Center = CollisionFromWorld({ .X = Next.X, .Y = Next.Y }) };
+        Collected += CollectPickups(Recorded, *Class, Inventory, Pickups, PickupLevel);
         Exact += Error <= ExactTolerance;
         Close += Error <= CloseTolerance;
 
@@ -966,12 +991,133 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
     constexpr double MinimumExactShare = 0.8;
     constexpr double MinimumCloseShare = 0.9;
     const size_t Steps = Records.size() - 1;
-    const std::string Summary = std::format("{} of {} steps exact, {} within {} px, free run follows the recording for {} steps", Exact, Steps, Close,
-        CloseTolerance, FreeRunSteps);
+    const std::string Summary = std::format("{} of {} steps exact, {} within {} px, free run follows the recording for {} steps, {} of {} pickups collected", Exact,
+        Steps, Close, CloseTolerance, FreeRunSteps, Collected, Pickups.size());
     if (double(Exact) < MinimumExactShare * double(Steps) || double(Close) < MinimumCloseShare * double(Steps))
     {
         return std::unexpected(Summary);
     }
 
     return Summary;
+}
+
+std::vector<FPickup> CreatePickups(const FLevel& Level)
+{
+    std::vector<FPickup> Pickups;
+    for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
+    {
+        const FLevelObject& Object = Level.Objects[Index];
+        const FLevelPropertyBlock* const Item = IsPickup(Object) ? FindItemBlock(Object) : nullptr;
+        if (!Item)
+        {
+            continue;
+        }
+
+        const auto Number = [Item](const std::string_view Field) { return ParseLevelFloat(Item->Find(Field)).value_or(0.f); };
+        Pickups.push_back({
+            .ObjectIndex = Index,
+            .Circle = { .Center = CollisionFromWorld({ .X = Object.X, .Y = Object.Y }), .Radius = Object.BoundingBoxSize > 0 ? float(Object.BoundingBoxSize) : DefaultCollisionRadius },
+            .AddEnergy = Number("Add-NRJ"),
+            .AddShield = Number("Add-Shield"),
+            .AddMoney = Number("Add-Money"),
+            .AmmoType = std::string(Item->Find("Ammo-Type")),
+            .AddAmmo = Number("Add-Ammo"),
+        });
+    }
+
+    return Pickups;
+}
+
+FPlayerInventory CreateInventory(const FLevelObject& Player)
+{
+    const FLevelPropertyBlock& Properties = Player.Properties;
+    const auto Value = [&](const std::string_view Kind, const std::string_view Field)
+    {
+        const FLevelPropertyBlock* const Block = FindBlock(Properties, Kind);
+        return Block ? ParseLevelFloat(Block->Find(Field)).value_or(0.f) : 0.f;
+    };
+    FPlayerInventory Inventory{
+        .Energy = Value("Energy", "Initial"),
+        .EnergyMax = Value("Energy", "Max"),
+        .Shield = Value("Shield", "Initial"),
+        .ShieldMax = Value("Shield", "Max"),
+    };
+
+    // .3DO instances can override the starting Energy and Shield with plain fields.
+    if (const std::optional<float> Energy = ParseLevelFloat(Properties.Find("Energy")))
+    {
+        Inventory.Energy = *Energy;
+    }
+
+    if (const std::optional<float> Shield = ParseLevelFloat(Properties.Find("Shield")))
+    {
+        Inventory.Shield = *Shield;
+    }
+
+    for (const FLevelPropertyBlock& Child : Properties.Children)
+    {
+        if (Child.Kind == "ADD" && Child.Name == "Ammo")
+        {
+            Inventory.Ammo.push_back({
+                .Name = std::string(Child.Find("Name")),
+                .Count = ParseLevelFloat(Child.Find("Count")).value_or(0.f),
+                .Max = ParseLevelFloat(Child.Find("Max")).value_or(0.f),
+            });
+        }
+    }
+
+    return Inventory;
+}
+
+size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level)
+{
+    // Energy is only topped up below 95% of its maximum; shield below its maximum; money always.
+    constexpr float EnergyRefillLimit = 0.95f;
+    size_t Collected = 0;
+    for (FPickup& Pickup : Pickups)
+    {
+        FLevelObject& Object = Level.Objects[Pickup.ObjectIndex];
+        if (Object.bRemoved || !IntersectCircles({ .Center = Player.Center, .Radius = Class.Radius }, Pickup.Circle))
+        {
+            continue;
+        }
+
+        bool bUsed = false;
+        if (Pickup.AddEnergy != 0.f && Inventory.Energy < Inventory.EnergyMax * EnergyRefillLimit)
+        {
+            Inventory.Energy = std::min(Inventory.EnergyMax, Inventory.Energy + Pickup.AddEnergy);
+            bUsed = true;
+        }
+
+        if (Pickup.AddMoney != 0.f)
+        {
+            Inventory.Money += Pickup.AddMoney;
+            bUsed = true;
+        }
+
+        if (Pickup.AddShield != 0.f && Inventory.Shield < Inventory.ShieldMax)
+        {
+            Inventory.Shield = std::min(Inventory.ShieldMax, Inventory.Shield + Pickup.AddShield);
+            bUsed = true;
+        }
+
+        // ponytail: AddAmmo (00444540) is not traced yet; ammo fills up to the stock's maximum and counts as used when anything was added.
+        if (!Pickup.AmmoType.empty() && Pickup.AddAmmo != 0.f)
+        {
+            const auto Stock = std::ranges::find(Inventory.Ammo, Pickup.AmmoType, &FAmmoStock::Name);
+            if (Stock != Inventory.Ammo.end() && Stock->Count < Stock->Max)
+            {
+                Stock->Count = std::min(Stock->Max, Stock->Count + Pickup.AddAmmo);
+                bUsed = true;
+            }
+        }
+
+        if (bUsed)
+        {
+            Object.bRemoved = true;
+            ++Collected;
+        }
+    }
+
+    return Collected;
 }
