@@ -228,10 +228,12 @@ struct FEffectClass
     std::string Name;
     std::string GafPath;
     int GafIndex = 0;
-    // Frame durations in display frame periods.
+    // Frame durations in animation ticks.
     std::vector<int32_t> FrameDurations;
     uint32_t LoopStart = 0;
     bool bLoop = false;
+    // FX stretch-ratio; ObjectDraw at 00431ae0 treats zero as no stretch.
+    float Stretch = 1.f;
 };
 
 // A running FX object; an explosion's blast goes off once with it.

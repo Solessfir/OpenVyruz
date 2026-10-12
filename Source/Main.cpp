@@ -260,6 +260,7 @@ struct FObjectSprite
     float Y = 0.f;
     int64_t Depth = 0;
     ESpriteBlend Blend = ESpriteBlend::Opaque;
+    float Stretch = 1.f;
 };
 
 struct FObjectSprites
@@ -294,6 +295,25 @@ ESpriteBlend FrameBlend(const Gaf::FAnimationFrame& Frame)
 {
     const uint32_t DrawMode = Frame.DrawFlags & AnimationBlendMask;
     return DrawMode == AdditiveDrawMode ? ESpriteBlend::Additive : DrawMode == InverseSourceDrawMode ? ESpriteBlend::InverseSourceColor : ESpriteBlend::Opaque;
+}
+
+struct FSpriteScale
+{
+    float X = 1.f;
+    float Y = 1.f;
+};
+
+// DrawAnimationFrame at 0045eab0: frame event flags 0x40 (X), 0x80 (Y) or 0x100 (both) scale the stretch by the event value in percent.
+FSpriteScale FrameScale(const Gaf::FAnimationFrame& Frame, const float Stretch)
+{
+    constexpr uint32_t ScaleXFlags = 0x140;
+    constexpr uint32_t ScaleYFlags = 0x180;
+    constexpr float PercentToRatio = 0.01f;
+    const auto Scale = [&](const uint32_t Flags)
+    {
+        return (Frame.EventFlags & Flags) != 0 ? float(double(Frame.EventValue) * Stretch * PercentToRatio) : Stretch;
+    };
+    return { .X = Scale(ScaleXFlags), .Y = Scale(ScaleYFlags) };
 }
 
 // shortcut: initial poses only, use the behaviour update for animation state changes and attachments.
@@ -711,6 +731,7 @@ int main(const int ArgCount, char** const Args)
                     .Y = float(GroundY) - Effect.Altitude,
                     .Depth = SpriteDepth(GroundY, false, false, false),
                     .Blend = FrameBlend(Frame),
+                    .Stretch = Class.Stretch,
                 });
             }
 
@@ -725,8 +746,12 @@ int main(const int ArgCount, char** const Args)
                 return;
             }
 
-            Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + Frame.OffsetX - OriginX,
-                Sprite.Y + Frame.OffsetY - OriginY, Frame.bMirrorX, Frame.bMirrorY, Sprite.Blend);
+            // The hotspot offset is scaled and truncated like the original's __ftol.
+            const FSpriteScale Scale = FrameScale(Frame, Sprite.Stretch);
+            const float OffsetX = Scale.X != 1.f ? std::trunc(float(Frame.OffsetX) * Scale.X) : float(Frame.OffsetX);
+            const float OffsetY = Scale.Y != 1.f ? std::trunc(float(Frame.OffsetY) * Scale.Y) : float(Frame.OffsetY);
+            Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + OffsetX - OriginX, Sprite.Y + OffsetY - OriginY,
+                Frame.bMirrorX, Frame.bMirrorY, Sprite.Blend, Scale.X, Scale.Y);
         };
         const auto DrawMapRow = [&](const int64_t Row, const std::optional<int32_t> Depth)
         {

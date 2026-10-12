@@ -740,7 +740,7 @@ bool FRenderer::BeginFrame()
 }
 
 void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInSheet, const float X, const float Y, const bool bMirrorX, const bool bMirrorY,
-    const ESpriteBlend Blend)
+    const ESpriteBlend Blend, const float ScaleX, const float ScaleY)
 {
     if (Sheet.Texture >= Textures.size() || FrameIndexInSheet >= Sheet.Frames.size())
     {
@@ -749,15 +749,18 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
     const VkCommandBuffer Cmd = Frames[FrameIndex].CommandBuffer;
     const FSpriteFrame& Frame = Sheet.Frames[FrameIndexInSheet];
     // DrawGobFrame at 00466f40 mirrors around the sprite origin, including the cropped bitmap offset.
-    const float Left = X + (bMirrorX ? -float(Frame.TrimX) - Frame.Width : float(Frame.TrimX));
-    const float Top = Y + (bMirrorY ? -float(Frame.TrimY) - Frame.Height : float(Frame.TrimY));
-    if (Left >= ScreenWidth || Top >= ScreenHeight || Left + Frame.Width <= 0.f || Top + Frame.Height <= 0.f)
+    // ponytail: scales the trimmed bitmap around the cell origin; DrawGobFrame truncates the scaled cell size and trim to whole pixels.
+    const float Width = float(Frame.Width) * ScaleX;
+    const float Height = float(Frame.Height) * ScaleY;
+    const float Left = X + (bMirrorX ? -float(Frame.TrimX) * ScaleX - Width : float(Frame.TrimX) * ScaleX);
+    const float Top = Y + (bMirrorY ? -float(Frame.TrimY) * ScaleY - Height : float(Frame.TrimY) * ScaleY);
+    if (Left >= ScreenWidth || Top >= ScreenHeight || Left + Width <= 0.f || Top + Height <= 0.f)
     {
         return;
     }
 
     const FSpritePush Push{
-        .Rect = { Left, Top, float(Frame.Width), float(Frame.Height) },
+        .Rect = { Left, Top, Width, Height },
         .UvRect = { bMirrorX ? Frame.U1 : Frame.U0, bMirrorY ? Frame.V1 : Frame.V0, bMirrorX ? Frame.U0 : Frame.U1, bMirrorY ? Frame.V0 : Frame.V1 },
         .ScreenSize = { ScreenWidth, ScreenHeight },
     };

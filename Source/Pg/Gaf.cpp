@@ -412,6 +412,8 @@ std::optional<std::vector<Gaf::FAnimation>> Gaf::LoadAnimations(const std::span<
                 .DrawFlags = Frame.DrawFlags,
                 .bMirrorX = bMirrorX,
                 .bMirrorY = bMirrorY,
+                .EventFlags = Frame.EventFlags,
+                .EventValue = Frame.EventValue,
                 .Duration = Frame.Duration,
             });
             FrameOffset += sizeof(FAnimationFrameRecord);
@@ -463,6 +465,5 @@ std::optional<std::vector<Gaf::FAnimation>> Gaf::LoadAnimations(const std::span<
         return std::nullopt;
     }
 
-    // shortcut: visual frame metadata only; decode durations and events when the original animation update is ported.
     return Animations;
 }

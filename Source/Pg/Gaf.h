@@ -37,7 +37,10 @@ struct FAnimationFrame
     uint32_t DrawFlags = 0;
     bool bMirrorX = false;
     bool bMirrorY = false;
-    // In display frame periods: UpdateAnimation at 0045e7e0 holds the frame for Duration * g_FramePeriodMs milliseconds.
+    // UpdateAnimation at 0045e7e0 copies these to the animation instance; DrawAnimationFrame at 0045eab0 reads them as a transform.
+    uint32_t EventFlags = 0;
+    uint32_t EventValue = 0;
+    // In animation ticks: VzRun fixes the tick at 14 ms through AnimationSetFixedPeriod (0045e4c0).
     int32_t Duration = 0;
 };
 

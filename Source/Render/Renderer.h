@@ -50,7 +50,7 @@ public:
     bool BeginFrame();
     // X/Y is the top-left of the untrimmed sprite cell in screen pixels.
     void DrawSprite(const FSpriteSheet& Sheet, size_t FrameIndex, float X, float Y, bool bMirrorX = false, bool bMirrorY = false,
-        ESpriteBlend Blend = ESpriteBlend::Opaque);
+        ESpriteBlend Blend = ESpriteBlend::Opaque, float ScaleX = 1.f, float ScaleY = 1.f);
     void EndFrame();
 
 private:

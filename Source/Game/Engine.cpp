@@ -1584,6 +1584,11 @@ std::expected<void, std::string> LoadEffect(FCombat& Combat, const FLevel& Level
         .LoopStart = Animation.LoopStart,
         .bLoop = ClassNumber(*Effect, "Loop") != 0.f,
     };
+    if (const float Stretch = ClassNumber(*Effect, "Stretch-ratio"); Stretch != 0.f)
+    {
+        EffectClass.Stretch = Stretch;
+    }
+
     for (const Gaf::FAnimationFrame& Frame : Animation.Frames)
     {
         EffectClass.FrameDurations.push_back(Frame.Duration);
