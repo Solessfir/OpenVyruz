@@ -550,7 +550,6 @@ int main(const int ArgCount, char** const Args)
 
         if (Player)
         {
-            // ponytail: the body shows the nearest of the 24 direction poses; the in-between turning frames of the rot animation come later.
             for (const FObjectBody& Body : Bodies)
             {
                 Level->Objects[Body.ObjectIndex].X = Body.State.Position.X;
@@ -569,6 +568,21 @@ int main(const int ArgCount, char** const Args)
         }
 
         UpdateObjectSprites(*Objects, *Level);
+        if (Player)
+        {
+            // The player's 48 poses are the frames of the rot animation that follows its 24 direction animations; odd poses match them.
+            const size_t PlayerIndex = size_t(PlayerObject - Level->Objects.begin());
+            const size_t RotAnimation = size_t(PlayerObject->GafIndex - 1 + ObjectDirectionCount);
+            for (FObjectSprite& Sprite : Objects->Sprites)
+            {
+                const std::vector<Gaf::FAnimation>& Animations = Objects->Animations[Sprite.SheetIndex];
+                if (Sprite.ObjectIndex == PlayerIndex && !Sprite.bShadow && RotAnimation < Animations.size() &&
+                    Animations[RotAnimation].Frames.size() == size_t(PlayerPoseCount))
+                {
+                    Sprite.Frame = Animations[RotAnimation].Frames[size_t(Player->Pose - 1)];
+                }
+            }
+        }
         CameraX = std::clamp(CameraX, 0.0, std::max(0.0, double(MapWidth - ScreenWidth)));
         CameraY = std::clamp(CameraY, 0.0, std::max(0.0, double(MapHeight - ScreenHeight)));
 
