@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <limits>
 #include <optional>
 #include <string>
@@ -636,6 +637,9 @@ int main(const int ArgCount, char** const Args)
 
     FFrameClock Clock(FramePeriod);
     Clock.Poll(ClockMilliseconds());
+    // ponytail: frame rate in the window title until the HUD can draw text.
+    uint32_t FpsWindowStart = ClockMilliseconds();
+    uint32_t FpsFrames = 0;
     while (!glfwWindowShouldClose(Window))
     {
         glfwPollEvents();
@@ -861,6 +865,15 @@ int main(const int ArgCount, char** const Args)
         }
 
         Renderer.EndFrame();
+        ++FpsFrames;
+        constexpr uint32_t FpsWindowMilliseconds = MillisecondsPerSecond;
+        if (const uint32_t Now = ClockMilliseconds(); Now - FpsWindowStart >= FpsWindowMilliseconds)
+        {
+            const std::string Title = std::format("Vyruz - {:.0f} fps", FpsFrames * double(MillisecondsPerSecond) / (Now - FpsWindowStart));
+            glfwSetWindowTitle(Window, Title.c_str());
+            FpsWindowStart = Now;
+            FpsFrames = 0;
+        }
     }
 
     Renderer.Shutdown();
