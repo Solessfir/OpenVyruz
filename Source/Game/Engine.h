@@ -212,6 +212,8 @@ struct FActor
     uint32_t Behaviour = 0;
     // Class property Can-turn-on-place (class flag 0x20).
     bool bTurnOnPlace = false;
+    // Body poses per direction: 2 for cops' 48 poses, 1 for the 24-pose vehicles (SeekerTurnBody, PlayerAdvancePose at 00438390).
+    int PosesPerDirection = 2;
     // Object +0x13c: bit 1 follows a route, bit 2 lets the movement behaviour run beside the seeker.
     uint32_t RouteFlags = 0;
     // Object +0x194: the behaviour that ran last (1 seeker, 2 tracker, 0xc patrol); only patrol and random movers get the segment pull.

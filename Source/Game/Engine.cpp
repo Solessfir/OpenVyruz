@@ -165,10 +165,10 @@ bool IsZero(const FCollisionPoint Point)
     return Point.X == 0.f && Point.Y == 0.f;
 }
 
-// PlayerAdvancePose at 00438390 for 48-pose bodies: one pose per call, the short way round.
-int AdvancePose(const int Pose, const int Target)
+// PlayerAdvancePose at 00438390: one pose per call, the short way round; vehicles have 24 poses, the player and cops 48.
+int AdvancePose(const int Pose, const int Target, const int PoseCount = PlayerPoseCount)
 {
-    constexpr int Half = PlayerPoseCount / 2;
+    const int Half = PoseCount / 2;
     if (Pose < Target)
     {
         if (Target - Pose < Half)
@@ -176,14 +176,14 @@ int AdvancePose(const int Pose, const int Target)
             return Pose + 1;
         }
 
-        return Pose == 1 ? PlayerPoseCount : Pose - 1;
+        return Pose == 1 ? PoseCount : Pose - 1;
     }
 
     if (Pose > Target)
     {
         if (Pose - Target >= Half)
         {
-            return Pose == PlayerPoseCount ? 1 : Pose + 1;
+            return Pose == PoseCount ? 1 : Pose + 1;
         }
 
         return Pose - 1;
@@ -839,9 +839,10 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
         // Kinds come from the class Sub-type or the GAF folder (CreateObject at 00413800). ponytail: actors, lifts and gates join once their
         // behaviours move or open them; pickups are collected instead of blocking.
         constexpr std::array<std::string_view, 6> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller" };
-        // ponytail: cops are the first actors; jeeps, tanks, walkers, spiders and helis need their own pose and turning rules.
-        constexpr std::string_view CopKind = "cop";
-        const bool bActor = Object.SubType == CopKind;
+        // ponytail: cops and jeeps move so far; tanks need their turret top, walkers and spiders their stepping gait, helis their pose selection.
+        constexpr std::array<std::string_view, 2> ActorKinds = { "cop", "jeep" };
+        constexpr std::string_view JeepKind = "jeep";
+        const bool bActor = std::ranges::contains(ActorKinds, Object.SubType);
         if (Object.BoundingBoxSize <= 0 || (!bActor && !std::ranges::contains(SolidKinds, Object.SubType)) || IsPickup(Object))
         {
             continue;
@@ -904,8 +905,13 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
             Body.Class = *Movement;
             Body.State.Speed = Movement->ThrustInitial;
             Body.State.Direction = Object.Direction < DirectionCount ? Object.Direction : 0;
-            Body.State.Pose = Body.State.TargetPose = Body.State.Direction * PosesPerDirection + 1;
-            FActor& Actor = Body.Actor.emplace(FActor{ .Behaviour = *Behaviour, .bTurnOnPlace = Number(&Properties, "Can-turn-on-place") != 0.f });
+            const int ActorPoses = Object.SubType == JeepKind ? 1 : PosesPerDirection;
+            Body.State.Pose = Body.State.TargetPose = Body.State.Direction * ActorPoses + 1;
+            FActor& Actor = Body.Actor.emplace(FActor{
+                .Behaviour = *Behaviour,
+                .bTurnOnPlace = Number(&Properties, "Can-turn-on-place") != 0.f,
+                .PosesPerDirection = ActorPoses,
+            });
             if (const FLevelPropertyBlock* const Patrol = FindTypeBlock(Properties, "Patrol"); Patrol && (*Behaviour & BehaviourMovementMask) == BehaviourPatrol)
             {
                 const int PathId = int(Number(Patrol, "Path-ID"));
@@ -2194,7 +2200,7 @@ FCollisionPoint SegmentCorrection(const FObjectBody& Body, const FRouteWork& Wor
 
 // SeekerTurnBody at 0042cfa0 for a body that can turn on the spot: one pose toward the segment per Turn-timeout.
 // ponytail: bodies that cannot turn on the spot scale the timeout with speed; only cops move so far, and they all turn on the spot.
-void TurnActorBody(FPlayerState& State, const FMovementClass& Class, const int Direction, const int32_t Step)
+void TurnActorBody(FPlayerState& State, const FMovementClass& Class, const int PosesPerStep, const int Direction, const int32_t Step)
 {
     State.TurnTimer -= Step;
     if (State.TurnTimer >= 1)
@@ -2203,9 +2209,9 @@ void TurnActorBody(FPlayerState& State, const FMovementClass& Class, const int D
     }
 
     State.TurnTimer = std::max(0, State.TurnTimer + Class.TurnTimeout);
-    State.TargetPose = Direction * PosesPerDirection + 1;
-    State.Pose = AdvancePose(State.Pose, State.TargetPose);
-    State.Direction = (State.Pose - 1) / PosesPerDirection;
+    State.TargetPose = Direction * PosesPerStep + 1;
+    State.Pose = AdvancePose(State.Pose, State.TargetPose, DirectionCount * PosesPerStep);
+    State.Direction = (State.Pose - 1) / PosesPerStep;
 }
 
 // SeekerAimAndFire at 0042d2d0 for a body without a turret top: inside the weapon's Fire-Range, facing the target and not turning, the trigger
@@ -2260,7 +2266,7 @@ void Engage(FCombat* const Combat, FObjectBody& Body, FRouteWork& Work, FSeeker*
     if ((Work.RangeState & RangeFiring) == 0)
     {
         const bool bDrive = (Work.RangeState & RangeNearEnd) == 0 || NextSegment(Work);
-        TurnActorBody(Body.State, Body.Class, Work.SegmentDirection, Step);
+        TurnActorBody(Body.State, Body.Class, Actor.PosesPerDirection, Work.SegmentDirection, Step);
         Actor.Command.Correction = SegmentCorrection(Body, Work);
         if (bDrive)
         {
@@ -2270,7 +2276,7 @@ void Engage(FCombat* const Combat, FObjectBody& Body, FRouteWork& Work, FSeeker*
         return;
     }
 
-    TurnActorBody(Body.State, Body.Class, Work.SegmentDirection, Step);
+    TurnActorBody(Body.State, Body.Class, Actor.PosesPerDirection, Work.SegmentDirection, Step);
     if ((Work.RangeState & RangeClose) != 0)
     {
         Actor.Command.Thrust = EPlayerThrust::Backward;
