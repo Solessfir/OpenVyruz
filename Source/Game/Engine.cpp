@@ -3,6 +3,7 @@
 #include "Game/Level.h"
 #include "Game/Loop.h"
 #include "Pg/Binary.h"
+#include "Pg/Gaf.h"
 #include "Pg/ResourceArchive.h"
 
 #include <algorithm>
@@ -536,6 +537,12 @@ const FLevelPropertyBlock* FindBlock(const FLevelPropertyBlock& Block, const std
     return nullptr;
 }
 
+const FLevelPropertyBlock* FindTypeBlock(const FLevelPropertyBlock& Class, const std::string_view Name)
+{
+    const auto Found = std::ranges::find_if(Class.Children, [Name](const FLevelPropertyBlock& Child) { return Child.Kind == "TYPE" && Child.Name == Name; });
+    return Found == Class.Children.end() ? nullptr : &*Found;
+}
+
 std::string ToLowerName(const std::string_view Text)
 {
     std::string Lower(Text);
@@ -798,6 +805,14 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
             }
         }
 
+        if (const FLevelPropertyBlock* const Explosion = FindTypeBlock(Properties, "Explosion"))
+        {
+            Body.BoomEffect = ToLowerName(Explosion->Find("Boom-fx"));
+            Body.ExplosionDamage = Number(Explosion, "Damage");
+            Body.ExplosionZone = Number(Explosion, "Damage-zone");
+        }
+
+        Body.Altitude = Object.Altitude;
         // .3DO instances can override the starting Energy and Shield with plain fields.
         Body.Energy = ParseLevelFloat(Properties.Find("Energy")).value_or(Body.Energy);
         Body.Shield = ParseLevelFloat(Properties.Find("Shield")).value_or(Body.Shield);
@@ -1260,17 +1275,68 @@ FObjectBody* FindStruckBody(std::vector<FObjectBody>& Bodies, const FCollisionCi
     return Struck;
 }
 
+// AmmoImpact at 0043d350 spawns this when a shot sinks into the ground.
+constexpr std::string_view GroundImpactEffect = "bullet-ground-impact";
+// An exploding object's blast goes off this long after its Boom-fx appears, or at half its animation if that comes first.
+constexpr int32_t BlastDelayMilliseconds = 500;
+
+// UpdateAnimation at 0045e7e0: each frame is held for its duration in display periods; a one-shot animation ends after its last frame.
+void AdvanceEffect(FEffect& Effect, const FEffectClass& Class, const uint32_t StepMilliseconds, const uint32_t FramePeriod)
+{
+    if (Effect.bFinished)
+    {
+        return;
+    }
+
+    const uint32_t FrameCount = uint32_t(Class.FrameDurations.size());
+    Effect.FrameTimer -= int32_t(StepMilliseconds);
+    // A looping animation of zero-length frames would never leave this loop; one pass through it is enough.
+    for (uint32_t Advanced = 0; Effect.FrameTimer <= 0 && Advanced <= FrameCount; ++Advanced)
+    {
+        ++Effect.Frame;
+        if (Effect.Frame > FrameCount)
+        {
+            Effect.Frame = Class.bLoop ? Class.LoopStart : 0;
+        }
+
+        if (Effect.Frame == 0 || Effect.Frame > FrameCount)
+        {
+            Effect.Frame = 0;
+            Effect.bFinished = true;
+            return;
+        }
+
+        Effect.FrameTimer += Class.FrameDurations[Effect.Frame - 1] * int32_t(FramePeriod);
+    }
+}
+
+void SpawnEffect(FCombat& Combat, const std::string_view ClassName, const FCollisionPoint Position, const float Altitude, const float Damage = 0.f,
+    const float Zone = 0.f)
+{
+    const auto Class = std::ranges::find(Combat.EffectClasses, ClassName, &FEffectClass::Name);
+    if (Class == Combat.EffectClasses.end())
+    {
+        return;
+    }
+
+    FEffect Effect{
+        .ClassIndex = size_t(Class - Combat.EffectClasses.begin()),
+        .Position = Position,
+        .Altitude = Altitude,
+        .Damage = Damage,
+        .Zone = Zone,
+        .BlastTimer = BlastDelayMilliseconds,
+    };
+    // ObjectInitialize shows the first frame straight away.
+    AdvanceEffect(Effect, *Class, 0, Combat.FramePeriodMilliseconds);
+    Combat.Effects.push_back(Effect);
+}
+
 // Kinds whose destruction pays the class Reward (mask 0x1ffc0 in EngineUpdateObjects at 004406e0).
 bool PaysReward(const std::string_view SubType)
 {
     constexpr std::array<std::string_view, 11> RewardKinds = { "cop", "staticgen", "vyruz", "walker", "burner", "jeep", "roller", "heli", "turret", "spider", "tank" };
     return std::ranges::contains(RewardKinds, SubType);
-}
-
-const FLevelPropertyBlock* FindTypeBlock(const FLevelPropertyBlock& Class, const std::string_view Name)
-{
-    const auto Found = std::ranges::find_if(Class.Children, [Name](const FLevelPropertyBlock& Child) { return Child.Kind == "TYPE" && Child.Name == Name; });
-    return Found == Class.Children.end() ? nullptr : &*Found;
 }
 
 // LoadObjectClassLibrary stores slopes as degrees * pi * (1 / 180), both float constants (0050953c, 00509538).
@@ -1281,9 +1347,9 @@ float SlopeRadians(const float Degrees)
 }
 }
 
-std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player)
+std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, const uint32_t FramePeriod)
 {
-    FCombat Combat;
+    FCombat Combat{ .FramePeriodMilliseconds = FramePeriod };
     const auto FindClass = [&Level](const std::string_view Name) -> const FLevelPropertyBlock*
     {
         const auto Found = Level.Classes.find(ToLowerName(Name));
@@ -1363,7 +1429,62 @@ std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLev
             .Damage = Number(*AmmoBlock, "Damage"),
             .DamageZone = Number(*AmmoBlock, "Damage-zone"),
             .DamageAfter = uint32_t(Number(*AmmoBlock, "Damage-after")),
+            .HitEffect = ToLowerName(AmmoBlock->Find("Hit-fx")),
         });
+    }
+
+    std::vector<std::string> EffectNames = { std::string(GroundImpactEffect) };
+    for (const FAmmoClass& Ammo : Combat.AmmoClasses)
+    {
+        EffectNames.push_back(Ammo.HitEffect);
+    }
+
+    for (const FLevelObject& Object : Level.Objects)
+    {
+        if (const FLevelPropertyBlock* const Explosion = FindTypeBlock(Object.Properties, "Explosion"))
+        {
+            EffectNames.push_back(ToLowerName(Explosion->Find("Boom-fx")));
+        }
+    }
+
+    for (const std::string& Name : EffectNames)
+    {
+        if (Name.empty() || std::ranges::contains(Combat.EffectClasses, Name, &FEffectClass::Name))
+        {
+            continue;
+        }
+
+        const FLevelPropertyBlock* const Class = FindClass(Name);
+        const auto GafPath = Level.ClassGafPaths.find(Name);
+        const FLevelPropertyBlock* const Effect = Class ? FindTypeBlock(*Class, "FX") : nullptr;
+        if (!Effect || GafPath == Level.ClassGafPaths.end())
+        {
+            return std::unexpected(std::format("unknown FX class '{}'", Name));
+        }
+
+        const int GafIndex = int(Number(*Class, "GAF-index"));
+        const std::optional<std::vector<uint8_t>> File = Archive.Read(GafPath->second);
+        const std::optional<std::vector<Gaf::FFrame>> Bitmaps = File ? Gaf::LoadFrames(*File) : std::nullopt;
+        const std::optional<std::vector<Gaf::FAnimation>> Animations = Bitmaps ? Gaf::LoadAnimations(*File, Bitmaps->size()) : std::nullopt;
+        if (!Animations || GafIndex < 1 || size_t(GafIndex) > Animations->size())
+        {
+            return std::unexpected(std::format("FX class '{}': cannot load animation {} of {}", Name, GafIndex, GafPath->second));
+        }
+
+        const Gaf::FAnimation& Animation = (*Animations)[size_t(GafIndex - 1)];
+        FEffectClass EffectClass{
+            .Name = Name,
+            .GafPath = GafPath->second,
+            .GafIndex = GafIndex,
+            .LoopStart = Animation.LoopStart,
+            .bLoop = Number(*Effect, "Loop") != 0.f,
+        };
+        for (const Gaf::FAnimationFrame& Frame : Animation.Frames)
+        {
+            EffectClass.FrameDurations.push_back(Frame.Duration);
+        }
+
+        Combat.EffectClasses.push_back(std::move(EffectClass));
     }
 
     Combat.Slope = Combat.Weapons.empty() ? 0.f : Combat.Weapons.front().InitialSlope;
@@ -1509,7 +1630,8 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
     std::erase_if(Combat.Projectiles, [&](FProjectile& Shot)
     {
         const FAmmoClass& Ammo = Combat.AmmoClasses[Shot.AmmoIndex];
-        const auto Detonate = [&](FObjectBody* const Target)
+        // Target is the object struck; bSurface marks a wall or other terrain contact.
+        const auto Detonate = [&](FObjectBody* const Target, const bool bSurface)
         {
             // AmmoHit at 0043d7d0 blasts around the shot's last committed centre, then AmmoImpact (0043d350) shoves and damages the object it struck.
             AreaDamage(Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies);
@@ -1523,6 +1645,21 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
                 ApplyDamage(*Target, Absorption == Target->Absorptions.end() ? Ammo.Damage : float(double(Ammo.Damage) * double(Absorption->Coeff)));
             }
 
+            // AmmoImpact puts the Hit-fx at the contact point; a shot that sank to the ground leaves a ground impact instead.
+            // ponytail: water splashes and the check that the spot is on walkable terrain are not ported.
+            if (Target || bSurface)
+            {
+                const FCollisionPoint Spot{
+                    .X = std::clamp(Shot.State.Position.X, 0.f, float(Level.WorldExtentX) - 1.f),
+                    .Y = std::clamp(Shot.State.Position.Y, 0.f, float(Level.WorldExtentY) - 1.f),
+                };
+                SpawnEffect(Combat, Ammo.HitEffect, Spot, float(Shot.Altitude));
+            }
+            else if (Shot.Altitude < 1)
+            {
+                SpawnEffect(Combat, GroundImpactEffect, Shot.State.Position, 0.f);
+            }
+
             return true;
         };
 
@@ -1534,7 +1671,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             if (Shot.Altitude < 1)
             {
                 Shot.Altitude = 0;
-                return Detonate(nullptr);
+                return Detonate(nullptr, false);
             }
         }
 
@@ -1542,7 +1679,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         {
             if (Shot.DamageTimer <= StepMilliseconds)
             {
-                return Detonate(nullptr);
+                return Detonate(nullptr, false);
             }
 
             Shot.DamageTimer -= StepMilliseconds;
@@ -1578,7 +1715,39 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         }
 
         Shot.State.Position = WorldFromCollision(*Contact);
-        return Detonate(Struck);
+        return Detonate(Struck, Struck == nullptr);
+    });
+
+    // The FX branch of ObjectUpdateWeapon (00444ca0): before half its animation an explosion waits out its delay, then the blast goes off once.
+    std::erase_if(Combat.Effects, [&](FEffect& Effect)
+    {
+        const FEffectClass& Class = Combat.EffectClasses[Effect.ClassIndex];
+        if (Effect.Damage != 0.f)
+        {
+            bool bBlast = true;
+            if (Effect.Frame < uint32_t(Class.FrameDurations.size()) / 2)
+            {
+                if (Effect.BlastTimer < 1)
+                {
+                    bBlast = false;
+                }
+                else if (int32_t(StepMilliseconds) < Effect.BlastTimer)
+                {
+                    Effect.BlastTimer -= int32_t(StepMilliseconds);
+                    bBlast = false;
+                }
+            }
+
+            if (bBlast)
+            {
+                Effect.BlastTimer = -1;
+                AreaDamage(CollisionFromWorld(Effect.Position), CellOf(Effect.Position), Effect.Damage, Effect.Zone, Bodies);
+                Effect.Damage = 0.f;
+            }
+        }
+
+        AdvanceEffect(Effect, Class, StepMilliseconds, Combat.FramePeriodMilliseconds);
+        return Effect.bFinished;
     });
 
     std::erase_if(Bodies, [&](const FObjectBody& Body)
@@ -1591,6 +1760,9 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
         FLevelObject& Object = Level.Objects[Body.ObjectIndex];
         Object.bRemoved = true;
+        // ObjectDestroy (00437d40) hands the TYPE Explosion block to a new Boom-fx object at the same spot.
+        // ponytail: two-piece wrecks that stay behind and surprise drops are not ported.
+        SpawnEffect(Combat, Body.BoomEffect, Body.State.Position, Body.Altitude, Body.ExplosionDamage, Body.ExplosionZone);
         if (0.f < Body.Reward && PaysReward(Object.SubType))
         {
             Inventory.Money += Body.Reward;
@@ -1606,7 +1778,9 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     constexpr uint32_t StepMilliseconds = 14;
     constexpr uint32_t DurationMilliseconds = 6000;
     constexpr float SpriteSize = 64.f;
+    constexpr uint32_t VerifyRefreshMillihertz = 60000;
     size_t Levels = 0;
+    size_t Effects = 0;
     size_t Shots = 0;
     size_t Destroyed = 0;
     for (const std::string& Name : Archive.GetNames())
@@ -1630,7 +1804,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
 
         const std::expected<FMovementClass, std::string> Class = ReadMovementClass(*PlayerObject);
         const std::expected<FTerrainCollision, std::string> Terrain = BuildTerrainCollision(*Level);
-        std::expected<FCombat, std::string> Combat = CreateCombat(*Level, *PlayerObject);
+        std::expected<FCombat, std::string> Combat = CreateCombat(*Level, *PlayerObject, Archive, FramePeriodMilliseconds(VerifyRefreshMillihertz));
         if (!Class || !Terrain || !Combat)
         {
             return std::unexpected(std::format("{}: {}", Name, !Class ? Class.error() : !Terrain ? Terrain.error() : Combat.error()));
@@ -1649,7 +1823,9 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             const size_t Before = Combat->Projectiles.size();
             StepPlayerWeapon(*Combat, true, Player, *PlayerObject, SpriteSize, Inventory);
             LevelShots += Combat->Projectiles.size() - Before;
+            const size_t EffectsBefore = Combat->Effects.size();
             StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Inventory);
+            Effects += Combat->Effects.size() > EffectsBefore ? Combat->Effects.size() - EffectsBefore : 0;
         }
 
         if (LevelShots == 0)
@@ -1662,5 +1838,5 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         Destroyed += BodyCount - Bodies.size();
     }
 
-    return std::format("{} levels, {} shots, {} objects destroyed", Levels, Shots, Destroyed);
+    return std::format("{} levels, {} shots, {} objects destroyed, at least {} effects", Levels, Shots, Destroyed, Effects);
 }

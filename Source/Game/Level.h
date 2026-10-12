@@ -106,6 +106,8 @@ struct FLevel
 
     // Resolved COMMON and zone classes by lowercase name, for objects created at run time such as ammo.
     std::unordered_map<std::string, FLevelPropertyBlock> Classes;
+    // Archive path of each class's GAF-name, for the classes whose GAF exists.
+    std::unordered_map<std::string, std::string> ClassGafPaths;
 };
 
 // Loads <Zone>\<Name>.3DX/.3DI/.3DO/.3DG plus the COMMON and zone .3DC class libraries, e.g. "UNDERGROUND\T1U1".

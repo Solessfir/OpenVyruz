@@ -106,6 +106,11 @@ struct FObjectBody
     bool bIndestructible = false;
     bool bDamaged = false;
     std::vector<FAbsorption> Absorptions;
+    // The TYPE Explosion block: the Boom-fx object spawned on destruction and the blast it carries.
+    std::string BoomEffect;
+    float ExplosionDamage = 0.f;
+    float ExplosionZone = 0.f;
+    float Altitude = 0.f;
 };
 
 inline constexpr int PlayerPoseCount = 48;
@@ -165,6 +170,34 @@ struct FAmmoClass
     float Damage = 0.f;
     float DamageZone = 0.f;
     uint32_t DamageAfter = 0;
+    std::string HitEffect;
+};
+
+// An FX class (fx.3dc) and the animation it plays.
+struct FEffectClass
+{
+    std::string Name;
+    std::string GafPath;
+    int GafIndex = 0;
+    // Frame durations in display frame periods.
+    std::vector<int32_t> FrameDurations;
+    uint32_t LoopStart = 0;
+    bool bLoop = false;
+};
+
+// A running FX object; an explosion's blast goes off once with it.
+struct FEffect
+{
+    size_t ClassIndex = 0;
+    FCollisionPoint Position;
+    float Altitude = 0.f;
+    // 1-based animation frame; zero once a one-shot animation has ended.
+    uint32_t Frame = 0;
+    int32_t FrameTimer = 0;
+    bool bFinished = false;
+    float Damage = 0.f;
+    float Zone = 0.f;
+    int32_t BlastTimer = 0;
 };
 
 // A fired ammo object (kind Ammo); bullets with a slope sink as they fly until they reach the ground.
@@ -186,6 +219,10 @@ struct FCombat
     std::vector<FAmmoClass> AmmoClasses;
     size_t CurrentWeapon = 0;
     std::vector<FProjectile> Projectiles;
+    std::vector<FEffectClass> EffectClasses;
+    std::vector<FEffect> Effects;
+    // g_FramePeriodMs: animation frame durations count display periods.
+    uint32_t FramePeriodMilliseconds = 0;
     FRandom Random;
     // The game clock in milliseconds; never zero, since a zero last-shot time means no shot yet.
     uint32_t Clock = 1;
@@ -215,11 +252,13 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
     const FLevel& Level, std::span<FObjectBody> Bodies = {}, const FObjectBody* Self = nullptr);
 // Moves pushed bodies for one step, in object order.
 void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
-std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player);
+// Loads the player's weapons and every FX class the level's ammo and explosions can spawn.
+std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, uint32_t FramePeriod);
 // One step of the player's weapon: the slope ramp, then a shot when the trigger is held and the weapon's delay has passed (WeaponFire at 00443bd0).
 // SpriteSize is the smaller side of the player's current frame, which picks the random muzzle distance.
 void StepPlayerWeapon(FCombat& Combat, bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, float SpriteSize, FPlayerInventory& Inventory);
-// Moves every shot, detonating it against terrain, bodies or the ground; destroyed bodies are removed and their Reward goes to the player.
+// Moves every shot, detonating it against terrain, bodies or the ground, then runs the effects and their blasts; destroyed bodies are removed,
+// spawn their Boom-fx and pay their Reward.
 void StepProjectiles(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
     FPlayerInventory& Inventory);
 std::expected<void, std::string> VerifyPlayerMovement();

@@ -243,6 +243,9 @@ int VerifyLevels(FResourceArchive& Archive)
     return Failed == 0 && Loaded > 0 ? 0 : 1;
 }
 
+// Sprites of runtime FX objects belong to no placed object.
+constexpr size_t NoObjectIndex = SIZE_MAX;
+
 struct FObjectSprite
 {
     size_t SheetIndex = 0;
@@ -260,13 +263,39 @@ struct FObjectSprites
     std::vector<FSpriteSheet> Sheets;
     std::vector<std::vector<Gaf::FAnimation>> Animations;
     std::vector<FObjectSprite> Sprites;
+    std::unordered_map<std::string, size_t> SheetIndices;
 };
+
+// Loads a GAF's sheet once and returns its index.
+std::optional<size_t> FindOrLoadSheet(FObjectSprites& Sprites, FResourceArchive& Archive, FRenderer& Renderer, const std::string& Path)
+{
+    auto [Sheet, bInserted] = Sprites.SheetIndices.try_emplace(Path, Sprites.Sheets.size());
+    if (bInserted)
+    {
+        std::optional<FObjectGaf> Gaf = LoadObjectGaf(Archive, Path);
+        if (!Gaf)
+        {
+            Sprites.SheetIndices.erase(Sheet);
+            return std::nullopt;
+        }
+
+        Sprites.Sheets.push_back(Renderer.CreateSpriteSheet(Gaf->Bitmaps));
+        Sprites.Animations.push_back(std::move(Gaf->Animations));
+    }
+
+    return Sheet->second;
+}
+
+ESpriteBlend FrameBlend(const Gaf::FAnimationFrame& Frame)
+{
+    const uint32_t DrawMode = Frame.DrawFlags & AnimationBlendMask;
+    return DrawMode == AdditiveDrawMode ? ESpriteBlend::Additive : DrawMode == InverseSourceDrawMode ? ESpriteBlend::InverseSourceColor : ESpriteBlend::Opaque;
+}
 
 // shortcut: initial poses only, use the behaviour update for animation state changes and attachments.
 std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive& Archive, FRenderer& Renderer, const FLevel& Level)
 {
     FObjectSprites Result;
-    std::unordered_map<std::string, size_t> SheetIndices;
     for (size_t ObjectIndex = 0; ObjectIndex < Level.Objects.size(); ++ObjectIndex)
     {
         const FLevelObject& Object = Level.Objects[ObjectIndex];
@@ -279,24 +308,17 @@ std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive&
                 continue;
             }
 
-            auto [Sheet, bInserted] = SheetIndices.try_emplace(Path, Result.Sheets.size());
-            if (bInserted)
+            const std::optional<size_t> SheetIndex = FindOrLoadSheet(Result, Archive, Renderer, Path);
+            if (!SheetIndex)
             {
-                std::optional<FObjectGaf> Gaf = LoadObjectGaf(Archive, Path);
-                if (!Gaf)
-                {
-                    return std::unexpected("Cannot decode object GAF " + Path);
-                }
-
-                Result.Sheets.push_back(Renderer.CreateSpriteSheet(Gaf->Bitmaps));
-                Result.Animations.push_back(std::move(Gaf->Animations));
+                return std::unexpected("Cannot decode object GAF " + Path);
             }
 
-            const auto& GafAnimations = Result.Animations[Sheet->second];
+            const auto& GafAnimations = Result.Animations[*SheetIndex];
             const size_t Index = ObjectAnimationIndex(Object, bShadow);
             if (size_t(BaseIndex - 1) + ObjectPoseCount(Object, bShadow) > GafAnimations.size())
             {
-                if (GafAnimations.empty() && Result.Sheets[Sheet->second].Frames.empty())
+                if (GafAnimations.empty() && Result.Sheets[*SheetIndex].Frames.empty())
                 {
                     continue;
                 }
@@ -329,7 +351,7 @@ std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive&
 
             const int64_t GroundY = SpriteCoordinate(Object.Y);
             Result.Sprites.push_back({
-                .SheetIndex = Sheet->second,
+                .SheetIndex = *SheetIndex,
                 .ObjectIndex = ObjectIndex,
                 .bShadow = bShadow,
                 .Frame = Animation.Frames.front(),
@@ -377,6 +399,8 @@ int main(const int ArgCount, char** const Args)
     bool bVerifyGafs = false;
     bool bVerifyLevels = false;
     bool bVerifyGame = false;
+    // Holds the trigger down, for checking shots and explosions without a keyboard.
+    bool bAutoFire = false;
     for (int Index = 1; Index < ArgCount; ++Index)
     {
         if (std::strcmp(Args[Index], "--verify-gaf") == 0)
@@ -390,6 +414,10 @@ int main(const int ArgCount, char** const Args)
         else if (std::strcmp(Args[Index], "--verify-game") == 0)
         {
             bVerifyGame = true;
+        }
+        else if (std::strcmp(Args[Index], "--auto-fire") == 0)
+        {
+            bAutoFire = true;
         }
         else if (std::strcmp(Args[Index], "--level") == 0 && Index + 1 < ArgCount)
         {
@@ -500,6 +528,9 @@ int main(const int ArgCount, char** const Args)
     std::optional<FMovementClass> PlayerClass;
     std::optional<FPlayerState> Player;
     std::optional<FTerrainCollision> Terrain;
+    const GLFWvidmode* const DisplayMode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+    const uint32_t RefreshMillihertz = DisplayMode && DisplayMode->refreshRate > 0 ? uint32_t(DisplayMode->refreshRate) * MillihertzPerHertz : 0;
+    const uint32_t FramePeriod = FramePeriodMilliseconds(RefreshMillihertz);
     std::optional<FCombat> Combat;
     // The smaller side of the player's current frame, which AnimUpdateBounds makes the body's bounds.
     float PlayerSpriteSize = 0.f;
@@ -515,9 +546,16 @@ int main(const int ArgCount, char** const Args)
             PlayerClass = *Class;
             Player = SpawnPlayer(*PlayerObject, *Class);
             Terrain = std::move(*Collision);
-            if (std::expected<FCombat, std::string> Weapons = CreateCombat(*Level, *PlayerObject))
+            if (std::expected<FCombat, std::string> Weapons = CreateCombat(*Level, *PlayerObject, Archive, FramePeriod))
             {
                 Combat = std::move(*Weapons);
+                for (const FEffectClass& Effect : Combat->EffectClasses)
+                {
+                    if (!FindOrLoadSheet(*Objects, Archive, Renderer, Effect.GafPath))
+                    {
+                        std::fprintf(stderr, "Cannot decode FX GAF %s\n", Effect.GafPath.c_str());
+                    }
+                }
             }
             else
             {
@@ -535,9 +573,6 @@ int main(const int ArgCount, char** const Args)
     std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
     std::fflush(stdout);
 
-    const GLFWvidmode* const DisplayMode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-    const uint32_t RefreshMillihertz = DisplayMode && DisplayMode->refreshRate > 0 ? uint32_t(DisplayMode->refreshRate) * MillihertzPerHertz : 0;
-    const uint32_t FramePeriod = FramePeriodMilliseconds(RefreshMillihertz);
     FFrameClock Clock(FramePeriod);
     Clock.Poll(ClockMilliseconds());
     while (!glfwWindowShouldClose(Window))
@@ -558,7 +593,7 @@ int main(const int ArgCount, char** const Args)
                 {
                     const float MoneyBefore = Inventory.Money;
                     Combat->Clock += StepMilliseconds;
-                    StepPlayerWeapon(*Combat, Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL), *Player, *PlayerObject, PlayerSpriteSize, Inventory);
+                    StepPlayerWeapon(*Combat, bAutoFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL), *Player, *PlayerObject, PlayerSpriteSize, Inventory);
                     StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Inventory);
                     if (Inventory.Money != MoneyBefore)
                     {
@@ -652,10 +687,39 @@ int main(const int ArgCount, char** const Args)
             }
         }
 
-        for (const FObjectSprite& Sprite : Objects->Sprites)
+        // Runtime FX join the placed objects in the original depth order.
+        std::vector<FObjectSprite> Sprites = Objects->Sprites;
+        if (Combat)
+        {
+            for (const FEffect& Effect : Combat->Effects)
+            {
+                const FEffectClass& Class = Combat->EffectClasses[Effect.ClassIndex];
+                const auto Sheet = Objects->SheetIndices.find(Class.GafPath);
+                if (Effect.Frame == 0 || Sheet == Objects->SheetIndices.end())
+                {
+                    continue;
+                }
+
+                const Gaf::FAnimationFrame& Frame = Objects->Animations[Sheet->second][size_t(Class.GafIndex - 1)].Frames[Effect.Frame - 1];
+                const int64_t GroundY = SpriteCoordinate(Effect.Position.Y);
+                Sprites.push_back({
+                    .SheetIndex = Sheet->second,
+                    .ObjectIndex = NoObjectIndex,
+                    .Frame = Frame,
+                    .X = float(SpriteCoordinate(Effect.Position.X)),
+                    .Y = float(GroundY) - Effect.Altitude,
+                    .Depth = SpriteDepth(GroundY, false, false, false),
+                    .Blend = FrameBlend(Frame),
+                });
+            }
+
+            std::stable_sort(Sprites.begin(), Sprites.end(), [](const FObjectSprite& A, const FObjectSprite& B) { return SpriteDrawsBefore(A.Depth, B.Depth); });
+        }
+
+        for (const FObjectSprite& Sprite : Sprites)
         {
             const Gaf::FAnimationFrame& Frame = Sprite.Frame;
-            if (Frame.BitmapIndex == 0 || Level->Objects[Sprite.ObjectIndex].bRemoved)
+            if (Frame.BitmapIndex == 0 || (Sprite.ObjectIndex != NoObjectIndex && Level->Objects[Sprite.ObjectIndex].bRemoved))
             {
                 continue;
             }

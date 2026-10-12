@@ -37,12 +37,16 @@ struct FAnimationFrame
     uint32_t DrawFlags = 0;
     bool bMirrorX = false;
     bool bMirrorY = false;
+    // In display frame periods: UpdateAnimation at 0045e7e0 holds the frame for Duration * g_FramePeriodMs milliseconds.
+    int32_t Duration = 0;
 };
 
 struct FAnimation
 {
     std::string Name;
     std::vector<FAnimationFrame> Frames;
+    // 1-based frame a looping animation restarts from.
+    uint32_t LoopStart = 0;
 };
 
 // ANM_ visual frames and NAM_ names, in original animation-index order. Offsets already account for frame mirroring.

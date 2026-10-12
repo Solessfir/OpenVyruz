@@ -30,13 +30,22 @@ On contact `AmmoHit` (`0043d7d0`) moves the shot to the contact point and calls 
 
 `ApplyDamage` (`0043ca30`) takes damage from the shield first; when the shield breaks, the rest goes to energy. An object whose energy reaches zero is destroyed in its next update. Cops, generators, walkers, burners, jeeps, rollers, helicopters, turrets, spiders and tanks pay their `Reward` to the player.
 
+## Effects and explosions
+
+FX classes (`fx.3dc`) play one animation from their GAF. `UpdateAnimation` (`0045e7e0`) holds each frame for its ANM duration times the display frame period (`g_FramePeriodMs`), so effect timing follows the refresh rate. A one-shot animation (`loop = 0`) ends after its last frame and the FX object is removed; a looping one restarts from the animation's loop-start frame.
+
+`AmmoImpact` spawns the ammo's `hit-fx` at the contact point when a shot strikes an object or a wall, and `Bullet-Ground-Impact` when a sloped shot sinks to the ground.
+
+A destroyed object with a `TYPE Explosion` block hands it to a new `Boom-fx` object at its position (`ObjectDestroy`, `00437d40`). Before half of the effect's animation has played, the blast waits up to 500 ms; then `AreaDamage` goes off once around the effect with the block's `damage` and `damage-zone`. Blasts destroy neighbouring objects, so explosions chain.
+
 ## Not ported yet
 
 - The shield reset value (a class field at `+0x6c`).
 - Bouncing ammo (`on-hit = 0`: grenades, saws, pulsars), which the port bursts on first contact.
 - Shots hitting their owner.
 - Automatic weapon switching when the stock is empty.
-- Explosions, hit effects, surprises and sounds.
+- Water splashes, two-piece wrecks, surprise drops and sounds.
+- Blasts hurting the player and pickups.
 - Drawing visible ammo.
 
 `--verify-game` fires every level's player weapon for six seconds of game time while spinning and reports the shots and destroyed objects.

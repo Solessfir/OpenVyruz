@@ -879,6 +879,11 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
 
     for (auto& [ClassName, Class] : Classes)
     {
+        if (const std::expected<std::string, std::string> GafPath = ResolveGafPath(ArchiveNames, Zone, Class.Resolved.Find("GAF-name")); GafPath && !GafPath->empty())
+        {
+            Level.ClassGafPaths.emplace(ClassName, *GafPath);
+        }
+
         Level.Classes.emplace(ClassName, std::move(Class.Resolved));
     }
 
