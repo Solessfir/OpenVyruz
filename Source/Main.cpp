@@ -643,6 +643,11 @@ int main(const int ArgCount, char** const Args)
     while (!glfwWindowShouldClose(Window))
     {
         glfwPollEvents();
+        // ponytail: Esc quits straight away until the original pause menu is ported.
+        if (glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        {
+            glfwSetWindowShouldClose(Window, GLFW_TRUE);
+        }
         uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
         while (RemainingMilliseconds != 0)
         {
