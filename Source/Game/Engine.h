@@ -275,7 +275,6 @@ struct FCombat
     std::vector<FEffectClass> EffectClasses;
     std::vector<FEffect> Effects;
     // g_FramePeriodMs: animation frame durations count display periods.
-    uint32_t FramePeriodMilliseconds = 0;
     FRandom Random;
     // The game clock in milliseconds; never zero, since a zero last-shot time means no shot yet.
     uint32_t Clock = 1;
@@ -309,7 +308,7 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
 // Moves pushed bodies for one step, in object order.
 void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
 // Loads the player's weapons, arms the level's turrets and loads every FX class the level's ammo and explosions can spawn.
-std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, uint32_t FramePeriod,
+std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive,
     std::vector<FObjectBody>& Bodies);
 // One step of the player's weapon: the slope ramp, then a shot when the trigger is held and the weapon's delay has passed (WeaponFire at 00443bd0).
 // SpriteSize is the smaller side of the player's current frame, which picks the random muzzle distance.

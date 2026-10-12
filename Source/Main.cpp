@@ -553,7 +553,7 @@ int main(const int ArgCount, char** const Args)
             PlayerClass = *Class;
             Player = SpawnPlayer(*PlayerObject, *Class);
             Terrain = std::move(*Collision);
-            if (std::expected<FCombat, std::string> Weapons = CreateCombat(*Level, *PlayerObject, Archive, FramePeriod, Bodies))
+            if (std::expected<FCombat, std::string> Weapons = CreateCombat(*Level, *PlayerObject, Archive, Bodies))
             {
                 Combat = std::move(*Weapons);
                 for (const FEffectClass& Effect : Combat->EffectClasses)

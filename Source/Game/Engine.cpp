@@ -1395,7 +1395,10 @@ constexpr std::string_view GroundImpactEffect = "bullet-ground-impact";
 constexpr int32_t BlastDelayMilliseconds = 500;
 
 // UpdateAnimation at 0045e7e0: each frame is held for its duration in display periods; a one-shot animation ends after its last frame.
-void AdvanceEffect(FEffect& Effect, const FEffectClass& Class, const uint32_t StepMilliseconds, const uint32_t FramePeriod)
+// VzRun calls AnimationSetFixedPeriod (0045e4c0) with 14 ms at startup, so UpdateAnimation never uses the display period.
+constexpr int32_t AnimationPeriodMilliseconds = 14;
+
+void AdvanceEffect(FEffect& Effect, const FEffectClass& Class, const uint32_t StepMilliseconds)
 {
     if (Effect.bFinished)
     {
@@ -1420,7 +1423,7 @@ void AdvanceEffect(FEffect& Effect, const FEffectClass& Class, const uint32_t St
             return;
         }
 
-        Effect.FrameTimer += Class.FrameDurations[Effect.Frame - 1] * int32_t(FramePeriod);
+        Effect.FrameTimer += Class.FrameDurations[Effect.Frame - 1] * AnimationPeriodMilliseconds;
     }
 }
 
@@ -1442,7 +1445,7 @@ void SpawnEffect(FCombat& Combat, const std::string_view ClassName, const FColli
         .BlastTimer = BlastDelayMilliseconds,
     };
     // ObjectInitialize shows the first frame straight away.
-    AdvanceEffect(Effect, *Class, 0, Combat.FramePeriodMilliseconds);
+    AdvanceEffect(Effect, *Class, 0);
     Combat.Effects.push_back(Effect);
 }
 
@@ -1758,10 +1761,10 @@ void TurnTurretTop(FTurret& Turret, const uint32_t StepMilliseconds)
 }
 }
 
-std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, const uint32_t FramePeriod,
+std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive,
     std::vector<FObjectBody>& Bodies)
 {
-    FCombat Combat{ .FramePeriodMilliseconds = FramePeriod };
+    FCombat Combat;
     for (const FLevelPropertyBlock& Child : Player.Properties.Children)
     {
         if (Child.Kind == "ADD" && Child.Name == "Weapon")
@@ -2173,7 +2176,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             }
         }
 
-        AdvanceEffect(Effect, Class, StepMilliseconds, Combat.FramePeriodMilliseconds);
+        AdvanceEffect(Effect, Class, StepMilliseconds);
         return Effect.bFinished;
     });
 
@@ -2210,7 +2213,6 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     constexpr uint32_t StepMilliseconds = 14;
     constexpr uint32_t DurationMilliseconds = 6000;
     constexpr float SpriteSize = 64.f;
-    constexpr uint32_t VerifyRefreshMillihertz = 60000;
     size_t Levels = 0;
     size_t Shots = 0;
     size_t TurretShots = 0;
@@ -2273,7 +2275,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
         const std::expected<FMovementClass, std::string> Class = ReadMovementClass(*PlayerObject);
         const std::expected<FTerrainCollision, std::string> Terrain = BuildTerrainCollision(*Level);
-        std::expected<FCombat, std::string> Combat = CreateCombat(*Level, *PlayerObject, Archive, FramePeriodMilliseconds(VerifyRefreshMillihertz), Bodies);
+        std::expected<FCombat, std::string> Combat = CreateCombat(*Level, *PlayerObject, Archive, Bodies);
         if (!Class || !Terrain || !Combat)
         {
             return std::unexpected(std::format("{}: {}", Name, !Class ? Class.error() : !Terrain ? Terrain.error() : Combat.error()));
