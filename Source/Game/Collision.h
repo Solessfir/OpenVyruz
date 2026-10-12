@@ -64,6 +64,8 @@ FCollisionPoint ToWorldSpace(FCollisionPoint Collision);
 std::expected<FTerrainCollision, std::string> BuildTerrainCollision(const FLevel& Level);
 std::optional<FCollisionPoint> IntersectTerrainShape(FCollisionCircle Previous, FCollisionCircle Candidate, const FStaticCollisionShape& Shape);
 std::optional<FTerrainHit> QueryTerrainCollision(const FTerrainCollision& Terrain, FCollisionCircle Previous, FCollisionCircle Candidate);
+// True when the straight line from From to To crosses no solid terrain edge; water does not block it.
+bool IsLineClear(const FTerrainCollision& Terrain, FCollisionPoint From, FCollisionPoint To);
 // Circle against circle at 004069d0: the moving circle's candidate centre touches a resting circle.
 std::optional<FCollisionPoint> IntersectCircles(FCollisionCircle Moving, FCollisionCircle Resting);
 // Contact selection at 0041b770: true when Next replaces Previous as the contact nearest Center.

@@ -38,14 +38,27 @@ FX classes (`fx.3dc`) play one animation from their GAF. `UpdateAnimation` (`004
 
 A destroyed object with a `TYPE Explosion` block hands it to a new `Boom-fx` object at its position (`ObjectDestroy`, `00437d40`). Before half of the effect's animation has played, the blast waits up to 500 ms; then `AreaDamage` goes off once around the effect with the block's `damage` and `damage-zone`. Blasts destroy neighbouring objects, so explosions chain.
 
+## Turrets
+
+Turrets (`Behaviour = Fixed Seeker`, kind Turret) draw a rotating top from the 24 animations at `GAF-index` and a fixed base from animation 25. `SeekerUpdate` (`0042c5a0`) runs their `TYPE Seeker` block every step:
+
+- Unlocked, the scan timer counts down; when it runs out it is refilled by `Scan-Delay` and `SeekerFindTarget` (`0042da80`) looks for the target within `Sensor-Range` collision units and inside the vision cone around the base's facing. `PathStartSearch` (`0040f6f0`) then routes to it.
+- Locked, the timer counts down while the turret engages. When it runs out and the target has moved since the lock, the lock drops and the next step scans again.
+- Engaging (`SeekerEngage`, `0042caa0`) needs a direct route within `Min-distance`. The top turns one pose per `Turret-turn-timeout` toward the line to the target (`SeekerTurnTop`, `0042d150`), using the previous step's direction.
+- `SeekerAimAndFire` (`0042d2d0`) raises the weapon slope while the target is within the weapon's `Fire-Range`, and pulls the trigger when the weapon is ready and the top faces the target. The weapon update then fires as for the player.
+
+The port replaces the route with a straight line that crosses no solid terrain edge, starting at the turret's edge because turrets stand on scenery. Turret shots pass through the turret that fired them and damage the player's shield and energy; blasts reach the player too.
+
 ## Not ported yet
 
 - The shield reset value (a class field at `+0x6c`).
 - Bouncing ammo (`on-hit = 0`: grenades, saws, pulsars), which the port bursts on first contact.
-- Shots hitting their owner.
+- The A* route search (`FUN_00410460`) and the other seeker kinds (cops, walkers, jeeps and the rest), which follow their routes.
+- The idle look-around of fixed objects (`FixedIdleLookAround`, `00444a40`), with its saved random state.
+- Drawing turret bases, the player's shove and absorption, the HUD and the player's death.
 - Automatic weapon switching when the stock is empty.
 - Water splashes, two-piece wrecks, surprise drops and sounds.
-- Blasts hurting the player and pickups.
+- Blasts hurting pickups.
 - Drawing visible ammo.
 
-`--verify-game` fires every level's player weapon for six seconds of game time while spinning and reports the shots and destroyed objects.
+`--verify-game` fires every level's player weapon for six seconds of game time while spinning, then puts the player in clear view of a turret for three seconds; it fails if no turret fires in those duels.

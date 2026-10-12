@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -87,6 +88,57 @@ struct FPlayerState
     bool bPushed = false;
 };
 
+struct FAmmoStock
+{
+    std::string Name;
+    float Count = 0.f;
+    float Max = 0.f;
+};
+
+// One weapon's firing state (the weapon instance at object +0x24c).
+struct FWeaponState
+{
+    // Index into FCombat::Weapons.
+    size_t Weapon = 0;
+    uint32_t LastFireTime = 0;
+    // Weapon flag 2 and the slope that WeaponRaiseSlope (0042c210) ramps while it is set.
+    bool bTriggerHeld = false;
+    float Slope = 0.f;
+    // Weapon flag 1, flipped on every shot of an Alternated-fire weapon.
+    bool bAlternateSide = false;
+};
+
+// A Fixed Seeker turret: the TYPE Seeker block, its scan and lock state, and the rotating top that aims its weapon.
+struct FTurret
+{
+    int VisionDirections = 0;
+    float SensorRange = 0.f;
+    int32_t ScanDelay = 0;
+    float MinDistance = 0.f;
+    int32_t TurnTimeout = 0;
+    int32_t ScanTimer = 0;
+    bool bLocked = false;
+    // The target's world position when it was locked; the lock drops once the target has moved at the next scan.
+    FCollisionPoint LockedTarget;
+    // Direction of the line from the turret to the target, refreshed while engaging.
+    int AimDirection = 0;
+    // The fixed base's facing, which centres the vision cone, and the top's facing and turn timer.
+    int BaseDirection = 0;
+    int Direction = 0;
+    int32_t TurnTimer = 0;
+    FWeaponState Weapon;
+    FAmmoStock Ammo;
+    // Object flag 2: pull the trigger in this step's weapon update.
+    bool bTrigger = false;
+};
+
+struct FExplosionBlock
+{
+    std::string BoomEffect;
+    float Damage = 0.f;
+    float Zone = 0.f;
+};
+
 struct FAbsorption
 {
     std::string AmmoClass;
@@ -106,11 +158,10 @@ struct FObjectBody
     bool bIndestructible = false;
     bool bDamaged = false;
     std::vector<FAbsorption> Absorptions;
-    // The TYPE Explosion block: the Boom-fx object spawned on destruction and the blast it carries.
-    std::string BoomEffect;
-    float ExplosionDamage = 0.f;
-    float ExplosionZone = 0.f;
+    // Every TYPE Explosion block: the Boom-fx objects spawned on destruction and the blasts they carry.
+    std::vector<FExplosionBlock> Explosions;
     float Altitude = 0.f;
+    std::optional<FTurret> Turret;
 };
 
 inline constexpr int PlayerPoseCount = 48;
@@ -125,13 +176,6 @@ struct FPickup
     float AddMoney = 0.f;
     std::string AmmoType;
     float AddAmmo = 0.f;
-};
-
-struct FAmmoStock
-{
-    std::string Name;
-    float Count = 0.f;
-    float Max = 0.f;
 };
 
 // The player's Energy, Shield, money and ammo, as the item pickup branch of EngineUpdateObjects (004406e0) changes them.
@@ -151,6 +195,7 @@ struct FWeaponClass
     std::string Name;
     std::string Ammo;
     uint32_t Delay = 0;
+    float FireRange = 0.f;
     float WeaponsGap = 0.f;
     bool bLeftSide = false;
     bool bRightSide = false;
@@ -210,6 +255,8 @@ struct FProjectile
     float Slope = 0.f;
     bool bSloped = false;
     uint32_t DamageTimer = 0;
+    // Level object index of the shooter, which its own shots pass through.
+    size_t Owner = 0;
 };
 
 // The player's weapons (ADD Weapon blocks), the shots in flight and the game clock and random generator they use.
@@ -217,7 +264,9 @@ struct FCombat
 {
     std::vector<FWeaponClass> Weapons;
     std::vector<FAmmoClass> AmmoClasses;
-    size_t CurrentWeapon = 0;
+    // The player's ADD Weapon entries, as indices into Weapons, and the one in hand.
+    std::vector<size_t> PlayerWeapons;
+    FWeaponState PlayerWeapon;
     std::vector<FProjectile> Projectiles;
     std::vector<FEffectClass> EffectClasses;
     std::vector<FEffect> Effects;
@@ -226,12 +275,15 @@ struct FCombat
     FRandom Random;
     // The game clock in milliseconds; never zero, since a zero last-shot time means no shot yet.
     uint32_t Clock = 1;
-    uint32_t LastFireTime = 0;
-    // Weapon flag 2 and slope (WeaponRaiseSlope at 0042c210).
-    bool bTriggerHeld = false;
-    float Slope = 0.f;
-    // Weapon flag 1, flipped on every shot of an Alternated-fire weapon.
-    bool bAlternateSide = false;
+};
+
+// The player as a target of shots and blasts.
+struct FPlayerTarget
+{
+    const FPlayerState& State;
+    float Radius = 0.f;
+    FPlayerInventory& Inventory;
+    size_t ObjectIndex = 0;
 };
 
 // Live keyboard semantics of ReadPlayerInput (00438540): turning and strafing combine.
@@ -252,15 +304,20 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
     const FLevel& Level, std::span<FObjectBody> Bodies = {}, const FObjectBody* Self = nullptr);
 // Moves pushed bodies for one step, in object order.
 void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
-// Loads the player's weapons and every FX class the level's ammo and explosions can spawn.
-std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, uint32_t FramePeriod);
+// Loads the player's weapons, arms the level's turrets and loads every FX class the level's ammo and explosions can spawn.
+std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, uint32_t FramePeriod,
+    std::vector<FObjectBody>& Bodies);
 // One step of the player's weapon: the slope ramp, then a shot when the trigger is held and the weapon's delay has passed (WeaponFire at 00443bd0).
 // SpriteSize is the smaller side of the player's current frame, which picks the random muzzle distance.
-void StepPlayerWeapon(FCombat& Combat, bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, float SpriteSize, FPlayerInventory& Inventory);
+void StepPlayerWeapon(FCombat& Combat, bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, size_t PlayerIndex, float SpriteSize,
+    FPlayerInventory& Inventory);
+// The seeker scan, top rotation and fire decision of every turret (SeekerUpdate at 0042c5a0), then its weapon update.
+void StepTurrets(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level, std::vector<FObjectBody>& Bodies,
+    const FPlayerState& Player);
 // Moves every shot, detonating it against terrain, bodies or the ground, then runs the effects and their blasts; destroyed bodies are removed,
 // spawn their Boom-fx and pay their Reward.
 void StepProjectiles(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
-    FPlayerInventory& Inventory);
+    const FPlayerTarget& Player);
 std::expected<void, std::string> VerifyPlayerMovement();
 // Loads every level's weapons and fires them for a few seconds of game time.
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive);

@@ -604,3 +604,39 @@ bool PrefersContact(const FCollisionPoint Previous, const FCollisionPoint Next, 
 {
     return !KeepPreviousContact(Previous, Next, Center);
 }
+
+bool IsLineClear(const FTerrainCollision& Terrain, const FCollisionPoint From, const FCollisionPoint To)
+{
+    const auto Cross = [](const FCollisionPoint Origin, const FCollisionPoint A, const FCollisionPoint B)
+    {
+        return (double(A.X) - double(Origin.X)) * (double(B.Y) - double(Origin.Y)) - (double(A.Y) - double(Origin.Y)) * (double(B.X) - double(Origin.X));
+    };
+    const auto Crosses = [&](const FCollisionPoint A, const FCollisionPoint B)
+    {
+        const double D1 = Cross(A, B, From);
+        const double D2 = Cross(A, B, To);
+        const double D3 = Cross(From, To, A);
+        const double D4 = Cross(From, To, B);
+        return ((D1 > 0. && D2 < 0.) || (D1 < 0. && D2 > 0.)) && ((D3 > 0. && D4 < 0.) || (D3 < 0. && D4 > 0.));
+    };
+
+    for (const FStaticCollisionShape& Shape : Terrain.GetShapes())
+    {
+        if (Shape.bWater)
+        {
+            continue;
+        }
+
+        // Two points are a wall segment; more close into a polygon.
+        const size_t EdgeCount = Shape.PointCount == 2 ? 1 : Shape.PointCount;
+        for (size_t Edge = 0; Edge < EdgeCount; ++Edge)
+        {
+            if (Crosses(Shape.Points[Edge], Shape.Points[(Edge + 1) % Shape.PointCount]))
+            {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}

@@ -805,11 +805,12 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
             }
         }
 
-        if (const FLevelPropertyBlock* const Explosion = FindTypeBlock(Properties, "Explosion"))
+        for (const FLevelPropertyBlock& Child : Properties.Children)
         {
-            Body.BoomEffect = ToLowerName(Explosion->Find("Boom-fx"));
-            Body.ExplosionDamage = Number(Explosion, "Damage");
-            Body.ExplosionZone = Number(Explosion, "Damage-zone");
+            if (Child.Kind == "TYPE" && Child.Name == "Explosion")
+            {
+                Body.Explosions.push_back({ .BoomEffect = ToLowerName(Child.Find("Boom-fx")), .Damage = Number(&Child, "Damage"), .Zone = Number(&Child, "Damage-zone") });
+            }
         }
 
         Body.Altitude = Object.Altitude;
@@ -1188,8 +1189,26 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
 
 namespace
 {
-// ApplyDamage at 0043ca30: the shield absorbs first and is reset once it breaks.
-void ApplyDamage(FObjectBody& Body, float Amount)
+// ApplyDamage at 0043ca30: the shield absorbs first and is reset once it breaks; whatever is left comes off the energy.
+// ponytail: the shield resets to a class field at +0x6c that is not decoded yet; zero until then.
+void ApplyDamage(float& Energy, float& Shield, float Amount)
+{
+    if (0.f < Shield)
+    {
+        Shield = float(double(Shield) - double(Amount));
+        if (0.f <= Shield)
+        {
+            return;
+        }
+
+        Amount = -Shield;
+        Shield = 0.f;
+    }
+
+    Energy = float(double(Energy) - double(Amount));
+}
+
+void ApplyDamage(FObjectBody& Body, const float Amount)
 {
     if (Body.bIndestructible)
     {
@@ -1197,20 +1216,7 @@ void ApplyDamage(FObjectBody& Body, float Amount)
     }
 
     Body.bDamaged = true;
-    if (0.f < Body.Shield)
-    {
-        Body.Shield = float(double(Body.Shield) - double(Amount));
-        if (0.f <= Body.Shield)
-        {
-            return;
-        }
-
-        // ponytail: the shield resets to a class field at +0x6c that is not decoded yet; zero until then.
-        Amount = -Body.Shield;
-        Body.Shield = 0.f;
-    }
-
-    Body.Energy = float(double(Body.Energy) - double(Amount));
+    ApplyDamage(Body.Energy, Body.Shield, Amount);
 }
 
 struct FWorldCell
@@ -1225,8 +1231,9 @@ FWorldCell CellOf(const FCollisionPoint World)
     return { .X = int(uint32_t(int64_t(World.X)) / BlockWidth), .Y = int(uint32_t(int64_t(World.Y)) / BlockHeight) };
 }
 
-// AreaDamage at 0043cb20: every live body near the blast takes damage falling off linearly over Damage-zone collision units.
-void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float Damage, const float Zone, std::vector<FObjectBody>& Bodies)
+// AreaDamage at 0043cb20: every live object near the blast takes damage falling off linearly over Damage-zone collision units.
+void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float Damage, const float Zone, std::vector<FObjectBody>& Bodies,
+    const FPlayerTarget& Player)
 {
     if (Damage == 0.f || Zone == 0.f)
     {
@@ -1237,33 +1244,56 @@ void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float
     const int Radius = int(Zone);
     const int CellRadiusX = int(uint32_t(Radius) / BlockWidth) + 1;
     const int CellRadiusY = int(uint32_t(Radius) / BlockHeight) + 1;
-    for (FObjectBody& Body : Bodies)
+    const auto Falloff = [&](const FCollisionPoint Position, const FCollisionPoint ObjectCenter) -> std::optional<float>
     {
-        const FWorldCell BodyCell = CellOf(Body.State.Position);
-        if (Body.Energy <= 0.f || std::abs(BodyCell.X - Cell.X) > CellRadiusX || std::abs(BodyCell.Y - Cell.Y) > CellRadiusY)
+        const FWorldCell ObjectCell = CellOf(Position);
+        if (std::abs(ObjectCell.X - Cell.X) > CellRadiusX || std::abs(ObjectCell.Y - Cell.Y) > CellRadiusY)
         {
-            continue;
+            return std::nullopt;
         }
 
-        const double DeltaX = double(Body.State.Center.X) - double(Center.X);
-        const double DeltaY = double(Body.State.Center.Y) - double(Center.Y);
+        const double DeltaX = double(ObjectCenter.X) - double(Center.X);
+        const double DeltaY = double(ObjectCenter.Y) - double(Center.Y);
         const int DistanceSquared = int(DeltaX * DeltaX + DeltaY * DeltaY);
         if (DistanceSquared >= Radius * Radius)
         {
-            continue;
+            return std::nullopt;
         }
 
         const int Distance = int(std::sqrt(double(DistanceSquared)));
-        const float Amount = DistanceSquared == 0 ? Damage : float(double(Radius - Distance) / double(Radius) * double(Damage));
-        ApplyDamage(Body, Amount);
+        return DistanceSquared == 0 ? Damage : float(double(Radius - Distance) / double(Radius) * double(Damage));
+    };
+
+    for (FObjectBody& Body : Bodies)
+    {
+        if (0.f < Body.Energy)
+        {
+            if (const std::optional<float> Amount = Falloff(Body.State.Position, Body.State.Center))
+            {
+                ApplyDamage(Body, *Amount);
+            }
+        }
+    }
+
+    if (0.f < Player.Inventory.Energy)
+    {
+        if (const std::optional<float> Amount = Falloff(Player.State.Position, Player.State.Center))
+        {
+            ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield, *Amount);
+        }
     }
 }
 
-FObjectBody* FindStruckBody(std::vector<FObjectBody>& Bodies, const FCollisionCircle Shot, std::optional<FCollisionPoint>& Contact)
+FObjectBody* FindStruckBody(std::vector<FObjectBody>& Bodies, const FCollisionCircle Shot, const size_t Owner, std::optional<FCollisionPoint>& Contact)
 {
     FObjectBody* Struck = nullptr;
     for (FObjectBody& Body : Bodies)
     {
+        if (Body.ObjectIndex == Owner)
+        {
+            continue;
+        }
+
         const std::optional<FCollisionPoint> BodyContact = IntersectCircles(Shot, { .Center = Body.State.Center, .Radius = Body.Class.Radius });
         if (BodyContact && (!Contact || PrefersContact(*Contact, *BodyContact, Shot.Center)))
         {
@@ -1345,53 +1375,38 @@ float SlopeRadians(const float Degrees)
     constexpr float InverseHalfTurn = 1.f / 180.f;
     return float(double(float(double(Degrees) * double(Pi))) * double(InverseHalfTurn));
 }
+
+float ClassNumber(const FLevelPropertyBlock& Block, const std::string_view Field)
+{
+    return ParseLevelFloat(Block.Find(Field)).value_or(0.f);
 }
 
-std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, const uint32_t FramePeriod)
+const FLevelPropertyBlock* FindClass(const FLevel& Level, const std::string_view Name)
 {
-    FCombat Combat{ .FramePeriodMilliseconds = FramePeriod };
-    const auto FindClass = [&Level](const std::string_view Name) -> const FLevelPropertyBlock*
+    const auto Found = Level.Classes.find(ToLowerName(Name));
+    return Found == Level.Classes.end() ? nullptr : &Found->second;
+}
+
+// Adds a weapon class and its ammo class to the combat tables once; returns the weapon's index.
+std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Level, const std::string_view Name)
+{
+    const std::string LowerName = ToLowerName(Name);
+    if (const auto Known = std::ranges::find(Combat.Weapons, LowerName, &FWeaponClass::Name); Known != Combat.Weapons.end())
     {
-        const auto Found = Level.Classes.find(ToLowerName(Name));
-        return Found == Level.Classes.end() ? nullptr : &Found->second;
-    };
-    const auto Number = [](const FLevelPropertyBlock& Block, const std::string_view Field) { return ParseLevelFloat(Block.Find(Field)).value_or(0.f); };
-    for (const FLevelPropertyBlock& Child : Player.Properties.Children)
+        return size_t(Known - Combat.Weapons.begin());
+    }
+
+    const FLevelPropertyBlock* const Class = FindClass(Level, Name);
+    const FLevelPropertyBlock* const Block = Class ? FindTypeBlock(*Class, "Weapon") : nullptr;
+    if (!Block)
     {
-        if (Child.Kind != "ADD" || Child.Name != "Weapon")
-        {
-            continue;
-        }
+        return std::unexpected(std::format("unknown weapon class '{}'", Name));
+    }
 
-        const std::string_view Name = Child.Find("Name");
-        const FLevelPropertyBlock* const Class = FindClass(Name);
-        const FLevelPropertyBlock* const Block = Class ? FindTypeBlock(*Class, "Weapon") : nullptr;
-        if (!Block)
-        {
-            return std::unexpected(std::format("unknown weapon class '{}'", Name));
-        }
-
-        Combat.Weapons.push_back({
-            .Name = std::string(Name),
-            .Ammo = ToLowerName(Block->Find("Ammo")),
-            .Delay = uint32_t(Number(*Block, "Delay")),
-            .WeaponsGap = Number(*Block, "Weapons-gap"),
-            .bLeftSide = Number(*Block, "Left-side") != 0.f,
-            .bRightSide = Number(*Block, "Right-side") != 0.f,
-            .bAlternated = Number(*Block, "Alternated-fire") != 0.f,
-            .StartDistance = int(Number(*Block, "Start-distance")),
-            .FireAltitude = int(Number(*Block, "Fire-altitude")),
-            .InitialSlope = SlopeRadians(Number(*Block, "Initial-slope")),
-            .SlopeStep = SlopeRadians(Number(*Block, "Slope-step")),
-        });
-
-        const std::string AmmoName = Combat.Weapons.back().Ammo;
-        if (std::ranges::contains(Combat.AmmoClasses, AmmoName, &FAmmoClass::Name))
-        {
-            continue;
-        }
-
-        const FLevelPropertyBlock* const Ammo = FindClass(AmmoName);
+    const std::string AmmoName = ToLowerName(Block->Find("Ammo"));
+    if (!std::ranges::contains(Combat.AmmoClasses, AmmoName, &FAmmoClass::Name))
+    {
+        const FLevelPropertyBlock* const Ammo = FindClass(Level, AmmoName);
         const FLevelPropertyBlock* const AmmoBlock = Ammo ? FindTypeBlock(*Ammo, "Ammo") : nullptr;
         if (!AmmoBlock)
         {
@@ -1399,23 +1414,23 @@ std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLev
         }
 
         // Ammo classes leave most movement fields out; the class record keeps them zeroed.
-        const auto Field = [&Number](const FLevelPropertyBlock* const Block, const std::string_view Name) { return Block ? Number(*Block, Name) : 0.f; };
+        const auto Field = [](const FLevelPropertyBlock* const Parent, const std::string_view FieldName) { return Parent ? ClassNumber(*Parent, FieldName) : 0.f; };
         const FLevelPropertyBlock* const Thrust = FindBlock(*Ammo, "Thrust");
         const FLevelPropertyBlock* const Weight = FindBlock(*Ammo, "Weight");
-        const int BoundingBoxSize = int(Number(*Ammo, "Bounding-box-size"));
+        const int BoundingBoxSize = int(ClassNumber(*Ammo, "Bounding-box-size"));
         const FMovementClass Movement{
             .ThrustInitial = Field(Thrust, "Initial"),
             .ThrustMin = Field(Thrust, "Min"),
             .ThrustMax = Field(Thrust, "Max"),
-            .Weight = Weight ? Number(*Weight, "Initial") : 1.f,
-            .AccelerationStep = Number(*Ammo, "Acceleration-step"),
-            .DecelerationStep = Number(*Ammo, "Decceleration-step"),
-            .SpeedMax = Number(*Ammo, "Speed-max"),
-            .Elasticity = Number(*Ammo, "Elasticity"),
-            .Grip = Number(*Ammo, "Grip"),
+            .Weight = Weight ? ClassNumber(*Weight, "Initial") : 1.f,
+            .AccelerationStep = ClassNumber(*Ammo, "Acceleration-step"),
+            .DecelerationStep = ClassNumber(*Ammo, "Decceleration-step"),
+            .SpeedMax = ClassNumber(*Ammo, "Speed-max"),
+            .Elasticity = ClassNumber(*Ammo, "Elasticity"),
+            .Grip = ClassNumber(*Ammo, "Grip"),
             .Friction = ParsePair(Ammo->Find("Friction-factor")).value_or(FCollisionPoint{}),
             .FrictionThreshold = ParsePair(Ammo->Find("Friction-threshold")).value_or(FCollisionPoint{}),
-            .bUseInertia = Number(*Ammo, "Use-inertia") != 0.f,
+            .bUseInertia = ClassNumber(*Ammo, "Use-inertia") != 0.f,
             .Radius = BoundingBoxSize != 0 ? float(BoundingBoxSize) : DefaultCollisionRadius,
         };
         if (Movement.Weight == 0.f)
@@ -1426,118 +1441,130 @@ std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLev
         Combat.AmmoClasses.push_back({
             .Name = AmmoName,
             .Movement = Movement,
-            .Damage = Number(*AmmoBlock, "Damage"),
-            .DamageZone = Number(*AmmoBlock, "Damage-zone"),
-            .DamageAfter = uint32_t(Number(*AmmoBlock, "Damage-after")),
+            .Damage = ClassNumber(*AmmoBlock, "Damage"),
+            .DamageZone = ClassNumber(*AmmoBlock, "Damage-zone"),
+            .DamageAfter = uint32_t(ClassNumber(*AmmoBlock, "Damage-after")),
             .HitEffect = ToLowerName(AmmoBlock->Find("Hit-fx")),
         });
     }
 
-    std::vector<std::string> EffectNames = { std::string(GroundImpactEffect) };
-    for (const FAmmoClass& Ammo : Combat.AmmoClasses)
-    {
-        EffectNames.push_back(Ammo.HitEffect);
-    }
-
-    for (const FLevelObject& Object : Level.Objects)
-    {
-        if (const FLevelPropertyBlock* const Explosion = FindTypeBlock(Object.Properties, "Explosion"))
-        {
-            EffectNames.push_back(ToLowerName(Explosion->Find("Boom-fx")));
-        }
-    }
-
-    for (const std::string& Name : EffectNames)
-    {
-        if (Name.empty() || std::ranges::contains(Combat.EffectClasses, Name, &FEffectClass::Name))
-        {
-            continue;
-        }
-
-        const FLevelPropertyBlock* const Class = FindClass(Name);
-        const auto GafPath = Level.ClassGafPaths.find(Name);
-        const FLevelPropertyBlock* const Effect = Class ? FindTypeBlock(*Class, "FX") : nullptr;
-        if (!Effect || GafPath == Level.ClassGafPaths.end())
-        {
-            return std::unexpected(std::format("unknown FX class '{}'", Name));
-        }
-
-        const int GafIndex = int(Number(*Class, "GAF-index"));
-        const std::optional<std::vector<uint8_t>> File = Archive.Read(GafPath->second);
-        const std::optional<std::vector<Gaf::FFrame>> Bitmaps = File ? Gaf::LoadFrames(*File) : std::nullopt;
-        const std::optional<std::vector<Gaf::FAnimation>> Animations = Bitmaps ? Gaf::LoadAnimations(*File, Bitmaps->size()) : std::nullopt;
-        if (!Animations || GafIndex < 1 || size_t(GafIndex) > Animations->size())
-        {
-            return std::unexpected(std::format("FX class '{}': cannot load animation {} of {}", Name, GafIndex, GafPath->second));
-        }
-
-        const Gaf::FAnimation& Animation = (*Animations)[size_t(GafIndex - 1)];
-        FEffectClass EffectClass{
-            .Name = Name,
-            .GafPath = GafPath->second,
-            .GafIndex = GafIndex,
-            .LoopStart = Animation.LoopStart,
-            .bLoop = Number(*Effect, "Loop") != 0.f,
-        };
-        for (const Gaf::FAnimationFrame& Frame : Animation.Frames)
-        {
-            EffectClass.FrameDurations.push_back(Frame.Duration);
-        }
-
-        Combat.EffectClasses.push_back(std::move(EffectClass));
-    }
-
-    Combat.Slope = Combat.Weapons.empty() ? 0.f : Combat.Weapons.front().InitialSlope;
-    return Combat;
+    Combat.Weapons.push_back({
+        .Name = LowerName,
+        .Ammo = AmmoName,
+        .Delay = uint32_t(ClassNumber(*Block, "Delay")),
+        .FireRange = ClassNumber(*Block, "Fire-Range"),
+        .WeaponsGap = ClassNumber(*Block, "Weapons-gap"),
+        .bLeftSide = ClassNumber(*Block, "Left-side") != 0.f,
+        .bRightSide = ClassNumber(*Block, "Right-side") != 0.f,
+        .bAlternated = ClassNumber(*Block, "Alternated-fire") != 0.f,
+        .StartDistance = int(ClassNumber(*Block, "Start-distance")),
+        .FireAltitude = int(ClassNumber(*Block, "Fire-altitude")),
+        .InitialSlope = SlopeRadians(ClassNumber(*Block, "Initial-slope")),
+        .SlopeStep = SlopeRadians(ClassNumber(*Block, "Slope-step")),
+    });
+    return Combat.Weapons.size() - 1;
 }
 
-void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, const float SpriteSize, FPlayerInventory& Inventory)
+std::expected<void, std::string> LoadEffect(FCombat& Combat, const FLevel& Level, FResourceArchive& Archive, const std::string& Name)
 {
-    if (Combat.Weapons.empty())
+    if (Name.empty() || std::ranges::contains(Combat.EffectClasses, Name, &FEffectClass::Name))
+    {
+        return {};
+    }
+
+    const FLevelPropertyBlock* const Class = FindClass(Level, Name);
+    const auto GafPath = Level.ClassGafPaths.find(Name);
+    const FLevelPropertyBlock* const Effect = Class ? FindTypeBlock(*Class, "FX") : nullptr;
+    if (!Effect || GafPath == Level.ClassGafPaths.end())
+    {
+        return std::unexpected(std::format("unknown FX class '{}'", Name));
+    }
+
+    const int GafIndex = int(ClassNumber(*Class, "GAF-index"));
+    const std::optional<std::vector<uint8_t>> File = Archive.Read(GafPath->second);
+    const std::optional<std::vector<Gaf::FFrame>> Bitmaps = File ? Gaf::LoadFrames(*File) : std::nullopt;
+    const std::optional<std::vector<Gaf::FAnimation>> Animations = Bitmaps ? Gaf::LoadAnimations(*File, Bitmaps->size()) : std::nullopt;
+    if (!Animations || GafIndex < 1 || size_t(GafIndex) > Animations->size())
+    {
+        return std::unexpected(std::format("FX class '{}': cannot load animation {} of {}", Name, GafIndex, GafPath->second));
+    }
+
+    const Gaf::FAnimation& Animation = (*Animations)[size_t(GafIndex - 1)];
+    FEffectClass EffectClass{
+        .Name = Name,
+        .GafPath = GafPath->second,
+        .GafIndex = GafIndex,
+        .LoopStart = Animation.LoopStart,
+        .bLoop = ClassNumber(*Effect, "Loop") != 0.f,
+    };
+    for (const Gaf::FAnimationFrame& Frame : Animation.Frames)
+    {
+        EffectClass.FrameDurations.push_back(Frame.Duration);
+    }
+
+    Combat.EffectClasses.push_back(std::move(EffectClass));
+    return {};
+}
+
+// Where and how a weapon fires from: the shooter's world position, facing, velocity and altitude.
+struct FShooter
+{
+    FCollisionPoint Position;
+    FCollisionPoint Velocity;
+    int Direction = 0;
+    int Altitude = 0;
+    float SpriteSize = 0.f;
+    size_t ObjectIndex = 0;
+};
+
+// WeaponRaiseSlope (0042c210) while the trigger is held, WeaponResetSlope (0042c280) otherwise: holding flattens the slope step by step.
+void UpdateSlope(FWeaponState& State, const FWeaponClass& Weapon, const bool bHeld)
+{
+    if (Weapon.InitialSlope == 0.f)
     {
         return;
     }
 
-    const FWeaponClass& Weapon = Combat.Weapons[Combat.CurrentWeapon];
-    // WeaponRaiseSlope (0042c210) and WeaponResetSlope (0042c280) run from ReadPlayerInput: holding the trigger flattens the slope step by step.
-    if (Weapon.InitialSlope != 0.f)
+    if (!bHeld || !State.bTriggerHeld)
     {
-        if (!bFire || !Combat.bTriggerHeld)
+        State.bTriggerHeld = bHeld;
+        State.Slope = Weapon.InitialSlope;
+    }
+    else if (State.Slope != 0.f)
+    {
+        State.Slope = float(double(Weapon.SlopeStep) + double(State.Slope));
+        if (0.f < State.Slope)
         {
-            Combat.bTriggerHeld = bFire;
-            Combat.Slope = Weapon.InitialSlope;
-        }
-        else if (Combat.Slope != 0.f)
-        {
-            Combat.Slope = float(double(Weapon.SlopeStep) + double(Combat.Slope));
-            if (0.f < Combat.Slope)
-            {
-                Combat.Slope = 0.f;
-            }
+            State.Slope = 0.f;
         }
     }
+}
 
-    if (!bFire)
+// ObjectUpdateWeapon (00444ca0) fires once Delay milliseconds of game clock have passed since the last shot; the first shot is immediate.
+bool WeaponReady(const FCombat& Combat, const FWeaponState& State)
+{
+    const FWeaponClass& Weapon = Combat.Weapons[State.Weapon];
+    return State.LastFireTime == 0 || State.LastFireTime == Combat.Clock || Combat.Clock - State.LastFireTime >= Weapon.Delay;
+}
+
+// WeaponFire at 00443bd0.
+void FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, FAmmoStock* const Stock)
+{
+    if (State.LastFireTime == 0)
+    {
+        State.LastFireTime = Combat.Clock;
+    }
+
+    if (!WeaponReady(Combat, State))
     {
         return;
     }
 
-    // ObjectUpdateWeapon at 00444ca0 holds the trigger until Delay milliseconds of game clock have passed since the last shot; the first shot is immediate.
-    if (Combat.LastFireTime == 0)
-    {
-        Combat.LastFireTime = Combat.Clock;
-    }
-
-    if (Combat.LastFireTime != Combat.Clock && Combat.Clock - Combat.LastFireTime < Weapon.Delay)
-    {
-        return;
-    }
-
-    Combat.LastFireTime = Combat.Clock;
-    const auto Stock = std::ranges::find_if(Inventory.Ammo, [&Weapon](const FAmmoStock& Entry) { return ToLowerName(Entry.Name) == Weapon.Ammo; });
+    State.LastFireTime = Combat.Clock;
+    const FWeaponClass& Weapon = Combat.Weapons[State.Weapon];
     const auto Ammo = std::ranges::find(Combat.AmmoClasses, Weapon.Ammo, &FAmmoClass::Name);
     // ponytail: the original switches to the next loaded weapon when this one runs dry (WeaponHasAmmo at 00444450); here the weapon just stops.
-    if (Stock == Inventory.Ammo.end() || Stock->Count < 1.f || Ammo == Combat.AmmoClasses.end() || Player.Direction == NoDirection)
+    if (!Stock || Stock->Count < 1.f || Ammo == Combat.AmmoClasses.end() || Shooter.Direction == NoDirection)
     {
         return;
     }
@@ -1548,7 +1575,7 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
     {
         constexpr float RadiansPerDirection = -0.2617994f;
         const double Half = double(Weapon.WeaponsGap) * 0.5;
-        const double Angle = double(Player.Direction) * double(RadiansPerDirection);
+        const double Angle = double(Shooter.Direction) * double(RadiansPerDirection);
         const float Along = float(std::cos(Angle) * Half);
         const double Across = std::sin(Angle) * Half;
         Gap = { .X = float((double(Along) - Across) * double(0.8944272f)), .Y = float((Across + double(Along)) * double(0.4472136f)) };
@@ -1556,7 +1583,7 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
 
     if (Weapon.bAlternated)
     {
-        Combat.bAlternateSide = !Combat.bAlternateSide;
+        State.bAlternateSide = !State.bAlternateSide;
     }
 
     const int SideCount = Weapon.WeaponsGap != 0.f ? 2 : 1;
@@ -1564,7 +1591,7 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
     {
         const bool bSecondSide = Side == 1;
         const bool bSideFitted = Weapon.WeaponsGap == 0.f || (bSecondSide ? Weapon.bRightSide : Weapon.bLeftSide);
-        const bool bSideTurn = !Weapon.bAlternated || Combat.bAlternateSide != bSecondSide;
+        const bool bSideTurn = !Weapon.bAlternated || State.bAlternateSide != bSecondSide;
         if (!bSideFitted || !bSideTurn)
         {
             continue;
@@ -1577,14 +1604,14 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
             constexpr double MuzzleFraction = 0.4f;
             constexpr double MuzzleScale = 10.f;
             const uint32_t Random = Combat.Random.Next();
-            const uint32_t Span = uint32_t(int64_t(double(SpriteSize) * MuzzleFraction * MuzzleScale));
+            const uint32_t Span = uint32_t(int64_t(double(Shooter.SpriteSize) * MuzzleFraction * MuzzleScale));
             Distance = Span == 0 ? 0 : int(Random % Span);
         }
 
-        const FCollisionPoint Direction = WorldFacingVector(Player.Direction);
+        const FCollisionPoint Direction = WorldFacingVector(Shooter.Direction);
         FCollisionPoint Muzzle{
-            .X = float(double(float(double(Distance) * double(Direction.X))) + double(Player.Position.X)),
-            .Y = float(double(float(double(Distance) * double(Direction.Y))) + double(Player.Position.Y)),
+            .X = float(double(float(double(Distance) * double(Direction.X))) + double(Shooter.Position.X)),
+            .Y = float(double(float(double(Distance) * double(Direction.Y))) + double(Shooter.Position.Y)),
         };
         if (Weapon.WeaponsGap != 0.f)
         {
@@ -1594,23 +1621,24 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
 
         FProjectile Shot{
             .AmmoIndex = size_t(Ammo - Combat.AmmoClasses.begin()),
-            .Altitude = Weapon.FireAltitude != 0 ? Weapon.FireAltitude : int(PlayerObject.Altitude),
+            .Altitude = Weapon.FireAltitude != 0 ? Weapon.FireAltitude : Shooter.Altitude,
             .DamageTimer = Ammo->DamageAfter,
+            .Owner = Shooter.ObjectIndex,
         };
         Shot.State.Position = Shot.State.PreviousPosition = Muzzle;
         Shot.State.Center = CollisionFromWorld(Muzzle);
-        Shot.State.Direction = Player.Direction;
+        Shot.State.Direction = Shooter.Direction;
         Shot.State.Speed = Ammo->Movement.ThrustInitial;
-        const FCollisionPoint Facing = FacingVector(Player.Direction);
+        const FCollisionPoint Facing = FacingVector(Shooter.Direction);
         Shot.State.Velocity = {
-            .X = float(double(float(double(Shot.State.Speed) * double(Facing.X))) + double(Player.Velocity.X)),
-            .Y = float(double(float(double(Shot.State.Speed) * double(Facing.Y))) + double(Player.Velocity.Y)),
+            .X = float(double(float(double(Shot.State.Speed) * double(Facing.X))) + double(Shooter.Velocity.X)),
+            .Y = float(double(float(double(Shot.State.Speed) * double(Facing.Y))) + double(Shooter.Velocity.Y)),
         };
         if (Weapon.InitialSlope < 0.f)
         {
             Shot.bSloped = true;
             Shot.AltitudeAccumulator = float(Shot.Altitude);
-            Shot.Slope = Combat.Slope;
+            Shot.Slope = State.Slope;
         }
 
         Combat.Projectiles.push_back(Shot);
@@ -1622,19 +1650,262 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
     }
 }
 
+// Rotations per turret pose step: turret tops have one pose per direction (SeekerTurnTop at 0042d150).
+void TurnTurretTop(FTurret& Turret, const uint32_t StepMilliseconds)
+{
+    Turret.TurnTimer -= int32_t(StepMilliseconds);
+    if (0 < Turret.TurnTimer)
+    {
+        return;
+    }
+
+    Turret.TurnTimer += Turret.TurnTimeout;
+    if (Turret.TurnTimer < 0)
+    {
+        Turret.TurnTimer = 0;
+    }
+
+    // PlayerAdvancePose: one pose toward the target, the short way round.
+    const int Delta = Wrap(Turret.AimDirection - Turret.Direction);
+    if (Delta != 0)
+    {
+        Turret.Direction = Wrap(Turret.Direction + (Delta <= DirectionCount / 2 ? 1 : -1));
+    }
+}
+}
+
+std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, const uint32_t FramePeriod,
+    std::vector<FObjectBody>& Bodies)
+{
+    FCombat Combat{ .FramePeriodMilliseconds = FramePeriod };
+    for (const FLevelPropertyBlock& Child : Player.Properties.Children)
+    {
+        if (Child.Kind == "ADD" && Child.Name == "Weapon")
+        {
+            const std::expected<size_t, std::string> Weapon = LoadWeapon(Combat, Level, Child.Find("Name"));
+            if (!Weapon)
+            {
+                return std::unexpected(Weapon.error());
+            }
+
+            Combat.PlayerWeapons.push_back(*Weapon);
+        }
+    }
+
+    if (!Combat.PlayerWeapons.empty())
+    {
+        Combat.PlayerWeapon.Weapon = Combat.PlayerWeapons.front();
+        Combat.PlayerWeapon.Slope = Combat.Weapons[Combat.PlayerWeapon.Weapon].InitialSlope;
+    }
+
+    // ponytail: only turrets run the seeker so far; cops, walkers and the other seekers need path following first.
+    for (FObjectBody& Body : Bodies)
+    {
+        const FLevelObject& Object = Level.Objects[Body.ObjectIndex];
+        const FLevelPropertyBlock* const Seeker = FindTypeBlock(Object.Properties, "Seeker");
+        const auto WeaponEntry = std::ranges::find_if(Object.Properties.Children, [](const FLevelPropertyBlock& Child) { return Child.Kind == "ADD" && Child.Name == "Weapon"; });
+        const auto AmmoEntry = std::ranges::find_if(Object.Properties.Children, [](const FLevelPropertyBlock& Child) { return Child.Kind == "ADD" && Child.Name == "Ammo"; });
+        if (Object.SubType != "turret" || !Seeker || WeaponEntry == Object.Properties.Children.end())
+        {
+            continue;
+        }
+
+        const std::expected<size_t, std::string> Weapon = LoadWeapon(Combat, Level, WeaponEntry->Find("Name"));
+        if (!Weapon)
+        {
+            return std::unexpected(std::format("{}: {}", Object.ClassName, Weapon.error()));
+        }
+
+        // ponytail: the Vision-Angle conversion is not traced; it is read as the full cone, half a direction (15 degrees) per 30 degrees.
+        constexpr float DegreesPerVisionStep = 30.f;
+        FTurret Turret{
+            .VisionDirections = int(ClassNumber(*Seeker, "Vision-Angle") / DegreesPerVisionStep),
+            .SensorRange = ClassNumber(*Seeker, "Sensor-Range"),
+            .ScanDelay = int32_t(ClassNumber(*Seeker, "Scan-Delay")),
+            .MinDistance = ClassNumber(*Seeker, "Min-distance"),
+            .TurnTimeout = int32_t(ClassNumber(Object.Properties, "Turret-turn-timeout")),
+            .BaseDirection = Object.Direction == ObjectDirectionCount ? 0 : Object.Direction,
+            .Direction = Object.Direction == ObjectDirectionCount ? 0 : Object.Direction,
+            .Weapon = { .Weapon = *Weapon, .Slope = Combat.Weapons[*Weapon].InitialSlope },
+        };
+        Turret.AimDirection = Turret.Direction;
+        if (AmmoEntry != Object.Properties.Children.end())
+        {
+            Turret.Ammo = { .Name = ToLowerName(AmmoEntry->Find("Name")), .Count = ClassNumber(*AmmoEntry, "Count"), .Max = ClassNumber(*AmmoEntry, "Max") };
+        }
+
+        Body.Turret = Turret;
+    }
+
+    std::vector<std::string> EffectNames = { std::string(GroundImpactEffect) };
+    for (const FAmmoClass& Ammo : Combat.AmmoClasses)
+    {
+        EffectNames.push_back(Ammo.HitEffect);
+    }
+
+    for (const FObjectBody& Body : Bodies)
+    {
+        for (const FExplosionBlock& Explosion : Body.Explosions)
+        {
+            EffectNames.push_back(Explosion.BoomEffect);
+        }
+    }
+
+    for (const std::string& Name : EffectNames)
+    {
+        if (const std::expected<void, std::string> Result = LoadEffect(Combat, Level, Archive, Name); !Result)
+        {
+            return std::unexpected(Result.error());
+        }
+    }
+
+    return Combat;
+}
+
+void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, const size_t PlayerIndex,
+    const float SpriteSize, FPlayerInventory& Inventory)
+{
+    if (Combat.PlayerWeapons.empty())
+    {
+        return;
+    }
+
+    FWeaponState& State = Combat.PlayerWeapon;
+    const FWeaponClass& Weapon = Combat.Weapons[State.Weapon];
+    UpdateSlope(State, Weapon, bFire);
+    if (!bFire)
+    {
+        return;
+    }
+
+    const auto Stock = std::ranges::find_if(Inventory.Ammo, [&Weapon](const FAmmoStock& Entry) { return ToLowerName(Entry.Name) == Weapon.Ammo; });
+    const FShooter Shooter{
+        .Position = Player.Position,
+        .Velocity = Player.Velocity,
+        .Direction = Player.Direction,
+        .Altitude = int(PlayerObject.Altitude),
+        .SpriteSize = SpriteSize,
+        .ObjectIndex = PlayerIndex,
+    };
+    FireWeapon(Combat, State, Shooter, Stock == Inventory.Ammo.end() ? nullptr : &*Stock);
+}
+
+void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level, std::vector<FObjectBody>& Bodies,
+    const FPlayerState& Player)
+{
+    const int32_t Step = int32_t(StepMilliseconds);
+    for (FObjectBody& Body : Bodies)
+    {
+        if (!Body.Turret)
+        {
+            continue;
+        }
+
+        FTurret& Turret = *Body.Turret;
+        const FWeaponClass& Weapon = Combat.Weapons[Turret.Weapon.Weapon];
+        const FCollisionPoint ToTarget{ .X = float(double(Player.Center.X) - double(Body.State.Center.X)), .Y = float(double(Player.Center.Y) - double(Body.State.Center.Y)) };
+        const float DistanceSquared = float(double(ToTarget.X) * double(ToTarget.X) + double(ToTarget.Y) * double(ToTarget.Y));
+        Turret.bTrigger = false;
+        bool bEngaged = false;
+        if (!Turret.bLocked)
+        {
+            // SeekerFindTarget (0042da80) looks for the target within Sensor-Range and the vision cone around the base's facing; PathStartSearch (0040f6f0) routes to it.
+            // ponytail: the A* route over collision shortcuts (FUN_00410460) is replaced by a clear straight line, which is all an engaging turret accepts.
+            if (Turret.ScanTimer < 1)
+            {
+                Turret.ScanTimer += Turret.ScanDelay;
+                const bool bInRange = DistanceSquared <= float(int(Turret.SensorRange) * int(Turret.SensorRange));
+                const bool bInView = DirectionDistance(FindDirection(ToTarget), Turret.BaseDirection) <= Turret.VisionDirections;
+                // The ray starts at the turret's edge: turrets stand on scenery that the terrain collision also covers.
+                const double Distance = std::sqrt(double(DistanceSquared));
+                const double Edge = Distance == 0. ? 0. : double(Body.Class.Radius) / Distance;
+                const FCollisionPoint Start{ .X = float(double(Body.State.Center.X) + double(ToTarget.X) * Edge), .Y = float(double(Body.State.Center.Y) + double(ToTarget.Y) * Edge) };
+                const bool bClear = Distance <= double(Body.Class.Radius) || IsLineClear(Terrain, Start, Player.Center);
+                if (bInRange && bInView && bClear)
+                {
+                    Turret.bLocked = true;
+                    Turret.LockedTarget = Player.Position;
+                }
+            }
+            else
+            {
+                Turret.ScanTimer -= Step;
+            }
+        }
+        else if (Turret.ScanTimer < 1)
+        {
+            // At every scan a moved target breaks the lock; the next step scans again.
+            if (Player.Position.X != Turret.LockedTarget.X || Player.Position.Y != Turret.LockedTarget.Y)
+            {
+                Turret.bLocked = false;
+            }
+            else
+            {
+                Turret.ScanTimer += Turret.ScanDelay;
+            }
+        }
+        else
+        {
+            Turret.ScanTimer -= Step;
+            // SeekerEngage (0042caa0): within Min-distance the top turns toward the line to the target (the previous step's direction), then the line is refreshed.
+            const float MinDistance = float(uint32_t(int(Turret.MinDistance) * int(Turret.MinDistance)));
+            bEngaged = DistanceSquared <= MinDistance;
+            if (bEngaged)
+            {
+                TurnTurretTop(Turret, StepMilliseconds);
+                const int Direction = FindDirection(ToTarget);
+                if (Direction != NoDirection)
+                {
+                    Turret.AimDirection = Direction;
+                }
+
+                // SeekerAimAndFire (0042d2d0): inside Fire-Range, with the weapon ready and the top on target, the trigger is pulled.
+                const float FireRange = float(int(Weapon.FireRange));
+                if (uint32_t(int64_t(DistanceSquared)) <= uint32_t(int64_t(FireRange * FireRange)))
+                {
+                    Turret.bTrigger = WeaponReady(Combat, Turret.Weapon) && Direction == Turret.Direction;
+                    UpdateSlope(Turret.Weapon, Weapon, true);
+                }
+                else
+                {
+                    bEngaged = false;
+                }
+            }
+        }
+
+        if (!bEngaged)
+        {
+            UpdateSlope(Turret.Weapon, Weapon, false);
+        }
+
+        if (Turret.bTrigger)
+        {
+            const FShooter Shooter{
+                .Position = Body.State.Position,
+                .Direction = Turret.Direction,
+                .Altitude = int(Body.Altitude),
+                // ponytail: the muzzle range uses twice the bounding radius instead of the turret's sprite bounds.
+                .SpriteSize = Body.Class.Radius * 2.f,
+                .ObjectIndex = Body.ObjectIndex,
+            };
+            FireWeapon(Combat, Turret.Weapon, Shooter, &Turret.Ammo);
+        }
+    }
+}
+
 void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
-    FPlayerInventory& Inventory)
+    const FPlayerTarget& Player)
 {
     const float TimeScale = float(ReferenceStepMilliseconds / double(StepMilliseconds));
     constexpr FPlayerCommand Straight{ .Thrust = EPlayerThrust::Forward };
     std::erase_if(Combat.Projectiles, [&](FProjectile& Shot)
     {
         const FAmmoClass& Ammo = Combat.AmmoClasses[Shot.AmmoIndex];
-        // Target is the object struck; bSurface marks a wall or other terrain contact.
-        const auto Detonate = [&](FObjectBody* const Target, const bool bSurface)
+        // Target is the object struck, bPlayer the player struck; bSurface marks a wall or other terrain contact.
+        const auto Detonate = [&](FObjectBody* const Target, const bool bPlayer, const bool bSurface)
         {
-            // AmmoHit at 0043d7d0 blasts around the shot's last committed centre, then AmmoImpact (0043d350) shoves and damages the object it struck.
-            AreaDamage(Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies);
+            // AmmoHit at 0043d7d0 blasts around the shot's last committed centre, then AmmoImpact (0043d350) shoves and damages what it struck.
+            AreaDamage(Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies, Player);
             if (Target)
             {
                 constexpr double ImpactPush = 40.;
@@ -1645,9 +1916,15 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
                 ApplyDamage(*Target, Absorption == Target->Absorptions.end() ? Ammo.Damage : float(double(Ammo.Damage) * double(Absorption->Coeff)));
             }
 
+            // ponytail: the player's own shove and absorption blocks are not ported.
+            if (bPlayer)
+            {
+                ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield, Ammo.Damage);
+            }
+
             // AmmoImpact puts the Hit-fx at the contact point; a shot that sank to the ground leaves a ground impact instead.
             // ponytail: water splashes and the check that the spot is on walkable terrain are not ported.
-            if (Target || bSurface)
+            if (Target || bPlayer || bSurface)
             {
                 const FCollisionPoint Spot{
                     .X = std::clamp(Shot.State.Position.X, 0.f, float(Level.WorldExtentX) - 1.f),
@@ -1671,7 +1948,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             if (Shot.Altitude < 1)
             {
                 Shot.Altitude = 0;
-                return Detonate(nullptr, false);
+                return Detonate(nullptr, false, false);
             }
         }
 
@@ -1679,7 +1956,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         {
             if (Shot.DamageTimer <= StepMilliseconds)
             {
-                return Detonate(nullptr, false);
+                return Detonate(nullptr, false, false);
             }
 
             Shot.DamageTimer -= StepMilliseconds;
@@ -1706,8 +1983,19 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         const FCollisionCircle Moved{ .Center = Candidate, .Radius = Ammo.Movement.Radius };
         const std::optional<FTerrainHit> TerrainHit = QueryTerrainCollision(Terrain, { .Center = Shot.State.Center, .Radius = Ammo.Movement.Radius }, Moved);
         std::optional<FCollisionPoint> Contact = TerrainHit ? std::optional(TerrainHit->Point) : std::nullopt;
-        // ponytail: shots never hit the player who fired them, and bouncing ammo (on-hit = 0: grenades, saws, pulsars) bursts on first contact too.
-        FObjectBody* const Struck = FindStruckBody(Bodies, Moved, Contact);
+        // ponytail: bouncing ammo (on-hit = 0: grenades, saws, pulsars) bursts on first contact too.
+        FObjectBody* const Struck = FindStruckBody(Bodies, Moved, Shot.Owner, Contact);
+        bool bPlayerStruck = false;
+        if (Shot.Owner != Player.ObjectIndex)
+        {
+            const std::optional<FCollisionPoint> PlayerContact = IntersectCircles(Moved, { .Center = Player.State.Center, .Radius = Player.Radius });
+            if (PlayerContact && (!Contact || PrefersContact(*Contact, *PlayerContact, Candidate)))
+            {
+                Contact = PlayerContact;
+                bPlayerStruck = true;
+            }
+        }
+
         if (!Contact)
         {
             Shot.State.Center = Candidate;
@@ -1715,7 +2003,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         }
 
         Shot.State.Position = WorldFromCollision(*Contact);
-        return Detonate(Struck, Struck == nullptr);
+        return Detonate(bPlayerStruck ? nullptr : Struck, bPlayerStruck, !bPlayerStruck && Struck == nullptr);
     });
 
     // The FX branch of ObjectUpdateWeapon (00444ca0): before half its animation an explosion waits out its delay, then the blast goes off once.
@@ -1741,7 +2029,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             if (bBlast)
             {
                 Effect.BlastTimer = -1;
-                AreaDamage(CollisionFromWorld(Effect.Position), CellOf(Effect.Position), Effect.Damage, Effect.Zone, Bodies);
+                AreaDamage(CollisionFromWorld(Effect.Position), CellOf(Effect.Position), Effect.Damage, Effect.Zone, Bodies, Player);
                 Effect.Damage = 0.f;
             }
         }
@@ -1760,12 +2048,16 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
         FLevelObject& Object = Level.Objects[Body.ObjectIndex];
         Object.bRemoved = true;
-        // ObjectDestroy (00437d40) hands the TYPE Explosion block to a new Boom-fx object at the same spot.
+        // ObjectDestroy (00437d40) hands each TYPE Explosion block to a new Boom-fx object at the same spot.
         // ponytail: two-piece wrecks that stay behind and surprise drops are not ported.
-        SpawnEffect(Combat, Body.BoomEffect, Body.State.Position, Body.Altitude, Body.ExplosionDamage, Body.ExplosionZone);
+        for (const FExplosionBlock& Explosion : Body.Explosions)
+        {
+            SpawnEffect(Combat, Explosion.BoomEffect, Body.State.Position, Body.Altitude, Explosion.Damage, Explosion.Zone);
+        }
+
         if (0.f < Body.Reward && PaysReward(Object.SubType))
         {
-            Inventory.Money += Body.Reward;
+            Player.Inventory.Money += Body.Reward;
         }
 
         return true;
@@ -1774,15 +2066,20 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
 {
-    // Every level's player spins on the spot for a few seconds with the trigger held; each must load its weapons and fire.
+    // Every level's player spins on the spot for a few seconds with the trigger held, while the turrets that see it shoot back; each level must
+    // load its weapons and the player must fire.
     constexpr uint32_t StepMilliseconds = 14;
     constexpr uint32_t DurationMilliseconds = 6000;
     constexpr float SpriteSize = 64.f;
     constexpr uint32_t VerifyRefreshMillihertz = 60000;
     size_t Levels = 0;
-    size_t Effects = 0;
     size_t Shots = 0;
+    size_t TurretShots = 0;
+    size_t Duels = 0;
+    size_t DuelShots = 0;
+    float DamageTaken = 0.f;
     size_t Destroyed = 0;
+    size_t Effects = 0;
     for (const std::string& Name : Archive.GetNames())
     {
         if (!Name.ends_with(".3do"))
@@ -1802,9 +2099,11 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             continue;
         }
 
+        const size_t PlayerIndex = size_t(PlayerObject - Level->Objects.begin());
+        std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
         const std::expected<FMovementClass, std::string> Class = ReadMovementClass(*PlayerObject);
         const std::expected<FTerrainCollision, std::string> Terrain = BuildTerrainCollision(*Level);
-        std::expected<FCombat, std::string> Combat = CreateCombat(*Level, *PlayerObject, Archive, FramePeriodMilliseconds(VerifyRefreshMillihertz));
+        std::expected<FCombat, std::string> Combat = CreateCombat(*Level, *PlayerObject, Archive, FramePeriodMilliseconds(VerifyRefreshMillihertz), Bodies);
         if (!Class || !Terrain || !Combat)
         {
             return std::unexpected(std::format("{}: {}", Name, !Class ? Class.error() : !Terrain ? Terrain.error() : Combat.error()));
@@ -1812,7 +2111,6 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
 
         FPlayerState Player = SpawnPlayer(*PlayerObject, *Class);
         FPlayerInventory Inventory = CreateInventory(*PlayerObject);
-        std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
         const size_t BodyCount = Bodies.size();
         size_t LevelShots = 0;
         const FPlayerCommand Spin{ .Turn = EPlayerTurn::Left };
@@ -1821,10 +2119,13 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             StepPlayer(Player, *Class, Spin, StepMilliseconds, *Terrain, *Level, Bodies);
             Combat->Clock += StepMilliseconds;
             const size_t Before = Combat->Projectiles.size();
-            StepPlayerWeapon(*Combat, true, Player, *PlayerObject, SpriteSize, Inventory);
+            StepPlayerWeapon(*Combat, true, Player, *PlayerObject, PlayerIndex, SpriteSize, Inventory);
             LevelShots += Combat->Projectiles.size() - Before;
+            const size_t TurretBefore = Combat->Projectiles.size();
+            StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Player);
+            TurretShots += Combat->Projectiles.size() - TurretBefore;
             const size_t EffectsBefore = Combat->Effects.size();
-            StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Inventory);
+            StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex });
             Effects += Combat->Effects.size() > EffectsBefore ? Combat->Effects.size() - EffectsBefore : 0;
         }
 
@@ -1833,10 +2134,61 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             return std::unexpected(std::format("{}: the player never fired", Name));
         }
 
+        // Then the player waits in clear view of the first turret that has such a spot inside its weapon's range, and must draw fire.
+        constexpr std::array<float, 2> DuelDistances = { 150.f, 250.f };
+        constexpr uint32_t DuelMilliseconds = 3000;
+        std::optional<FCollisionPoint> Spot;
+        for (const FObjectBody& Body : Bodies)
+        {
+            for (const float Distance : DuelDistances)
+            {
+                for (int Direction = 0; Body.Turret && !Spot && Direction < DirectionCount; ++Direction)
+                {
+                    // Facing vectors are a tenth of a unit long.
+                    constexpr float TenthsPerUnit = 10.f;
+                    const FCollisionPoint Facing = FacingVector(Direction);
+                    const float Scale = Distance * TenthsPerUnit;
+                    const FCollisionPoint Edge{ .X = Body.State.Center.X + Facing.X * Body.Class.Radius * TenthsPerUnit, .Y = Body.State.Center.Y + Facing.Y * Body.Class.Radius * TenthsPerUnit };
+                    const FCollisionPoint Candidate{ .X = Body.State.Center.X + Facing.X * Scale, .Y = Body.State.Center.Y + Facing.Y * Scale };
+                    const FCollisionPoint World = WorldFromCollision(Candidate);
+                    if (World.X > 1.f && World.Y > 1.f && World.X < float(Level->WorldExtentX) && World.Y < float(Level->WorldExtentY) &&
+                        IsLineClear(*Terrain, Edge, Candidate) && DirectionDistance(Direction, Body.Turret->BaseDirection) <= Body.Turret->VisionDirections)
+                    {
+                        Spot = Candidate;
+                    }
+                }
+            }
+        }
+
+        if (Spot)
+        {
+            Player.Center = *Spot;
+            Player.Position = Player.PreviousPosition = WorldFromCollision(*Spot);
+            Player.Velocity = {};
+            const float EnergyBefore = Inventory.Energy + Inventory.Shield;
+            for (uint32_t Time = 0; Time < DuelMilliseconds; Time += StepMilliseconds)
+            {
+                Combat->Clock += StepMilliseconds;
+                const size_t TurretBefore = Combat->Projectiles.size();
+                StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Player);
+                DuelShots += Combat->Projectiles.size() - TurretBefore;
+                StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex });
+            }
+
+            ++Duels;
+            DamageTaken += EnergyBefore - (Inventory.Energy + Inventory.Shield);
+        }
+
         ++Levels;
         Shots += LevelShots;
         Destroyed += BodyCount - Bodies.size();
     }
 
-    return std::format("{} levels, {} shots, {} objects destroyed, at least {} effects", Levels, Shots, Destroyed, Effects);
+    if (Duels != 0 && DuelShots == 0)
+    {
+        return std::unexpected(std::format("no turret fired in {} duels", Duels));
+    }
+
+    return std::format("{} levels, {} player shots, {} turret shots while spinning, {} objects destroyed, at least {} effects; {} turret duels: {} shots, {:.0f} damage taken",
+        Levels, Shots, TurretShots, Destroyed, Effects, Duels, DuelShots, DamageTaken);
 }

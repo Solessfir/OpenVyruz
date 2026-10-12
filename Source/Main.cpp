@@ -535,6 +535,7 @@ int main(const int ArgCount, char** const Args)
     // The smaller side of the player's current frame, which AnimUpdateBounds makes the body's bounds.
     float PlayerSpriteSize = 0.f;
     std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+    const size_t PlayerIndex = size_t(PlayerObject - Level->Objects.begin());
     std::vector<FPickup> Pickups = CreatePickups(*Level);
     FPlayerInventory Inventory = PlayerObject != Level->Objects.end() ? CreateInventory(*PlayerObject) : FPlayerInventory{};
     if (PlayerObject != Level->Objects.end())
@@ -546,7 +547,7 @@ int main(const int ArgCount, char** const Args)
             PlayerClass = *Class;
             Player = SpawnPlayer(*PlayerObject, *Class);
             Terrain = std::move(*Collision);
-            if (std::expected<FCombat, std::string> Weapons = CreateCombat(*Level, *PlayerObject, Archive, FramePeriod))
+            if (std::expected<FCombat, std::string> Weapons = CreateCombat(*Level, *PlayerObject, Archive, FramePeriod, Bodies))
             {
                 Combat = std::move(*Weapons);
                 for (const FEffectClass& Effect : Combat->EffectClasses)
@@ -593,11 +594,17 @@ int main(const int ArgCount, char** const Args)
                 {
                     const float MoneyBefore = Inventory.Money;
                     Combat->Clock += StepMilliseconds;
-                    StepPlayerWeapon(*Combat, bAutoFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL), *Player, *PlayerObject, PlayerSpriteSize, Inventory);
-                    StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Inventory);
-                    if (Inventory.Money != MoneyBefore)
+                    const float EnergyBefore = Inventory.Energy;
+                    const float ShieldBefore = Inventory.Shield;
+                    const bool bFire = bAutoFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL);
+                    StepPlayerWeapon(*Combat, bFire, *Player, *PlayerObject, PlayerIndex, PlayerSpriteSize, Inventory);
+                    StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, *Player);
+                    StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies,
+                        { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex });
+                    if (Inventory.Money != MoneyBefore || Inventory.Energy != EnergyBefore || Inventory.Shield != ShieldBefore)
                     {
-                        std::printf("Money %.0f\n", Inventory.Money);
+                        // ponytail: no HUD or death sequence yet; the totals go to the console.
+                        std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
                         std::fflush(stdout);
                     }
                 }
@@ -619,8 +626,14 @@ int main(const int ArgCount, char** const Args)
         {
             for (const FObjectBody& Body : Bodies)
             {
-                Level->Objects[Body.ObjectIndex].X = Body.State.Position.X;
-                Level->Objects[Body.ObjectIndex].Y = Body.State.Position.Y;
+                FLevelObject& Object = Level->Objects[Body.ObjectIndex];
+                Object.X = Body.State.Position.X;
+                Object.Y = Body.State.Position.Y;
+                // A turret draws its rotating top; the fixed base (animation 25) is not drawn yet.
+                if (Body.Turret)
+                {
+                    Object.Direction = Body.Turret->Direction;
+                }
             }
 
             PlayerObject->X = Player->Position.X;
@@ -638,7 +651,6 @@ int main(const int ArgCount, char** const Args)
         if (Player)
         {
             // The player's 48 poses are the frames of the rot animation that follows its 24 direction animations; odd poses match them.
-            const size_t PlayerIndex = size_t(PlayerObject - Level->Objects.begin());
             const size_t RotAnimation = size_t(PlayerObject->GafIndex - 1 + ObjectDirectionCount);
             for (FObjectSprite& Sprite : Objects->Sprites)
             {
