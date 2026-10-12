@@ -246,7 +246,7 @@ void DecaySpeed(FPlayerState& Player, const FMovementClass& Class)
 // ObjectComputeDisplacement at 00438b20 for the player: collision-space displacement for this step.
 FCollisionPoint Displacement(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, const float TimeScale)
 {
-    const float Strafe = std::clamp(Command.Strafe, Class.ThrustMin, Class.ThrustMax);
+    const float Strafe = Command.Strafe >= 0.f ? std::min(Command.Strafe, Class.ThrustMax) : std::max(Command.Strafe, Class.ThrustMin);
     double X = 0.;
     double Y = 0.;
     float PreviousMagnitude = 0.f;
@@ -886,6 +886,27 @@ std::expected<void, std::string> VerifyPlayerMovement()
     }
 
     constexpr float Tolerance = 0.01f;
+    // Ammo has positive minimum thrust; zero strafe must stay zero rather than become sideways thrust.
+    constexpr float BulletThrust = 300.f;
+    const FMovementClass BulletClass{
+        .ThrustInitial = BulletThrust,
+        .ThrustMin = BulletThrust,
+        .ThrustMax = BulletThrust,
+        .Weight = 1.f,
+        .SpeedMax = BulletThrust,
+        .Friction = { .X = 1.f, .Y = 1.f },
+    };
+    for (int Direction = 0; Direction < DirectionCount; ++Direction)
+    {
+        FPlayerState Bullet{ .Speed = BulletThrust, .Direction = Direction };
+        const FCollisionPoint Delta = Displacement(Bullet, BulletClass, { .Thrust = EPlayerThrust::Forward }, 1.f);
+        const FCollisionPoint Facing = FacingVector(Direction);
+        if (std::abs(Delta.X - BulletThrust * Facing.X) > Tolerance || std::abs(Delta.Y - BulletThrust * Facing.Y) > Tolerance)
+        {
+            return std::unexpected("Stationary bullet direction self-check failed");
+        }
+    }
+
     if (Player.Speed != float(ForwardSteps) || !(Player.Position.X > 2000.f) || std::abs(Player.Position.Y - 2000.f) > Tolerance)
     {
         return std::unexpected("Player forward step self-check failed");
