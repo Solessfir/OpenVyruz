@@ -12,7 +12,9 @@
 #include <cctype>
 #include <cmath>
 #include <format>
+#include <limits>
 #include <optional>
+#include <ranges>
 #include <string_view>
 #include <tuple>
 #include <vector>
@@ -316,6 +318,10 @@ FCollisionPoint Displacement(FPlayerState& Player, const FMovementClass& Class, 
         Y = float(double(Strafe) * double(Side.Y) + Y);
     }
 
+    // Patrol and random movers add the pull back onto their route segment before friction.
+    X = float(double(Command.Correction.X) + X);
+    Y = float(double(Command.Correction.Y) + Y);
+
     X = float(double(Class.Friction.X) * X);
     Y = float(double(Class.Friction.Y) * Y);
     const double ThresholdX = TimeScale == 1.f ? Class.FrictionThreshold.X : float(double(Class.FrictionThreshold.X) / double(TimeScale));
@@ -559,6 +565,62 @@ std::optional<FCollisionPoint> ParsePair(const std::string_view Text)
 }
 }
 
+std::optional<uint32_t> ParseBehaviour(const std::string_view Text)
+{
+    uint32_t Bits = 0;
+    bool bMovement = false;
+    bool bTarget = false;
+    bool bGuardian = false;
+    for (const auto Word : Text | std::views::split(' '))
+    {
+        const std::string Name = ToLowerName(std::string_view(Word));
+        if (Name.empty())
+        {
+            continue;
+        }
+
+        constexpr std::array<std::pair<std::string_view, uint32_t>, 5> Movements = { {
+            { "player", BehaviourPlayer },
+            { "random", BehaviourRandom },
+            { "fixed", BehaviourFixed },
+            { "patrol", BehaviourPatrol },
+            { "straight", BehaviourStraight },
+        } };
+        if (const auto Movement = std::ranges::find(Movements, Name, &std::pair<std::string_view, uint32_t>::first); Movement != Movements.end())
+        {
+            if (Bits != 0)
+            {
+                return std::nullopt;
+            }
+
+            Bits = Movement->second;
+            bMovement = Movement->second != BehaviourPlayer;
+            bTarget = Movement->second == BehaviourPlayer;
+        }
+        else if (Name == "seeker" || Name == "tracker")
+        {
+            if (bTarget || !bMovement)
+            {
+                return std::nullopt;
+            }
+
+            Bits = (Bits & ~BehaviourTargetMask) | (Name == "seeker" ? BehaviourSeeker : BehaviourTracker);
+            bTarget = true;
+        }
+        else if (Name == "guardian" && !bGuardian && bTarget && bMovement)
+        {
+            Bits |= BehaviourGuardian;
+            bGuardian = true;
+        }
+        else
+        {
+            return std::nullopt;
+        }
+    }
+
+    return Bits;
+}
+
 FPlayerCommand PlayerCommandFromKeys(const bool bForward, const bool bBackward, const bool bTurnLeft, const bool bTurnRight, const bool bStrafeLeft, const bool bStrafeRight)
 {
     constexpr float StrafeSpeed = 2.f;
@@ -675,7 +737,12 @@ FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class
 void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
     const FLevel& Level, const std::span<FObjectBody> Bodies, const FObjectBody* const Self)
 {
-    TurnPlayer(Player, Class, Command.Turn, StepMilliseconds);
+    // Actors turn their body in their behaviour update instead (SeekerTurnBody at 0042cfa0).
+    if (!Self || !Self->Actor)
+    {
+        TurnPlayer(Player, Class, Command.Turn, StepMilliseconds);
+    }
+
     if (Command.Thrust == EPlayerThrust::None && Command.Strafe == 0.f && IsZero(Player.Velocity))
     {
         Player.PreviousPosition = Player.Position;
@@ -769,7 +836,10 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
         // Kinds come from the class Sub-type or the GAF folder (CreateObject at 00413800). ponytail: actors, lifts and gates join once their
         // behaviours move or open them; pickups are collected instead of blocking.
         constexpr std::array<std::string_view, 6> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller" };
-        if (Object.BoundingBoxSize <= 0 || !std::ranges::contains(SolidKinds, Object.SubType) || IsPickup(Object))
+        // ponytail: cops are the first actors; jeeps, tanks, walkers, spiders and helis need their own pose and turning rules.
+        constexpr std::string_view CopKind = "cop";
+        const bool bActor = Object.SubType == CopKind;
+        if (Object.BoundingBoxSize <= 0 || (!bActor && !std::ranges::contains(SolidKinds, Object.SubType)) || IsPickup(Object))
         {
             continue;
         }
@@ -819,6 +889,33 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
         Body.Shield = ParseLevelFloat(Properties.Find("Shield")).value_or(Body.Shield);
         Body.State.Position = Body.State.PreviousPosition = { .X = Object.X, .Y = Object.Y };
         Body.State.Center = CollisionFromWorld(Body.State.Position);
+        if (bActor)
+        {
+            const std::optional<uint32_t> Behaviour = ParseBehaviour(Object.Behaviour);
+            const std::expected<FMovementClass, std::string> Movement = ReadMovementProperties(Properties, Object.ClassName, Object.BoundingBoxSize);
+            if (!Behaviour || !Movement)
+            {
+                continue;
+            }
+
+            Body.Class = *Movement;
+            Body.State.Speed = Movement->ThrustInitial;
+            Body.State.Direction = Object.Direction < DirectionCount ? Object.Direction : 0;
+            Body.State.Pose = Body.State.TargetPose = Body.State.Direction * PosesPerDirection + 1;
+            FActor& Actor = Body.Actor.emplace(FActor{ .Behaviour = *Behaviour });
+            if (const FLevelPropertyBlock* const Patrol = FindTypeBlock(Properties, "Patrol"); Patrol && (*Behaviour & BehaviourMovementMask) == BehaviourPatrol)
+            {
+                const int PathId = int(Number(Patrol, "Path-ID"));
+                const auto Path = std::ranges::find(Level.PatrolPaths | std::views::reverse, PathId, &FPatrolPath::Id);
+                Actor.Patrol = FPatrol{
+                    .Path = Path.base() == Level.PatrolPaths.begin() ? std::nullopt : std::optional(size_t(Path.base() - Level.PatrolPaths.begin()) - 1),
+                    .bReverse = Number(Patrol, "Reverse") != 0.f,
+                    .bClosed = Number(Patrol, "Closed") != 0.f,
+                    .ScanDelay = int32_t(Number(Patrol, "Scan-delay")),
+                };
+            }
+        }
+
         Bodies.push_back(std::move(Body));
     }
 
@@ -829,7 +926,8 @@ void StepObjectBodies(const std::span<FObjectBody> Bodies, const uint32_t StepMi
 {
     for (FObjectBody& Body : Bodies)
     {
-        if (Body.State.bPushed || !IsZero(Body.State.Velocity))
+        // Actors move every step in StepActors.
+        if (!Body.Actor && (Body.State.bPushed || !IsZero(Body.State.Velocity)))
         {
             StepPlayer(Body.State, Body.Class, {}, StepMilliseconds, Terrain, Level, Bodies, &Body);
         }
@@ -1907,6 +2005,296 @@ std::vector<FPathObstacle> TerrainPathObstacles(const FTerrainCollision& Terrain
 }
 }
 
+namespace
+{
+// SeekerUpdate (0042c5a0) and the movement updates advance route searches every 17 ms.
+constexpr int32_t RouteSearchPeriodMilliseconds = 17;
+
+// SeekerUpdateSegment at 0042c9d0; false for a degenerate segment.
+bool UpdateSegment(FPatrol& Patrol)
+{
+    Patrol.SegmentDelta = { .X = Patrol.SegmentEnd.X - Patrol.SegmentStart.X, .Y = Patrol.SegmentEnd.Y - Patrol.SegmentStart.Y };
+    Patrol.SegmentLengthSquared = Patrol.SegmentDelta.X * Patrol.SegmentDelta.X + Patrol.SegmentDelta.Y * Patrol.SegmentDelta.Y;
+    Patrol.SegmentDirection = FindDirection(Patrol.SegmentDelta);
+    return Patrol.SegmentDirection != NoDirection;
+}
+
+// FUN_0042c960: step to the route's next segment; false once the route is used up.
+bool NextSegment(FPatrol& Patrol)
+{
+    FPathRoute* const Route = Patrol.Route ? &*Patrol.Route : nullptr;
+    if (!Route || Route->Current >= Route->Points.size())
+    {
+        return false;
+    }
+
+    ++Route->Current;
+    if (Route->Current >= Route->Points.size())
+    {
+        return false;
+    }
+
+    Patrol.SegmentStart = Route->Points[Route->Current - 1];
+    Patrol.SegmentEnd = Route->Points[Route->Current];
+    return UpdateSegment(Patrol);
+}
+
+// SeekerOnSegment at 0042d820: the actor is still inside the segment's bounds, widened by its size and speed.
+bool OnSegment(const FObjectBody& Body, const FPatrol& Patrol)
+{
+    const float Slack = float(double(Body.Class.Radius) * 2. + double(Body.State.SpeedMagnitude));
+    const auto Within = [Slack](const float Value, const float Start, const float End)
+    {
+        return End < Start ? End - Slack <= Value && Value <= Slack + Start : Start - Slack <= Value && Value <= Slack + End;
+    };
+    return Within(Body.State.Center.X, Patrol.SegmentStart.X, Patrol.SegmentEnd.X) && Within(Body.State.Center.Y, Patrol.SegmentStart.Y, Patrol.SegmentEnd.Y);
+}
+
+// SeekerRangeState at 0042cd30 without a target object: how close the actor is to the end of its segment.
+uint32_t PatrolRangeState(const FObjectBody& Body, const FPatrol& Patrol)
+{
+    // PatrolMoveUpdate gives its work attribute a 64-unit arrival radius; inner corners count from 8 units.
+    constexpr uint32_t ArrivalRadius = 64;
+    constexpr float RouteEndScale = 0.5625f;
+    constexpr float CornerDistanceSquared = 64.f;
+    constexpr uint32_t NearEnd = 1;
+    constexpr uint32_t AtRouteEnd = 3;
+    const float X = Patrol.SegmentEnd.X - Body.State.Center.X;
+    const float Y = Patrol.SegmentEnd.Y - Body.State.Center.Y;
+    const float DistanceSquared = X * X + Y * Y;
+    if (Patrol.Route->Current + 1 < Patrol.Route->Points.size())
+    {
+        return DistanceSquared < CornerDistanceSquared ? NearEnd : 0;
+    }
+
+    const float RadiusSquared = float(ArrivalRadius * ArrivalRadius);
+    if (DistanceSquared <= RadiusSquared * RouteEndScale)
+    {
+        return AtRouteEnd;
+    }
+
+    return DistanceSquared < RadiusSquared ? NearEnd : 0;
+}
+
+// FUN_0042cc60: one hundredth of the world-space offset back to the segment line, applied by ObjectComputeDisplacement.
+FCollisionPoint SegmentCorrection(const FObjectBody& Body, const FPatrol& Patrol)
+{
+    const float X = Body.State.Center.X - Patrol.SegmentStart.X;
+    const float Y = Body.State.Center.Y - Patrol.SegmentStart.Y;
+    const float Dot = Y * Patrol.SegmentDelta.Y + X * Patrol.SegmentDelta.X;
+    const float Along = std::sqrt(Dot * Dot / Patrol.SegmentLengthSquared / Patrol.SegmentLengthSquared);
+    const float OffsetX = Along * Patrol.SegmentDelta.X - X;
+    const float OffsetY = Along * Patrol.SegmentDelta.Y - Y;
+    constexpr float WorldXScale = 0.008944272f;
+    constexpr float WorldYScale = 0.004472136f;
+    return CollisionFromWorld({ .X = (OffsetX - OffsetY) * WorldXScale, .Y = (OffsetY + OffsetX) * WorldYScale });
+}
+
+// SeekerTurnBody at 0042cfa0 for a body that can turn on the spot: one pose toward the segment per Turn-timeout.
+void TurnActorBody(FPlayerState& State, const FMovementClass& Class, const int Direction, const int32_t Step)
+{
+    State.TurnTimer -= Step;
+    if (State.TurnTimer >= 1)
+    {
+        return;
+    }
+
+    State.TurnTimer = std::max(0, State.TurnTimer + Class.TurnTimeout);
+    State.TargetPose = Direction * PosesPerDirection + 1;
+    State.Pose = AdvancePose(State.Pose, State.TargetPose);
+    State.Direction = (State.Pose - 1) / PosesPerDirection;
+}
+
+// SeekerEngage at 0042caa0 for a route point: turn toward the segment, then drive along it unless the route has run out.
+void EngageSegment(FObjectBody& Body, FPatrol& Patrol, const int32_t Step)
+{
+    constexpr uint32_t NearEnd = 1;
+    Patrol.RangeState = PatrolRangeState(Body, Patrol);
+    const bool bDrive = (Patrol.RangeState & NearEnd) == 0 || NextSegment(Patrol);
+    TurnActorBody(Body.State, Body.Class, Patrol.SegmentDirection, Step);
+    Body.Actor->Command.Correction = SegmentCorrection(Body, Patrol);
+    if (bDrive)
+    {
+        Body.Actor->Command.Thrust = EPlayerThrust::Forward;
+    }
+}
+
+// FUN_0042e740: aim the next search at the current patrol point, moving on only after arriving at the end of a finished route.
+bool StartPatrolLeg(FPatrol& Patrol, const FObjectBody& Body, const FLevel& Level)
+{
+    if (!Patrol.Path)
+    {
+        return false;
+    }
+
+    const FPatrolPath& Path = Level.PatrolPaths[*Patrol.Path];
+    const int Count = int(Path.Points.size());
+    if (!Patrol.bStarted)
+    {
+        // FUN_0042e910 starts at the nearest point by Manhattan distance, preferring the later point on ties.
+        int Best = std::numeric_limits<int>::max();
+        const int X = int(Body.State.Position.X);
+        const int Y = int(Body.State.Position.Y);
+        for (int Index = Count - 1; Index >= 0; --Index)
+        {
+            const int Distance = std::abs(X - Path.Points[size_t(Index)][0]) + std::abs(Y - Path.Points[size_t(Index)][1]);
+            if (Distance < Best)
+            {
+                Best = Distance;
+                Patrol.Point = Index;
+            }
+        }
+
+        if (Patrol.Point < 0)
+        {
+            return false;
+        }
+
+        Patrol.bStarted = true;
+    }
+    else if (Patrol.Route && Patrol.Route->Current >= Patrol.Route->Points.size() && (Patrol.RangeState & 1) != 0)
+    {
+        // Open paths turn back at either end; closed ones wrap around.
+        for (;;)
+        {
+            const int Next = Patrol.Point + (Patrol.bReverse ? -1 : 1);
+            if (Next >= 0 && Next < Count)
+            {
+                Patrol.Point = Next;
+                break;
+            }
+
+            if (Patrol.bClosed)
+            {
+                Patrol.Point = Patrol.bReverse ? Count - 1 : 0;
+                break;
+            }
+
+            Patrol.bReverse = !Patrol.bReverse;
+        }
+    }
+
+    const std::array<int32_t, 2>& Point = Path.Points[size_t(Patrol.Point)];
+    Patrol.Goal = { .X = float(Point[0]), .Y = float(Point[1]) };
+    return Patrol.Search.Start(Body.State.Center, CollisionFromWorld(Patrol.Goal));
+}
+
+// PatrolMoveUpdate at 0042e400.
+void UpdatePatrol(FObjectBody& Body, FPatrol& Patrol, const FLevel& Level, std::optional<std::vector<FPathObstacle>>& Obstacles,
+    const FTerrainCollision& Terrain, const int32_t Step)
+{
+    if (Patrol.bOnSegment)
+    {
+        if (!OnSegment(Body, Patrol))
+        {
+            Patrol.bOnSegment = false;
+            Patrol.Timer = 0;
+            return;
+        }
+
+        if (Patrol.Timer >= 1)
+        {
+            Patrol.Timer -= Step;
+            EngageSegment(Body, Patrol, Step);
+        }
+        else
+        {
+            // The route is re-planned every Scan-delay, even toward the same point.
+            Patrol.bOnSegment = false;
+        }
+
+        return;
+    }
+
+    if (!Patrol.bSearching)
+    {
+        if (Patrol.Timer >= 1)
+        {
+            Patrol.Timer -= Step;
+            return;
+        }
+
+        Patrol.Timer += Patrol.ScanDelay;
+        if (StartPatrolLeg(Patrol, Body, Level))
+        {
+            Patrol.SearchTimer = 0;
+            Patrol.bSearching = true;
+        }
+
+        return;
+    }
+
+    Patrol.SearchTimer -= Step;
+    if (Patrol.SearchTimer > 0)
+    {
+        return;
+    }
+
+    Patrol.SearchTimer += RouteSearchPeriodMilliseconds;
+    if (!Obstacles)
+    {
+        Obstacles = TerrainPathObstacles(Terrain);
+    }
+
+    const FCollisionPoint HalfExtent{ .X = Body.Class.Radius, .Y = Body.Class.Radius };
+    const EPathStatus Status = Patrol.Search.Advance(*Obstacles, HalfExtent);
+    if (Status == EPathStatus::Searching)
+    {
+        Patrol.Timer -= Step;
+        return;
+    }
+
+    if (Status == EPathStatus::Found || Status == EPathStatus::Finished)
+    {
+        // A failed route keeps the previous one, as FUN_0042d760 restores the saved work attribute.
+        std::optional<FPathRoute> Route = Patrol.Search.SelectFinishedRoute(*Obstacles, HalfExtent);
+        if (Route)
+        {
+            const std::optional<FPathRoute> Previous = std::move(Patrol.Route);
+            Patrol.Route = std::move(Route);
+            Patrol.Route->Current = 0;
+            Patrol.bOnSegment = NextSegment(Patrol);
+            if (!Patrol.bOnSegment)
+            {
+                Patrol.Route = Previous;
+            }
+        }
+    }
+
+    Patrol.bSearching = false;
+    Patrol.Timer += Patrol.ScanDelay;
+}
+}
+
+void StepActors(const std::span<FObjectBody> Bodies, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level)
+{
+    const int32_t Step = int32_t(StepMilliseconds);
+    std::optional<std::vector<FPathObstacle>> Obstacles;
+    for (FObjectBody& Body : Bodies)
+    {
+        if (!Body.Actor || Level.Objects[Body.ObjectIndex].bRemoved)
+        {
+            continue;
+        }
+
+        // EngineUpdateObjects (004406e0) clears the command and the segment pull before the behaviour updates.
+        FActor& Actor = *Body.Actor;
+        Actor.Command = {};
+        if (Actor.Patrol)
+        {
+            UpdatePatrol(Body, *Actor.Patrol, Level, Obstacles, Terrain, Step);
+        }
+
+        // A pushed actor drifts without thrust until it slows down (ObjectComputeDisplacement at 00438b20).
+        if (Body.State.bPushed)
+        {
+            Actor.Command.Thrust = EPlayerThrust::None;
+        }
+
+        StepPlayer(Body.State, Body.Class, Actor.Command, StepMilliseconds, Terrain, Level, Bodies, &Body);
+    }
+}
+
 void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level, std::vector<FObjectBody>& Bodies,
     const FPlayerState& Player)
 {
@@ -2209,6 +2597,75 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
         return true;
     });
+}
+
+std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive)
+{
+    // Every level's cops patrol for half a minute; each one with a path must reach at least its second patrol point.
+    constexpr uint32_t StepMilliseconds = 14;
+    constexpr uint32_t DurationMilliseconds = 30000;
+    size_t Patrollers = 0;
+    size_t Advanced = 0;
+    std::vector<std::string> Stuck;
+    for (const std::string& Name : Archive.GetNames())
+    {
+        if (!Name.ends_with(".3do"))
+        {
+            continue;
+        }
+
+        std::expected<FLevel, std::string> Level = LoadLevel(Archive, Name.substr(0, Name.size() - 4));
+        const std::expected<FTerrainCollision, std::string> Terrain = Level ? BuildTerrainCollision(*Level) : std::unexpected(Level.error());
+        if (!Terrain)
+        {
+            return std::unexpected(std::format("{}: {}", Name, Terrain.error()));
+        }
+
+        std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+        std::vector<int> FirstPoints(Bodies.size(), -1);
+        std::vector<size_t> Visits(Bodies.size(), 0);
+        for (uint32_t Time = 0; Time < DurationMilliseconds; Time += StepMilliseconds)
+        {
+            StepActors(Bodies, StepMilliseconds, *Terrain, *Level);
+            for (size_t Index = 0; Index < Bodies.size(); ++Index)
+            {
+                const std::optional<FPatrol>& Patrol = Bodies[Index].Actor ? Bodies[Index].Actor->Patrol : std::nullopt;
+                if (Patrol && Patrol->bStarted && FirstPoints[Index] != Patrol->Point)
+                {
+                    FirstPoints[Index] = FirstPoints[Index] < 0 ? Patrol->Point : FirstPoints[Index];
+                    Visits[Index] += 1;
+                }
+            }
+        }
+
+        for (size_t Index = 0; Index < Bodies.size(); ++Index)
+        {
+            const FObjectBody& Body = Bodies[Index];
+            if (!Body.Actor || !Body.Actor->Patrol || !Body.Actor->Patrol->Path)
+            {
+                continue;
+            }
+
+            ++Patrollers;
+            if (Visits[Index] > 1 || Body.Actor->Patrol->Point != FirstPoints[Index])
+            {
+                ++Advanced;
+            }
+            else
+            {
+                Stuck.push_back(std::format("{} {} at {:.0f},{:.0f}", Name, Level->Objects[Body.ObjectIndex].ClassName, Body.State.Position.X, Body.State.Position.Y));
+            }
+        }
+    }
+
+    const std::string Summary = std::format("{} of {} patrolling cops moved on to their next point", Advanced, Patrollers);
+
+    if (Patrollers == 0 || Advanced * 2 < Patrollers)
+    {
+        return std::unexpected(std::format("{}; stuck: {}", Summary, Stuck.empty() ? std::string() : Stuck.front()));
+    }
+
+    return Summary;
 }
 
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)

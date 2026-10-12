@@ -236,11 +236,43 @@ int VerifyLevels(FResourceArchive& Archive)
             continue;
         }
 
+        // Patrollers find their path by TYPE Patrol Path-ID (FUN_0042e910); one without a matching path never starts patrolling.
+        size_t Patrollers = 0;
+        size_t Unrouted = 0;
+        bool bBehavioursOk = true;
+        for (const FLevelObject& Object : Level->Objects)
+        {
+            const auto Patrol = std::ranges::find_if(Object.Properties.Children, [](const FLevelPropertyBlock& Block) { return Block.Kind == "TYPE" && Block.Name == "Patrol"; });
+            const std::optional<uint32_t> Behaviour = ParseBehaviour(Object.Behaviour);
+            if (!Behaviour)
+            {
+                std::printf("FAIL %s: behaviour '%s' of %s\n", LevelPath.c_str(), Object.Behaviour.c_str(), Object.ClassName.c_str());
+                bBehavioursOk = false;
+            }
+
+            if (!Behaviour || (*Behaviour & BehaviourMovementMask) != BehaviourPatrol || Patrol == Object.Properties.Children.end())
+            {
+                continue;
+            }
+
+            ++Patrollers;
+            const std::optional<float> Id = ParseLevelFloat(Patrol->Find("Path-ID"));
+            const auto Path = std::ranges::find(Level->PatrolPaths, Id ? int(*Id) : 0, &FPatrolPath::Id);
+            Unrouted += Path == Level->PatrolPaths.end() || Path->Points.empty() ? 1 : 0;
+        }
+
+        if (!bBehavioursOk)
+        {
+            ++Failed;
+            continue;
+        }
+
         // Index 0 is the unused placeholder; any other untyped descriptor never reaches a .3DI slot.
         const ptrdiff_t Untyped = std::ranges::count(Level->TileTypes, ETerrain::None) - 1;
-        std::printf("%-16s %ux%u, %u layers, %zu blocks, %zu tile types (%td untyped), %zu objects, %zu collision shapes, %u missing tile refs, \"%s\"\n",
+        std::printf("%-16s %ux%u, %u layers, %zu blocks, %zu tile types (%td untyped), %zu objects, %zu collision shapes, %u missing tile refs, %zu patrol paths, "
+            "%zu patrollers (%zu without a path), \"%s\"\n",
             LevelPath.c_str(), Level->GridWidth, Level->GridHeight, Level->LayerCount, Level->Blocks.size(), Level->TileTypes.size() - 1, Untyped,
-            Level->Objects.size(), Terrain->GetShapes().size(), Level->MissingTileRefs, Level->Name.c_str());
+            Level->Objects.size(), Terrain->GetShapes().size(), Level->MissingTileRefs, Level->PatrolPaths.size(), Patrollers, Unrouted, Level->Name.c_str());
         ++Loaded;
     }
     std::printf("Levels: %d loaded, %d failed\n", Loaded, Failed);
@@ -506,9 +538,11 @@ int main(const int ArgCount, char** const Args)
         std::printf("Demo replay: %s\n", Demo ? Demo->c_str() : Demo.error().c_str());
         const std::expected<std::string, std::string> Combat = VerifyCombat(Archive);
         std::printf("Combat: %s\n", Combat ? Combat->c_str() : Combat.error().c_str());
+        const std::expected<std::string, std::string> Patrols = VerifyPatrols(Archive);
+        std::printf("Patrols: %s\n", Patrols ? Patrols->c_str() : Patrols.error().c_str());
         std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
             Collision ? "passed" : Collision.error().c_str(), Movement ? "passed" : Movement.error().c_str());
-        return bFrameLoop && Collision && Movement && Paths && Demo && Combat ? 0 : 1;
+        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols ? 0 : 1;
     }
 
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
@@ -616,6 +650,7 @@ int main(const int ArgCount, char** const Args)
                     Pressed(GLFW_KEY_A), Pressed(GLFW_KEY_D));
                 StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies);
                 StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
+                StepActors(Bodies, StepMilliseconds, *Terrain, *Level);
                 if (Combat)
                 {
                     const float MoneyBefore = Inventory.Money;
@@ -659,6 +694,10 @@ int main(const int ArgCount, char** const Args)
                 if (Body.Turret)
                 {
                     Object.Direction = Body.Turret->Direction;
+                }
+                else if (Body.Actor)
+                {
+                    Object.Direction = Body.State.Direction;
                 }
             }
 

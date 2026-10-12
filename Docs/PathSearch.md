@@ -27,4 +27,12 @@ An obstructed segment branches through selected corners of the obstacle's boundi
 
 After route selection, `SeekerValidateRoute` (`0042ca30`) requires a turret's route to contain exactly two points and its collision-space direction to be one of `0`, `6`, `12`, or `18`. Engaging and firing still use the seeker's range and direction checks.
 
-Moving enemies and route following are separate from the route-search implementation.
+## Patrols
+
+`ParseBehaviour` (`00409490`) packs `Behaviour` words into object `+0x190`: the target bits are Seeker `1`, Tracker `2` and Player `3`; the movement bits are Random `4`, Fixed `8`, Patrol `0xc` and Straight `0x10`; Guardian adds `0x20`. A movement word must come first, and Seeker or Tracker must follow it.
+
+`PatrolMoveUpdate` (`0042e400`) keeps a work attribute beside the `TYPE Patrol` attribute. Its timer refills by the patrol's `Scan-delay` both when a search starts and when it ends, and the route is re-planned whenever the timer runs out, even toward the same point. `FUN_0042e740` picks the goal. The first time, `FUN_0042e910` takes the `.3DP` path with the patrol's `Path-ID` (the last one on duplicates) and its nearest point by Manhattan distance to the truncated world position, preferring later points on ties. Afterwards the goal moves on only once the previous route is used up and the last range check reported arrival. An open path turns back at either end; a closed one wraps. A patroller without a matching path never starts.
+
+A found route is followed segment by segment. `SeekerOnSegment` (`0042d820`) drops the segment once the actor leaves its bounds widened by twice its radius plus its speed. `SeekerEngage` (`0042caa0`) checks the distance to the segment end against 8 units for inner corners, or a 64-unit radius at the route end (arrival within 48), then turns the body one pose toward the segment per `Turn-timeout` and sets command 200 unless the route has run out. `FUN_0042cc60` adds one hundredth of the world-space offset back to the segment line, which `ObjectComputeDisplacement` adds in collision space after strafe and before friction.
+
+A cop that starts exactly on its nearest patrol point gets a zero-length first route; `SeekerUpdateSegment` rejects its direction and the cop stays put until something else moves it. The port's route graph holds only terrain, so a route through placed objects such as pallets can leave a patroller pushing against them, where the original detours.

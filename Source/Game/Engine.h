@@ -50,6 +50,8 @@ struct FPlayerCommand
     EPlayerTurn Turn = EPlayerTurn::None;
     EPlayerThrust Thrust = EPlayerThrust::None;
     float Strafe = 0.f;
+    // Collision-space pull back onto a patrol or random route segment (object +0x134, converted from world space).
+    FCollisionPoint Correction;
 };
 
 // Movement properties as ObjectInitializeClassProperties (00419d30) copies them from the class record.
@@ -136,6 +138,40 @@ struct FTurret
     bool bTrigger = false;
 };
 
+// The TYPE Patrol attribute (kind 0xe) and the work attribute (kind 7) that PatrolMoveUpdate (0042e400) keeps beside it.
+struct FPatrol
+{
+    // Index into FLevel::PatrolPaths; FUN_0042e910 takes the last path with the attribute's Path-ID.
+    std::optional<size_t> Path;
+    int Point = -1;
+    bool bReverse = false;
+    bool bClosed = false;
+    bool bStarted = false;
+    int32_t ScanDelay = 0;
+    FCollisionPoint Goal;
+    int32_t Timer = 0;
+    int32_t SearchTimer = 0;
+    bool bSearching = false;
+    bool bOnSegment = false;
+    FPathSearch Search;
+    std::optional<FPathRoute> Route;
+    // The segment being followed: route points Route->Current - 1 to Route->Current.
+    FCollisionPoint SegmentStart;
+    FCollisionPoint SegmentEnd;
+    FCollisionPoint SegmentDelta;
+    float SegmentLengthSquared = 0.f;
+    int SegmentDirection = 0;
+    // SeekerRangeState bits from the last engage: 1 near the segment end, 2 at the route end.
+    uint32_t RangeState = 0;
+};
+
+struct FActor
+{
+    uint32_t Behaviour = 0;
+    std::optional<FPatrol> Patrol;
+    FPlayerCommand Command;
+};
+
 struct FExplosionBlock
 {
     std::string BoomEffect;
@@ -166,6 +202,7 @@ struct FObjectBody
     std::vector<FExplosionBlock> Explosions;
     float Altitude = 0.f;
     std::optional<FTurret> Turret;
+    std::optional<FActor> Actor;
 };
 
 inline constexpr int PlayerPoseCount = 48;
@@ -292,6 +329,24 @@ struct FPlayerTarget
 };
 
 // Live keyboard semantics of ReadPlayerInput (00438540): turning and strafing combine.
+// Behaviour bits as ParseBehaviour (00409490) packs them into the object at +0x190.
+enum EBehaviour : uint32_t
+{
+    BehaviourTargetMask = 0x03,
+    BehaviourSeeker = 0x01,
+    BehaviourTracker = 0x02,
+    BehaviourPlayer = 0x03,
+    BehaviourMovementMask = 0x1c,
+    BehaviourRandom = 0x04,
+    BehaviourFixed = 0x08,
+    BehaviourPatrol = 0x0c,
+    BehaviourStraight = 0x10,
+    BehaviourGuardian = 0x20,
+};
+
+// Nullopt for the combinations the original rejects: a second movement, Seeker/Tracker/Guardian out of order, or an unknown word.
+std::optional<uint32_t> ParseBehaviour(std::string_view Text);
+
 FPlayerCommand PlayerCommandFromKeys(bool bForward, bool bBackward, bool bTurnLeft, bool bTurnRight, bool bStrafeLeft, bool bStrafeRight);
 // Demo semantics of ReplayPlayerInput (00438800): strafing cancels turning.
 FPlayerCommand PlayerCommandFromInput(uint32_t InputBits);
@@ -308,6 +363,8 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
 void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
     const FLevel& Level, std::span<FObjectBody> Bodies = {}, const FObjectBody* Self = nullptr);
 // Moves pushed bodies for one step, in object order.
+// Patrolling actors plan and follow their routes, then move like the player with the resulting command.
+void StepActors(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
 void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
 // Loads the player's weapons, arms the level's turrets and loads every FX class the level's ammo and explosions can spawn.
 std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive,
@@ -326,5 +383,6 @@ void StepProjectiles(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainC
 std::expected<void, std::string> VerifyPlayerMovement();
 // Loads every level's weapons and fires them for a few seconds of game time.
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive);
+std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive);
 // Replays the CAVE\DEMO.3DR inputs through StepPlayer and compares every step with the recorded position.
 std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archive);

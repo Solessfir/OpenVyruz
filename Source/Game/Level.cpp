@@ -921,6 +921,45 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
         return std::unexpected(std::format("{}.3do: OBJECT-COUNT does not match {} objects", Base, Level.Objects.size()));
     }
 
+    const std::expected<FBlock, std::string> Paths = ReadText(Archive, Base + ".3dp").and_then(ParseBlocks);
+    if (!Paths)
+    {
+        return std::unexpected(std::format("{}.3dp: {}", Base, Paths.error()));
+    }
+
+    for (const FBlock& Block : Paths->Children)
+    {
+        if (Block.Kind != "CREATE-PATH")
+        {
+            continue;
+        }
+
+        FPatrolPath& Path = Level.PatrolPaths.emplace_back(FPatrolPath{ .Id = ParseInt(Block.Find("Id")).value_or(0) });
+        for (const auto& [Field, Value] : Block.Fields)
+        {
+            if (Field != "Point")
+            {
+                continue;
+            }
+
+            const size_t Comma = Value.find(',');
+            const std::optional<int> X = ParseInt(std::string_view(Value).substr(0, Comma));
+            const std::optional<int> Y = Comma == std::string::npos ? std::nullopt : ParseInt(std::string_view(Value).substr(Comma + 1));
+
+            if (!X || !Y)
+            {
+                return std::unexpected(std::format("{}.3dp: invalid point '{}' in path {}", Base, Value, Path.Id));
+            }
+
+            Path.Points.push_back({ *X, *Y });
+        }
+
+        if (ParseInt(Block.Find("Count")) != int(Path.Points.size()))
+        {
+            return std::unexpected(std::format("{}.3dp: path {} Count does not match its points", Base, Path.Id));
+        }
+    }
+
     // LevelGet3dgPath at 0041ebe0 prefers the .3DO 3DG-FILENAME, relative to the zone folder.
     const std::string_view GraphicsName = Objects->Find("3DG-FILENAME");
     const std::string GraphicsPath = GraphicsName.empty() ? Base + ".3dg" : std::format("{}\\{}", Zone, GraphicsName);

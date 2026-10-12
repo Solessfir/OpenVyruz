@@ -410,7 +410,7 @@ Pickups (keys, ammo, etc.) are ordinary `CREATE-OBJECT` entries here, not `.3DI`
 
 Plain text, block grammar. Per level, references the same coordinate space as `.3DO`.
 
-`CREATE-PATH [ Id = n  Count = n  Point = x, y  Point = x, y  ... ]` - ordered waypoint list. `Count` matches the number of `Point` lines. A level may have zero `CREATE-PATH` blocks. The field linking a path `Id` to its enemy spawner is not identified.
+`CREATE-PATH [ Id = n  Count = n  Point = x, y  Point = x, y  ... ]` - ordered waypoint list. `Count` matches the number of `Point` lines. A level may have zero `CREATE-PATH` blocks. An object's `TYPE Patrol` `Path-ID` selects the path; `FUN_0042e910` takes the last path with that `Id`, and a `Path-ID` without a path leaves the object without a patrol. Points are stored as integers.
 
 ## .3DR - Demo/Replay Recording
 

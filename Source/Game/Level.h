@@ -78,6 +78,13 @@ struct FLevelObject
     FLevelPropertyBlock Properties;
 };
 
+// A .3DP CREATE-PATH: patrol waypoints in world pixels, kept as the integers the path table stores.
+struct FPatrolPath
+{
+    int Id = 0;
+    std::vector<std::array<int32_t, 2>> Points;
+};
+
 struct FLevel
 {
     // Points into Cells, column-major as allocated by LevelAllocGrid at 00429390.
@@ -107,13 +114,16 @@ struct FLevel
     // .3DO
     std::vector<FLevelObject> Objects;
 
+    // .3DP, in file order.
+    std::vector<FPatrolPath> PatrolPaths;
+
     // Resolved COMMON and zone classes by lowercase name, for objects created at run time such as ammo.
     std::unordered_map<std::string, FLevelPropertyBlock> Classes;
     // Archive path of each class's GAF-name, for the classes whose GAF exists.
     std::unordered_map<std::string, std::string> ClassGafPaths;
 };
 
-// Loads <Zone>\<Name>.3DX/.3DI/.3DO/.3DG plus the COMMON and zone .3DC class libraries, e.g. "UNDERGROUND\T1U1".
+// Loads <Zone>\<Name>.3DX/.3DI/.3DO/.3DP/.3DG plus the COMMON and zone .3DC class libraries, e.g. "UNDERGROUND\T1U1".
 // Mirrors VzLoadLevel (0041f7c0) -> LevelLoadFiles (00429710) and LevelLoad3dg (0041eae0).
 std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, std::string_view LevelPath);
 
