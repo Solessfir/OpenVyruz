@@ -20,6 +20,7 @@ constexpr uint32_t MaxGridDimension = 4096;
 constexpr uint32_t MaxLayers = 16;
 constexpr size_t MapHeaderSlot = 0;
 constexpr size_t MapCellSlot = 3;
+constexpr size_t BlockMetadataSlot = 0;
 constexpr size_t MaxPropertyDepth = 64;
 constexpr size_t MaxClassDepth = 256;
 constexpr int MaxObjectAnimationIndex = std::numeric_limits<int>::max() - ObjectDirectionCount;
@@ -36,6 +37,16 @@ struct FMapHeader
     uint32_t Reserved;
 };
 static_assert(sizeof(FMapHeader) == 24);
+
+// BLK_ slot 0; GafParseSlot0 at 0047b830 copies the final word to the runtime block's depth.
+struct FBlockMetadata
+{
+    uint32_t Flags;
+    int32_t OffsetX;
+    int32_t OffsetY;
+    int32_t Depth;
+};
+static_assert(sizeof(FBlockMetadata) == 16);
 
 struct F3diHeader
 {
@@ -578,6 +589,24 @@ std::expected<void, std::string> Load3dg(FResourceArchive& Archive, const std::s
     if (Level.Blocks.empty() || std::ranges::any_of(Level.Blocks, [](const Gaf::FFrame& Block) { return Block.Width != BlockWidth || Block.Height != BlockHeight; }))
     {
         return std::unexpected(std::format("{}: BLK_ blocks are not all {}x{}", Path, BlockWidth, BlockHeight));
+    }
+
+    const std::vector<uint8_t>& Metadata = (*BlockSlots)[BlockMetadataSlot];
+    if (Metadata.size() != Level.Blocks.size() * sizeof(FBlockMetadata))
+    {
+        return std::unexpected(std::format("{}: BLK_ metadata count mismatch", Path));
+    }
+
+    Level.BlockDepths.reserve(Level.Blocks.size());
+    for (size_t Index = 0; Index < Level.Blocks.size(); ++Index)
+    {
+        const auto Block = ReadStruct<FBlockMetadata>(Metadata, Index * sizeof(FBlockMetadata));
+        if (!Block || Block->Depth < BackgroundTerrainDepth || Block->Depth > MaxTerrainDepth)
+        {
+            return std::unexpected(std::format("{}: invalid BLK_ depth at {}", Path, Index));
+        }
+
+        Level.BlockDepths.push_back(Block->Depth);
     }
 
     const std::vector<uint8_t>& HeaderSlot = (*MapSlots)[MapHeaderSlot];

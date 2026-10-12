@@ -472,7 +472,8 @@ std::optional<FTerrainHit> QueryTerrainCollision(const FTerrainCollision& Terrai
         }
 
         const bool bForward = OldMin < NewMin;
-        const float Start = bForward ? (Axis == 0 ? OldBox.Max.X : OldBox.Max.Y) : OldMin;
+        // MovementCollision scans from the trailing bound, including walls already inside the circle.
+        const float Start = bForward ? OldMin : (Axis == 0 ? OldBox.Max.X : OldBox.Max.Y);
         const float Limit = bForward ? (Axis == 0 ? NewBox.Max.X : NewBox.Max.Y) + Candidate.Radius : NewMin - Candidate.Radius;
         const float DeltaX = Candidate.Center.X - Previous.Center.X;
         const float DeltaY = Candidate.Center.Y - Previous.Center.Y;
@@ -559,6 +560,45 @@ std::expected<void, std::string> VerifyTerrainCollision()
     if (!Terrain || Terrain->GetShapes().size() != 4)
     {
         return std::unexpected("Terrain marker self-check failed");
+    }
+
+    for (const FStaticCollisionShape& Shape : Terrain->GetShapes())
+    {
+        const bool bVertical = Shape.Points[0].X == Shape.Points[1].X;
+        const FCollisionPoint Middle{
+            .X = (Shape.Points[0].X + Shape.Points[1].X) * 0.5f,
+            .Y = (Shape.Points[0].Y + Shape.Points[1].Y) * 0.5f,
+        };
+        constexpr float Radius = 5.f;
+        constexpr float ShallowOverlap = 0.25f;
+        constexpr float Movement = 1.f;
+        for (const float Side : { -1.f, 1.f })
+        {
+            FCollisionCircle Previous{ .Center = Middle, .Radius = Radius };
+            if (bVertical)
+            {
+                Previous.Center.X += Side * (Radius - ShallowOverlap);
+            }
+            else
+            {
+                Previous.Center.Y += Side * (Radius - ShallowOverlap);
+            }
+
+            FCollisionCircle Candidate = Previous;
+            if (bVertical)
+            {
+                Candidate.Center.X -= Side * Movement;
+            }
+            else
+            {
+                Candidate.Center.Y -= Side * Movement;
+            }
+
+            if (!QueryTerrainCollision(*Terrain, Previous, Candidate))
+            {
+                return std::unexpected("Terrain overlapping-bound movement self-check failed");
+            }
+        }
     }
 
     Level.Cells[1 * Level.GridHeight + 1][3] = 2;

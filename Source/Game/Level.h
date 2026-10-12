@@ -17,6 +17,8 @@ class FResourceArchive;
 // Size of one .3DG block and one .3DI/MAP_ grid cell in world pixels.
 inline constexpr uint32_t BlockWidth = 64;
 inline constexpr uint32_t BlockHeight = 32;
+inline constexpr int32_t BackgroundTerrainDepth = -1;
+inline constexpr int32_t MaxTerrainDepth = 4;
 
 // Semantic tile types; values are the type IDs registered by VzCreateTypeTable at 00447430.
 enum class ETerrain : uint8_t
@@ -86,6 +88,7 @@ struct FLevel
 
     // .3DG: 64x32 BLK_ bitmaps and the layered MAP_ grid of 1-based block indices (0 = empty), layer-major then row-major.
     std::vector<Gaf::FFrame> Blocks;
+    std::vector<int32_t> BlockDepths;
     uint32_t LayerCount = 0;
     uint32_t GridWidth = 0;
     uint32_t GridHeight = 0;

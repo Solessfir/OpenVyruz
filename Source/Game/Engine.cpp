@@ -915,6 +915,69 @@ std::expected<void, std::string> VerifyPlayerMovement()
         }
     }
 
+    Level.GridWidth = 8;
+    Level.GridHeight = 8;
+    Level.Cells.resize(size_t{ Level.GridWidth } * Level.GridHeight);
+    Level.TileTypes = { ETerrain::None, ETerrain::Ground };
+    Level.Cells[3 * Level.GridHeight + 3][0] = 1;
+    const auto WallTerrain = BuildTerrainCollision(Level);
+    if (!WallTerrain || WallTerrain->GetShapes().size() != 4)
+    {
+        return std::unexpected("Object wall fixture self-check failed");
+    }
+
+    // A pushed crate must stay on its side of every wall, including a shallow initial overlap.
+    for (const FStaticCollisionShape& Shape : WallTerrain->GetShapes())
+    {
+        const bool bVertical = Shape.Points[0].X == Shape.Points[1].X;
+        const FCollisionPoint Middle{
+            .X = (Shape.Points[0].X + Shape.Points[1].X) * 0.5f,
+            .Y = (Shape.Points[0].Y + Shape.Points[1].Y) * 0.5f,
+        };
+        constexpr float Radius = 10.f;
+        FMovementClass WallClass = Class;
+        WallClass.Radius = Radius;
+        constexpr float ApproachDistance = 20.f;
+        constexpr float ShallowOverlap = 0.25f;
+        constexpr float CollisionInset = 0.5f;
+        constexpr float PlayerGap = 5.f;
+        constexpr int PushSteps = 200;
+        for (const float Side : { -1.f, 1.f })
+        {
+            for (const float Gap : { ApproachDistance, -ShallowOverlap })
+            {
+                const FCollisionPoint Normal{ .X = bVertical ? Side : 0.f, .Y = bVertical ? 0.f : Side };
+                FObjectBody Body{ .Class = { .Weight = 4.f, .Elasticity = 1.f, .Friction = { .X = 0.9f, .Y = 0.9f }, .Radius = Radius } };
+                Body.State.Center = { .X = Middle.X + Normal.X * (Radius + Gap), .Y = Middle.Y + Normal.Y * (Radius + Gap) };
+                Body.State.Position = Body.State.PreviousPosition = WorldFromCollision(Body.State.Center);
+                FPlayerState Mover{
+                    .Center = { .X = Body.State.Center.X + Normal.X * (WallClass.Radius + Radius + PlayerGap), .Y = Body.State.Center.Y + Normal.Y * (WallClass.Radius + Radius + PlayerGap) },
+                    .Direction = FindDirection({ .X = bVertical ? -Side : 0.f, .Y = bVertical ? 0.f : -Side }),
+                };
+                Mover.Position = Mover.PreviousPosition = WorldFromCollision(Mover.Center);
+                std::array<FObjectBody, 1> Bodies{ Body };
+                bool bPushed = false;
+                for (int Step = 0; Step < PushSteps; ++Step)
+                {
+                    StepPlayer(Mover, WallClass, { .Thrust = EPlayerThrust::Forward }, ReferenceStep, *WallTerrain, Level, Bodies);
+                    bPushed |= Bodies[0].State.bPushed;
+                    StepObjectBodies(Bodies, ReferenceStep, *WallTerrain, Level);
+                    const FCollisionPoint Center = Bodies[0].State.Center;
+                    const float Distance = Side * (bVertical ? Center.X - Middle.X : Center.Y - Middle.Y);
+                    if (Distance < Radius - CollisionInset - Tolerance)
+                    {
+                        return std::unexpected(std::format("Pushed object crossed terrain wall: vertical {}, side {}, gap {}, distance {}", bVertical, Side, Gap, Distance));
+                    }
+                }
+
+                if (!bPushed)
+                {
+                    return std::unexpected(std::format("Object wall push did not reach crate: wall {},{}, vertical {}, side {}, gap {}", Middle.X, Middle.Y, bVertical, Side, Gap));
+                }
+            }
+        }
+    }
+
     return {};
 }
 

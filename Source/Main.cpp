@@ -10,11 +10,13 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -26,12 +28,14 @@ constexpr int64_t SpriteDepthLayerCount = 4;
 constexpr int64_t SpriteDepthLayerMask = SpriteDepthLayerCount - 1;
 constexpr int64_t BodyDepthLayer = 0;
 constexpr int64_t ShadowDepthLayer = 1;
+constexpr int64_t MiddleDepthLayer = 2;
 constexpr int64_t InGroundDepthLayer = 3;
 constexpr int64_t ZShadowDepthOffset = 64;
 constexpr uint32_t AnimationBlendMask = 0xFE;
 constexpr uint32_t AdditiveDrawMode = 6;
 constexpr uint32_t InverseSourceDrawMode = 8;
 constexpr int FourWayDirectionCount = 4;
+constexpr uint32_t FirstOccludingMapLayer = 2;
 
 // ObjectDraw at 00431d60 truncates world + 0.5 before applying scroll and altitude.
 constexpr int64_t SpriteCoordinate(const float World)
@@ -684,22 +688,6 @@ int main(const int ArgCount, char** const Args)
         const uint32_t FirstY = uint32_t(OriginY) / BlockHeight;
         const uint32_t EndX = std::min(Level->GridWidth, (uint32_t(OriginX) + uint32_t(ScreenWidth) - 1) / BlockWidth + 1);
         const uint32_t EndY = std::min(Level->GridHeight, (uint32_t(OriginY) + uint32_t(ScreenHeight) - 1) / BlockHeight + 1);
-        for (uint32_t Layer = 0; Layer < Level->LayerCount; ++Layer)
-        {
-            const uint32_t* const Cells = Level->Map.data() + size_t{ Layer } * Level->GridWidth * Level->GridHeight;
-            for (uint32_t Y = FirstY; Y < EndY; ++Y)
-            {
-                for (uint32_t X = FirstX; X < EndX; ++X)
-                {
-                    // MAP_ block indices are 1-based; 0 leaves the cell empty.
-                    if (const uint32_t Block = Cells[size_t{ Y } * Level->GridWidth + X])
-                    {
-                        Renderer.DrawSprite(Blocks, Block - 1, float(int(X * BlockWidth) - OriginX), float(int(Y * BlockHeight) - OriginY));
-                    }
-                }
-            }
-        }
-
         // Runtime FX join the placed objects in the original depth order.
         std::vector<FObjectSprite> Sprites = Objects->Sprites;
         if (Combat)
@@ -729,16 +717,83 @@ int main(const int ArgCount, char** const Args)
             std::stable_sort(Sprites.begin(), Sprites.end(), [](const FObjectSprite& A, const FObjectSprite& B) { return SpriteDrawsBefore(A.Depth, B.Depth); });
         }
 
-        for (const FObjectSprite& Sprite : Sprites)
+        const auto DrawObject = [&](const FObjectSprite& Sprite)
         {
             const Gaf::FAnimationFrame& Frame = Sprite.Frame;
             if (Frame.BitmapIndex == 0 || (Sprite.ObjectIndex != NoObjectIndex && Level->Objects[Sprite.ObjectIndex].bRemoved))
             {
-                continue;
+                return;
             }
 
             Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + Frame.OffsetX - OriginX,
                 Sprite.Y + Frame.OffsetY - OriginY, Frame.bMirrorX, Frame.bMirrorY, Sprite.Blend);
+        };
+        const auto DrawMapRow = [&](const int64_t Row, const std::optional<int32_t> Depth)
+        {
+            if (Row < FirstY || Row >= EndY)
+            {
+                return;
+            }
+
+            // LevelDrawTerrainRow at 0041fd40 leaves the first two planes in the background cache.
+            for (uint32_t Layer = Depth ? FirstOccludingMapLayer : 0; Layer < Level->LayerCount; ++Layer)
+            {
+                const uint32_t* const Cells = Level->Map.data() + size_t{ Layer } * Level->GridWidth * Level->GridHeight;
+                for (uint32_t X = FirstX; X < EndX; ++X)
+                {
+                    const uint32_t Block = Cells[size_t(Row) * Level->GridWidth + X];
+                    if (Block != 0 && (!Depth || Level->BlockDepths[Block - 1] == *Depth))
+                    {
+                        Renderer.DrawSprite(Blocks, Block - 1, float(int(X * BlockWidth) - OriginX), float(Row * BlockHeight - OriginY));
+                    }
+                }
+            }
+        };
+        std::array<size_t, SpriteDepthLayerCount> NextSprite{};
+        const auto FlushSprites = [&](const int64_t Threshold, const int64_t Layer)
+        {
+            size_t& Next = NextSprite[size_t(Layer)];
+            for (; Next < Sprites.size(); ++Next)
+            {
+                const FObjectSprite& Sprite = Sprites[Next];
+                if ((Sprite.Depth & SpriteDepthLayerMask) != Layer)
+                {
+                    continue;
+                }
+
+                if (Sprite.Depth >= Threshold)
+                {
+                    break;
+                }
+
+                DrawObject(Sprite);
+            }
+        };
+        for (uint32_t Y = FirstY; Y < EndY; ++Y)
+        {
+            DrawMapRow(Y, std::nullopt);
+        }
+
+        constexpr int64_t FinalThreshold = std::numeric_limits<int64_t>::max();
+        FlushSprites(FinalThreshold, InGroundDepthLayer);
+        // LevelCompositeSprites at 00420070 interleaves five terrain depths with shadows and bodies.
+        for (int64_t Row = FirstY; Row < int64_t(EndY) + MaxTerrainDepth; ++Row)
+        {
+            for (int32_t Depth = MaxTerrainDepth; Depth >= 0; --Depth)
+            {
+                DrawMapRow(Row - Depth, Depth);
+            }
+
+            const int64_t Threshold = (Row + 1) * BlockHeight * SpriteDepthLayerCount;
+            for (const int64_t Layer : { ShadowDepthLayer, MiddleDepthLayer, BodyDepthLayer })
+            {
+                FlushSprites(Threshold, Layer);
+            }
+        }
+
+        for (const int64_t Layer : { ShadowDepthLayer, MiddleDepthLayer, BodyDepthLayer })
+        {
+            FlushSprites(FinalThreshold, Layer);
         }
 
         Renderer.EndFrame();

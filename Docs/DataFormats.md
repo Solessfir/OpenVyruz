@@ -178,6 +178,8 @@ later slots even when decompression appears to return the expected byte count.
 634, T2P1: 835, T3U3: 713). Other populated slots are small index/header
 tables.
 
+BLK_ slot 0 contains one 16-byte record per bitmap: `uint32 flags`, `int32 offset_x`, `int32 offset_y`, `int32 depth`. `GafParseSlot0` (`0047b830`) and `FUN_0046bb30` copy the final word to the runtime block at `+0x20`. Every campaign level uses depths -1 through 4. This depth is separate from the MAP_ layer index and controls terrain/object occlusion.
+
 **MAP_ is the exact static visual map.** It is not a semantic tilemap and is
 not superseded by `.3DI`. Descriptor slot 0 decompresses to this 24-byte
 header:
@@ -206,6 +208,8 @@ This reproduces the original static level image exactly. The MAP layers are
 render strata, not named gameplay layers: do not assume that a particular
 plane means ground, wall, roof, or collision. The header viewport fields are
 the original render-cache dimensions and must not be used to rescale the map.
+
+With objects present, the game first copies its precomposited level surface, then `LevelCompositeSprites` (`00420070`) draws terrain in diagonal depth bands. At each row boundary `R`, `FUN_0041fd40` draws rows `R-5` through `R-1` at block depths 4 through 0, respectively. This pass uses only MAP_ planes 2 onward: the first two planes stay in the background, otherwise ordinary floor tiles incorrectly cut off crate sprites. It then flushes sprite layers 1, 2 and 0 whose depth key is strictly below `R * 32 * 4`. Ground decals (sprite layer 3) precede these bands. Drawing all MAP_ layers before objects makes a ship or crate behind a building appear on its roof.
 
 Examples:
 
@@ -384,7 +388,8 @@ elif x > 0 and y > 1 and slot3(x-1, y-2) == Obstacle:
 `FUN_0041aa00` merges compatible neighboring line objects. The resulting fixed
 objects are inserted through `FUN_0040f090 -> FUN_0040ee40` into the collision
 manager at `session + 0x25AC`; `FUN_004105d0` performs movement-time
-broad-phase queries. `FUN_00405df0` is actor-vs-actor AABB scanning and is not
+broad-phase queries. Its endpoint scan starts at the old minimum bound when moving forward and the old maximum bound when moving backward. Starting at the leading bound skips walls already overlapping the actor's circle after a shallow contact.
+`FUN_00405df0` is actor-vs-actor AABB scanning and is not
 the static terrain rule. A Godot reimplementation was manually validated on
 T1U1 against the spawn bunker, entrance, exterior cliff boundary, and gameplay
 movement; the recovered lines aligned without a global offset.
