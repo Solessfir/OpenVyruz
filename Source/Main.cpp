@@ -476,13 +476,15 @@ int main(const int ArgCount, char** const Args)
         const bool bFrameLoop = VerifyFrameLoop();
         const std::expected<void, std::string> Collision = VerifyTerrainCollision();
         const std::expected<void, std::string> Movement = VerifyPlayerMovement();
+        const std::expected<void, std::string> Paths = VerifyPathSearch();
+        std::printf("Path search: %s\n", Paths ? "passed" : Paths.error().c_str());
         const std::expected<std::string, std::string> Demo = VerifyDemoReplay(Archive);
         std::printf("Demo replay: %s\n", Demo ? Demo->c_str() : Demo.error().c_str());
         const std::expected<std::string, std::string> Combat = VerifyCombat(Archive);
         std::printf("Combat: %s\n", Combat ? Combat->c_str() : Combat.error().c_str());
         std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
             Collision ? "passed" : Collision.error().c_str(), Movement ? "passed" : Movement.error().c_str());
-        return bFrameLoop && Collision && Movement && Demo && Combat ? 0 : 1;
+        return bFrameLoop && Collision && Movement && Paths && Demo && Combat ? 0 : 1;
     }
 
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);

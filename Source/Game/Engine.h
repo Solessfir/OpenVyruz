@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Game/Collision.h"
+#include "Game/Path.h"
 #include "Pg/Random.h"
 
 #include <cstdint>
@@ -117,6 +118,9 @@ struct FTurret
     float MinDistance = 0.f;
     int32_t TurnTimeout = 0;
     int32_t ScanTimer = 0;
+    int32_t SearchTimer = 0;
+    bool bSearching = false;
+    FPathSearch Search;
     bool bLocked = false;
     // The target's world position when it was locked; the lock drops once the target has moved at the next scan.
     FCollisionPoint LockedTarget;

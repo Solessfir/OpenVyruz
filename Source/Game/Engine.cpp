@@ -1790,10 +1790,36 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
     FireWeapon(Combat, State, Shooter, Stock == Inventory.Ammo.end() ? nullptr : &*Stock);
 }
 
+namespace
+{
+std::vector<FPathObstacle> TerrainPathObstacles(const FTerrainCollision& Terrain)
+{
+    std::vector<FPathObstacle> Obstacles;
+    Obstacles.reserve(Terrain.GetShapes().size());
+    // Path graph queries ignore kind-3 actors; terrain shapes already have the original insertion order.
+    for (const FStaticCollisionShape& Shape : Terrain.GetShapes())
+    {
+        FPathObstacle Obstacle{ .Min = Shape.Points[0], .Max = Shape.Points[0], .bWater = Shape.bWater };
+        for (size_t Index = 1; Index < Shape.PointCount; ++Index)
+        {
+            Obstacle.Min.X = std::min(Obstacle.Min.X, Shape.Points[Index].X);
+            Obstacle.Min.Y = std::min(Obstacle.Min.Y, Shape.Points[Index].Y);
+            Obstacle.Max.X = std::max(Obstacle.Max.X, Shape.Points[Index].X);
+            Obstacle.Max.Y = std::max(Obstacle.Max.Y, Shape.Points[Index].Y);
+        }
+
+        Obstacles.push_back(Obstacle);
+    }
+
+    return Obstacles;
+}
+}
+
 void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level, std::vector<FObjectBody>& Bodies,
     const FPlayerState& Player)
 {
     const int32_t Step = int32_t(StepMilliseconds);
+    std::optional<std::vector<FPathObstacle>> Obstacles;
     for (FObjectBody& Body : Bodies)
     {
         if (!Body.Turret)
@@ -1807,23 +1833,52 @@ void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrai
         const float DistanceSquared = float(double(ToTarget.X) * double(ToTarget.X) + double(ToTarget.Y) * double(ToTarget.Y));
         Turret.bTrigger = false;
         bool bEngaged = false;
-        if (!Turret.bLocked)
+        if (Turret.bSearching)
+        {
+            // SeekerUpdate at 0042c5a0 advances searches every 17 ms; fixed seekers stop on the first detour.
+            constexpr int32_t SearchPeriodMilliseconds = 17;
+            Turret.SearchTimer -= Step;
+            if (Turret.SearchTimer <= 0)
+            {
+                Turret.SearchTimer += SearchPeriodMilliseconds;
+                if (!Obstacles)
+                {
+                    Obstacles = TerrainPathObstacles(Terrain);
+                }
+
+                const FCollisionPoint HalfExtent{ .X = Body.Class.Radius, .Y = Body.Class.Radius };
+                const EPathStatus Status = Turret.Search.Advance(*Obstacles, HalfExtent, Turret.SensorRange);
+                if (Status == EPathStatus::Found || Status == EPathStatus::Finished)
+                {
+                    const std::optional<FPathRoute> Route = Turret.Search.SelectFinishedRoute(*Obstacles, HalfExtent);
+                    if (Route && Route->Points.size() == 2)
+                    {
+                        const FCollisionPoint Segment{ .X = Route->Points[1].X - Route->Points[0].X, .Y = Route->Points[1].Y - Route->Points[0].Y };
+                        const int Direction = FindDirection(Segment);
+                        // SeekerValidateRoute at 0042ca30 accepts only the four collision-axis sectors for turrets.
+                        constexpr int AxisDirectionStep = DirectionCount / 4;
+                        Turret.bLocked = Direction != NoDirection && Direction % AxisDirectionStep == 0;
+                        Turret.AimDirection = Direction;
+                    }
+
+                }
+
+                Turret.ScanTimer += Turret.ScanDelay;
+                Turret.bSearching = false;
+            }
+        }
+        else if (!Turret.bLocked)
         {
             // SeekerFindTarget (0042da80) looks for the target within Sensor-Range and the vision cone around the base's facing; PathStartSearch (0040f6f0) routes to it.
-            // ponytail: the A* route over collision shortcuts (FUN_00410460) is replaced by a clear straight line, which is all an engaging turret accepts.
             if (Turret.ScanTimer < 1)
             {
                 Turret.ScanTimer += Turret.ScanDelay;
                 const bool bInRange = DistanceSquared <= float(int(Turret.SensorRange) * int(Turret.SensorRange));
                 const bool bInView = DirectionDistance(FindDirection(ToTarget), Turret.BaseDirection) <= Turret.VisionDirections;
-                // The ray starts at the turret's edge: turrets stand on scenery that the terrain collision also covers.
-                const double Distance = std::sqrt(double(DistanceSquared));
-                const double Edge = Distance == 0. ? 0. : double(Body.Class.Radius) / Distance;
-                const FCollisionPoint Start{ .X = float(double(Body.State.Center.X) + double(ToTarget.X) * Edge), .Y = float(double(Body.State.Center.Y) + double(ToTarget.Y) * Edge) };
-                const bool bClear = Distance <= double(Body.Class.Radius) || IsLineClear(Terrain, Start, Player.Center);
-                if (bInRange && bInView && bClear)
+                if (bInRange && bInView && Turret.Search.Start(Body.State.Center, Player.Center))
                 {
-                    Turret.bLocked = true;
+                    Turret.bSearching = true;
+                    Turret.SearchTimer = 0;
                     Turret.LockedTarget = Player.Position;
                 }
             }
@@ -2080,6 +2135,37 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     float DamageTaken = 0.f;
     size_t Destroyed = 0;
     size_t Effects = 0;
+    // A direct cardinal route locks, a diagonal route is rejected, and an overlapping target aborts; each attempt refills the scan timer.
+    const std::array<FCollisionPoint, 3> SearchTargets = {
+        FCollisionPoint{ .X = 100.f, .Y = 200.f },
+        FCollisionPoint{ .X = 200.f, .Y = 200.f },
+        FCollisionPoint{ .X = 100.f, .Y = 100.f },
+    };
+    for (size_t Index = 0; Index < SearchTargets.size(); ++Index)
+    {
+        constexpr int32_t ScanDelay = 100;
+        FCombat Check{ .Weapons = { FWeaponClass{} } };
+        std::vector<FObjectBody> Bodies{ FObjectBody{
+            .Class = { .Radius = DefaultCollisionRadius },
+            .State = { .Center = { .X = 100.f, .Y = 100.f } },
+            .Turret = FTurret{ .VisionDirections = DirectionCount / 2, .SensorRange = 1000.f, .ScanDelay = ScanDelay },
+        } };
+        const FPlayerState Target{ .Center = SearchTargets[Index] };
+        const FTerrainCollision Terrain;
+        const FLevel Level;
+        StepTurrets(Check, StepMilliseconds, Terrain, Level, Bodies, Target);
+        if (!Bodies.front().Turret->bSearching || Bodies.front().Turret->bLocked || Bodies.front().Turret->ScanTimer != ScanDelay)
+        {
+            return std::unexpected("Turret did not enter its pending route search");
+        }
+
+        StepTurrets(Check, StepMilliseconds, Terrain, Level, Bodies, Target);
+        if (Bodies.front().Turret->bSearching || Bodies.front().Turret->bLocked != (Index == 0) || Bodies.front().Turret->ScanTimer != ScanDelay * 2)
+        {
+            return std::unexpected("Turret route acceptance or retry timer mismatch");
+        }
+    }
+
     for (const std::string& Name : Archive.GetNames())
     {
         if (!Name.ends_with(".3do"))
@@ -2137,22 +2223,26 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         // Then the player waits in clear view of the first turret that has such a spot inside its weapon's range, and must draw fire.
         constexpr std::array<float, 2> DuelDistances = { 150.f, 250.f };
         constexpr uint32_t DuelMilliseconds = 3000;
+        const std::vector<FPathObstacle> Obstacles = TerrainPathObstacles(*Terrain);
         std::optional<FCollisionPoint> Spot;
         for (const FObjectBody& Body : Bodies)
         {
             for (const float Distance : DuelDistances)
             {
-                for (int Direction = 0; Body.Turret && !Spot && Direction < DirectionCount; ++Direction)
+                constexpr int AxisDirectionStep = DirectionCount / 4;
+                for (int Direction = 0; Body.Turret && !Spot && Direction < DirectionCount; Direction += AxisDirectionStep)
                 {
                     // Facing vectors are a tenth of a unit long.
                     constexpr float TenthsPerUnit = 10.f;
                     const FCollisionPoint Facing = FacingVector(Direction);
                     const float Scale = Distance * TenthsPerUnit;
-                    const FCollisionPoint Edge{ .X = Body.State.Center.X + Facing.X * Body.Class.Radius * TenthsPerUnit, .Y = Body.State.Center.Y + Facing.Y * Body.Class.Radius * TenthsPerUnit };
                     const FCollisionPoint Candidate{ .X = Body.State.Center.X + Facing.X * Scale, .Y = Body.State.Center.Y + Facing.Y * Scale };
                     const FCollisionPoint World = WorldFromCollision(Candidate);
+                    FPathSearch Search;
+                    Search.Start(Body.State.Center, Candidate);
+                    const EPathStatus Status = Search.Advance(Obstacles, { .X = Body.Class.Radius, .Y = Body.Class.Radius }, Body.Turret->SensorRange);
                     if (World.X > 1.f && World.Y > 1.f && World.X < float(Level->WorldExtentX) && World.Y < float(Level->WorldExtentY) &&
-                        IsLineClear(*Terrain, Edge, Candidate) && DirectionDistance(Direction, Body.Turret->BaseDirection) <= Body.Turret->VisionDirections)
+                        (Status == EPathStatus::Found || Status == EPathStatus::Finished) && DirectionDistance(Direction, Body.Turret->BaseDirection) <= Body.Turret->VisionDirections)
                     {
                         Spot = Candidate;
                     }

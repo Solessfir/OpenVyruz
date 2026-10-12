@@ -44,16 +44,17 @@ Turrets (`Behaviour = Fixed Seeker`, kind Turret) draw a rotating top from the 2
 
 - Unlocked, the scan timer counts down; when it runs out it is refilled by `Scan-Delay` and `SeekerFindTarget` (`0042da80`) looks for the target within `Sensor-Range` collision units and inside the vision cone around the base's facing. `PathStartSearch` (`0040f6f0`) then routes to it.
 - Locked, the timer counts down while the turret engages. When it runs out and the target has moved since the lock, the lock drops and the next step scans again.
-- Engaging (`SeekerEngage`, `0042caa0`) needs a direct route within `Min-distance`. The top turns one pose per `Turret-turn-timeout` toward the line to the target (`SeekerTurnTop`, `0042d150`), using the previous step's direction.
+- The pending route search advances every 17 ms. Fixed seekers abort when the route needs another expansion; a turret accepts only a direct two-point route in one of the four collision-axis direction sectors. See [PathSearch.md](PathSearch.md).
+- Engaging (`SeekerEngage`, `0042caa0`) needs that direct route within `Min-distance`. The top turns one pose per `Turret-turn-timeout` toward the line to the target (`SeekerTurnTop`, `0042d150`), using the previous step's direction.
 - `SeekerAimAndFire` (`0042d2d0`) raises the weapon slope while the target is within the weapon's `Fire-Range`, and pulls the trigger when the weapon is ready and the top faces the target. The weapon update then fires as for the player.
 
-The port replaces the route with a straight line that crosses no solid terrain edge, starting at the turret's edge because turrets stand on scenery. Turret shots pass through the turret that fired them and damage the player's shield and energy; blasts reach the player too.
+The port runs the original incremental route search from collision centre to collision centre against the terrain graph. Turret shots pass through the turret that fired them and damage the player's shield and energy; blasts reach the player too.
 
 ## Not ported yet
 
 - The shield reset value (a class field at `+0x6c`).
 - Bouncing ammo (`on-hit = 0`: grenades, saws, pulsars), which the port bursts on first contact.
-- The A* route search (`FUN_00410460`) and the other seeker kinds (cops, walkers, jeeps and the rest), which follow their routes.
+- The other seeker kinds (cops, walkers, jeeps and the rest), which follow their routes.
 - The idle look-around of fixed objects (`FixedIdleLookAround`, `00444a40`), with its saved random state.
 - Drawing turret bases, the player's shove and absorption, the HUD and the player's death.
 - Automatic weapon switching when the stock is empty.
