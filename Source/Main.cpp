@@ -639,12 +639,11 @@ int main(const int ArgCount, char** const Args)
             PlayerObject->X = Player->Position.X;
             PlayerObject->Y = Player->Position.Y;
             PlayerObject->Direction = (Player->Pose - 1) / (PlayerPoseCount / ObjectDirectionCount);
-            // CameraFollow at 00440650 and EngineRunLevel: the scroll keeps the truncated player position at the view centre and is
-            // clamped to the .3DI world extent, not the map's pixel size. ponytail: screen shake is not ported yet.
+            // Match the sprite's rounding so fractional movement cannot shift the ship against the camera.
             const int ViewWidth = int(ScreenWidth);
             const int ViewHeight = int(ScreenHeight);
-            CameraX = std::clamp(int(Player->Position.X) - ViewWidth / 2, 0, std::max(0, int(Level->WorldExtentX) - ViewWidth));
-            CameraY = std::clamp(int(Player->Position.Y) - ViewHeight / 2, 0, std::max(0, int(Level->WorldExtentY) - ViewHeight));
+            CameraX = std::clamp(int(SpriteCoordinate(Player->Position.X)) - ViewWidth / 2, 0, std::max(0, int(Level->WorldExtentX) - ViewWidth));
+            CameraY = std::clamp(int(SpriteCoordinate(Player->Position.Y)) - ViewHeight / 2, 0, std::max(0, int(Level->WorldExtentY) - ViewHeight));
         }
 
         UpdateObjectSprites(*Objects, *Level);
