@@ -94,8 +94,8 @@ size_t ObjectAnimationIndex(const FLevelObject& Object, const bool bShadow)
 {
     const int PoseCount = ObjectPoseCount(Object, bShadow);
     const int Direction = Object.Direction < ObjectDirectionCount ? Object.Direction : 0;
-    // HeliSelectBodyPose at 004334e0 uses movement speed rather than facing; its initial pose is zero.
-    const int Offset = PoseCount > 1 && Object.SubType != "heli" ? Direction / (ObjectDirectionCount / PoseCount) : 0;
+    // HeliSelectBodyPose at 004334e0 picks a heli's animation by speed rather than facing; the facing selects the frame instead.
+    const int Offset = PoseCount > 1 && Object.SubType != "heli" ? Direction / (ObjectDirectionCount / PoseCount) : !bShadow && Object.SubType == "heli" ? Object.Tilt : 0;
     return size_t((bShadow ? Object.ShadowIndex : Object.GafIndex) - 1 + Offset);
 }
 
@@ -451,6 +451,11 @@ void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level)
         const FLevelObject& Object = Level.Objects[Sprite.ObjectIndex];
         const Gaf::FAnimation& Animation = Sprites.Animations[Sprite.SheetIndex][ObjectAnimationIndex(Object, Sprite.bShadow)];
         Sprite.Frame = Animation.Frames.empty() ? Gaf::FAnimationFrame{} : Animation.Frames.front();
+        if (!Sprite.bShadow && Object.SubType == "heli" && Animation.Frames.size() == ObjectDirectionCount)
+        {
+            Sprite.Frame = Animation.Frames[size_t(Object.Direction < ObjectDirectionCount ? Object.Direction : 0)];
+        }
+
         if (Sprite.bTop)
         {
             const int Direction = Object.Direction < ObjectDirectionCount ? Object.Direction : 0;
@@ -734,7 +739,7 @@ int main(const int ArgCount, char** const Args)
 
         if (Player)
         {
-            for (const FObjectBody& Body : Bodies)
+            for (FObjectBody& Body : Bodies)
             {
                 FLevelObject& Object = Level->Objects[Body.ObjectIndex];
                 Object.X = Body.State.Position.X;
@@ -748,6 +753,11 @@ int main(const int ArgCount, char** const Args)
                 {
                     Object.Direction = Body.State.Direction;
                     Object.TopPose = Body.Actor->bTwoPieces ? Body.Actor->TopPose : 0;
+                    // The tilt counter moves once per drawn frame, as the original updates it while drawing.
+                    if (Object.SubType == "heli")
+                    {
+                        Object.Tilt = SelectHeliTilt(*Body.Actor, Body.State.SpeedMagnitude);
+                    }
                 }
             }
 

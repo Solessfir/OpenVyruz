@@ -571,6 +571,21 @@ std::optional<FCollisionPoint> ParsePair(const std::string_view Text)
 }
 }
 
+int SelectHeliTilt(FActor& Actor, const float SpeedMagnitude)
+{
+    // Above each speed band's limit (2, 1 and 0.5 units per step) the counter climbs while at or below 24, 20 or 10 and otherwise drops,
+    // except in the fastest band where it holds; slower than that it settles around 5.
+    constexpr std::array<std::pair<float, int>, 3> Bands = { { { 2.f, 24 }, { 1.f, 20 }, { 0.5f, 10 } } };
+    constexpr int SlowLimit = 5;
+    const auto Band = std::ranges::find_if(Bands, [SpeedMagnitude](const auto& Entry) { return Entry.first < SpeedMagnitude; });
+    const int Limit = Band == Bands.end() ? SlowLimit : Band->second;
+    Actor.Tilt += Actor.Tilt <= Limit ? 1 : Band == Bands.begin() ? 0 : -1;
+    constexpr int SecondTilt = 5;
+    constexpr int ThirdTilt = 10;
+    constexpr int FourthTilt = 20;
+    return Actor.Tilt < SecondTilt ? 0 : Actor.Tilt < ThirdTilt ? 1 : Actor.Tilt < FourthTilt ? 2 : 3;
+}
+
 std::optional<uint32_t> ParseBehaviour(const std::string_view Text)
 {
     uint32_t Bits = 0;
@@ -794,7 +809,8 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
 
     const FCollisionPoint Candidate = CollisionFromWorld(Player.Position);
     Player.Velocity = { .X = float(double(Candidate.X) - double(Player.Center.X)), .Y = float(double(Candidate.Y) - double(Player.Center.Y)) };
-    const std::optional<FTerrainHit> TerrainHit = QueryTerrainCollision(Terrain, { .Center = Player.Center, .Radius = Class.Radius }, { .Center = Candidate, .Radius = Class.Radius });
+    const std::optional<FTerrainHit> TerrainHit = QueryTerrainCollision(Terrain, { .Center = Player.Center, .Radius = Class.Radius }, { .Center = Candidate, .Radius = Class.Radius },
+        Class.bOverWater);
 
     // ponytail: objects are scanned after the terrain in object order instead of interleaved through the sweep endpoints; the nearest contact
     // still wins, so only exact ties between a wall and an object can resolve differently.
@@ -843,7 +859,7 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
         // behaviours move or open them; pickups are collected instead of blocking.
         constexpr std::array<std::string_view, 6> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller" };
         // ponytail: cops and jeeps move so far; tanks need their turret top, walkers and spiders their stepping gait, helis their pose selection.
-        constexpr std::array<std::string_view, 5> ActorKinds = { "cop", "jeep", "tank", "walker", "spider" };
+        constexpr std::array<std::string_view, 6> ActorKinds = { "cop", "jeep", "tank", "walker", "spider", "heli" };
         constexpr std::string_view CopKind = "cop";
         constexpr std::string_view TankKind = "tank";
         constexpr std::string_view WalkerKind = "walker";
@@ -912,6 +928,7 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
             const bool bLegged = Object.SubType == WalkerKind || Object.SubType == SpiderKind;
             Body.Class.bThrustIgnoresWeight = bLegged;
             Body.Class.bDropsVelocity = bLegged || Object.SubType == TankKind;
+            Body.Class.bOverWater = Number(&Properties, "Over-water") != 0.f;
             Body.State.Speed = Movement->ThrustInitial;
             Body.State.Direction = Object.Direction < DirectionCount ? Object.Direction : 0;
             const int ActorPoses = Object.SubType == CopKind ? PosesPerDirection : 1;

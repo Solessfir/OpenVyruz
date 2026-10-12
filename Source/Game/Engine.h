@@ -74,6 +74,8 @@ struct FMovementClass
     bool bThrustIgnoresWeight = false;
     // Walkers, spiders and tanks keep no velocity after a free move (EngineUpdateObjects at 004406e0).
     bool bDropsVelocity = false;
+    // Class property Over-water: water edges do not stop the body.
+    bool bOverWater = false;
     float Radius = DefaultCollisionRadius;
 };
 
@@ -239,7 +241,12 @@ struct FActor
     FPlayerCommand Command;
     // Object flag 2: pull the trigger in this step's weapon update.
     bool bTrigger = false;
+    // A heli's tilt counter (object +0x21c), which HeliSelectBodyPose (004334e0) moves toward its speed band at every draw.
+    int Tilt = 0;
 };
+
+// HeliSelectBodyPose at 004334e0: one tilt step toward the band for the current speed, then the tilt animation (0 to 3) to draw.
+int SelectHeliTilt(FActor& Actor, float SpeedMagnitude);
 
 struct FExplosionBlock
 {

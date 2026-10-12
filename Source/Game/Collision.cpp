@@ -474,7 +474,7 @@ std::optional<FCollisionPoint> IntersectTerrainShape(FCollisionCircle Previous, 
     return Result;
 }
 
-std::optional<FTerrainHit> QueryTerrainCollision(const FTerrainCollision& Terrain, FCollisionCircle Previous, FCollisionCircle Candidate)
+std::optional<FTerrainHit> QueryTerrainCollision(const FTerrainCollision& Terrain, FCollisionCircle Previous, FCollisionCircle Candidate, const bool bIgnoreWater)
 {
     const FBounds OldBox = Bounds(Previous);
     const FBounds NewBox = Bounds(Candidate);
@@ -525,7 +525,7 @@ std::optional<FTerrainHit> QueryTerrainCollision(const FTerrainCollision& Terrai
                 return;
             }
 
-            if (Result && Result->ShapeIndex == Endpoint.ShapeIndex)
+            if ((Result && Result->ShapeIndex == Endpoint.ShapeIndex) || (bIgnoreWater && Shape.bWater))
             {
                 return;
             }

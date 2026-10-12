@@ -58,7 +58,7 @@ private:
     };
 
     friend std::expected<FTerrainCollision, std::string> BuildTerrainCollision(const FLevel& Level);
-    friend std::optional<FTerrainHit> QueryTerrainCollision(const FTerrainCollision& Terrain, FCollisionCircle Previous, FCollisionCircle Candidate);
+    friend std::optional<FTerrainHit> QueryTerrainCollision(const FTerrainCollision& Terrain, FCollisionCircle Previous, FCollisionCircle Candidate, bool bIgnoreWater);
 
     std::vector<FStaticCollisionShape> Shapes;
     std::array<std::vector<FEndpoint>, 2> Endpoints;
@@ -72,7 +72,8 @@ FCollisionPoint ToCollisionSpace(FCollisionPoint World);
 FCollisionPoint ToWorldSpace(FCollisionPoint Collision);
 std::expected<FTerrainCollision, std::string> BuildTerrainCollision(const FLevel& Level);
 std::optional<FCollisionPoint> IntersectTerrainShape(FCollisionCircle Previous, FCollisionCircle Candidate, const FStaticCollisionShape& Shape);
-std::optional<FTerrainHit> QueryTerrainCollision(const FTerrainCollision& Terrain, FCollisionCircle Previous, FCollisionCircle Candidate);
+// Over-water objects (helis) pass water edges.
+std::optional<FTerrainHit> QueryTerrainCollision(const FTerrainCollision& Terrain, FCollisionCircle Previous, FCollisionCircle Candidate, bool bIgnoreWater = false);
 // True when the straight line from From to To crosses no solid terrain edge; water does not block it.
 bool IsLineClear(const FTerrainCollision& Terrain, FCollisionPoint From, FCollisionPoint To);
 // Circle against circle at 004069d0: the moving circle's candidate centre touches a resting circle.
