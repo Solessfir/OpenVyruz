@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <optional>
 #include <span>
@@ -43,6 +44,10 @@ class FTerrainCollision
 {
 public:
     std::span<const FStaticCollisionShape> GetShapes() const { return Shapes; }
+    // FUN_0042c130 with value 0xff: every marker cell within Margin of (X, Y), clipped to the grid, is enclosed ground on all four sides.
+    bool IsOpenGround(int X, int Y, int Margin) const;
+    int GetMarkerWidth() const { return int(MarkerWidth); }
+    int GetMarkerHeight() const { return int(MarkerHeight); }
 
 private:
     struct FEndpoint
@@ -57,6 +62,10 @@ private:
 
     std::vector<FStaticCollisionShape> Shapes;
     std::array<std::vector<FEndpoint>, 2> Endpoints;
+    // The BuildTerrainMarkers grid, kept at session +0x2038 for movers and impacts.
+    std::vector<uint32_t> Markers;
+    size_t MarkerWidth = 0;
+    size_t MarkerHeight = 0;
 };
 
 FCollisionPoint ToCollisionSpace(FCollisionPoint World);

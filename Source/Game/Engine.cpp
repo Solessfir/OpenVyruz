@@ -918,6 +918,12 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
                 };
             }
 
+            if (const FLevelPropertyBlock* const Random = FindTypeBlock(Properties, "Random"); Random && (*Behaviour & BehaviourMovementMask) == BehaviourRandom)
+            {
+                // RandomMoveUpdate gives its work attribute no arrival radius, so each route is driven to its end.
+                Actor.RandomMove = FRandomMove{ .Range = Number(Random, "Range"), .Work = { .Interval = int32_t(Number(Random, "Delay")) } };
+            }
+
             // SeekerFindAttribute (0042c510): a seeker drives the TYPE Seeker block, a tracker the TYPE Tracker block.
             const uint32_t Target = *Behaviour & BehaviourTargetMask;
             const bool bTracker = Target == BehaviourTracker;
@@ -931,6 +937,14 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
                     .SensorRange = Number(Seeker, "Sensor-Range"),
                     .Work = { .Interval = int32_t(Number(Seeker, "Scan-Delay")), .Radius = uint32_t(Number(Seeker, "Min-distance")) },
                 };
+                // A negative Location means the placement position.
+                if (const FLevelPropertyBlock* const Guardian = FindTypeBlock(Properties, "Guardian"); Guardian && (*Behaviour & BehaviourGuardian) != 0)
+                {
+                    const FCollisionPoint Location = ParsePair(Guardian->Find("Location")).value_or(FCollisionPoint{ .X = -1.f, .Y = -1.f });
+                    Actor.Seeker->bGuardian = true;
+                    Actor.Seeker->GuardRange = Number(Guardian, "Range");
+                    Actor.Seeker->GuardLocation = Location.X < 0.f || Location.Y < 0.f ? Body.State.Position : Location;
+                }
             }
         }
 
@@ -2343,15 +2357,17 @@ EPathStatus AdvanceRoute(FObjectBody& Body, FRouteWork& Work, std::optional<std:
 
 // SeekerFindTarget at 0042da80 for the player: alive, within Sensor-Range and within the vision cone around the body's facing.
 // ponytail: the grid-cell window around the seeker is replaced by the distance test it ends in; a player outside the window but in range is still found.
+// A guardian searches its Guardian Range in every direction instead.
 bool FindTarget(const FObjectBody& Body, const FSeeker& Seeker, const FPlayerState& Player)
 {
     const FCollisionPoint Delta{ .X = Player.Center.X - Body.State.Center.X, .Y = Player.Center.Y - Body.State.Center.Y };
-    const int Range = int(Seeker.SensorRange);
-    return Delta.X * Delta.X + Delta.Y * Delta.Y <= float(Range * Range) && DirectionDistance(FindDirection(Delta), Body.State.Direction) <= Seeker.VisionDirections;
+    const int Range = int(Seeker.bGuardian ? Seeker.GuardRange : Seeker.SensorRange);
+    constexpr int AllAround = DirectionCount / 2;
+    const int Vision = Seeker.bGuardian ? AllAround : Seeker.VisionDirections;
+    return Delta.X * Delta.X + Delta.Y * Delta.Y <= float(Range * Range) && DirectionDistance(FindDirection(Delta), Body.State.Direction) <= Vision;
 }
 
 // SeekerUpdate at 0042c5a0 for a moving seeker or tracker.
-// ponytail: Guardians do not return to their post yet when no target is in sight.
 void UpdateSeeker(FCombat* const Combat, FObjectBody& Body, FSeeker& Seeker, const FPlayerState* const Player,
     std::optional<std::vector<FPathObstacle>>& Obstacles, const FTerrainCollision& Terrain, const int32_t Step)
 {
@@ -2376,7 +2392,7 @@ void UpdateSeeker(FCombat* const Combat, FObjectBody& Body, FSeeker& Seeker, con
         // Every Scan-delay the route is checked: it ends once the target has moved, by position on the last segment and by cell before it.
         const bool bLast = OnLastSegment(Work);
         const FWorldCell Cell = Player ? CellOf(Player->Position) : FWorldCell{};
-        const bool bMoved = !Player || (bLast ? Player->Position.X != Seeker.TargetPosition.X || Player->Position.Y != Seeker.TargetPosition.Y
+        const bool bMoved = !Target || (bLast ? Player->Position.X != Seeker.TargetPosition.X || Player->Position.Y != Seeker.TargetPosition.Y
                                               : Cell.X != Seeker.TargetCellX || Cell.Y != Seeker.TargetCellY);
         if (bMoved)
         {
@@ -2398,13 +2414,24 @@ void UpdateSeeker(FCombat* const Combat, FObjectBody& Body, FSeeker& Seeker, con
         }
 
         Work.Timer += Work.Interval;
+        // FUN_0042d8f0 routes to the target, or a guardian without one back to its post.
         Seeker.bHasTarget = Player && FindTarget(Body, Seeker, *Player);
-        if (Seeker.bHasTarget && Work.Search.Start(Body.State.Center, Player->Center))
+        bool bPlanned = false;
+        if (Seeker.bHasTarget)
         {
             Seeker.TargetPosition = Player->Position;
             const FWorldCell Cell = CellOf(Player->Position);
             Seeker.TargetCellX = Cell.X;
             Seeker.TargetCellY = Cell.Y;
+            bPlanned = Work.Search.Start(Body.State.Center, Player->Center);
+        }
+        else if (Seeker.bGuardian)
+        {
+            bPlanned = Work.Search.Start(Body.State.Center, CollisionFromWorld(Seeker.GuardLocation));
+        }
+
+        if (bPlanned)
+        {
             Work.SearchTimer = 0;
             Work.bSearching = true;
         }
@@ -2511,12 +2538,59 @@ bool StartPatrolLeg(FPatrol& Patrol, const FObjectBody& Body, const FLevel& Leve
     return Patrol.Work.Search.Start(Body.State.Center, CollisionFromWorld(Patrol.Goal));
 }
 
-// PatrolMoveUpdate at 0042e400.
-void UpdatePatrol(FObjectBody& Body, FPatrol& Patrol, const FLevel& Level, std::optional<std::vector<FPathObstacle>>& Obstacles,
-    const FTerrainCollision& Terrain, const int32_t Step)
+// FUN_0042e040: a destination drawn at random from open ground in the window around the actor, retrying the last one once if its route
+// did not reach its last segment.
+// ponytail: the multiplayer reseed of the generator (session flags 0x18000) and the object check inside FUN_0042c130 are not ported.
+bool StartRandomLeg(FRandomMove& Move, const FObjectBody& Body, const FTerrainCollision& Terrain, FRandom& Random)
+{
+    const bool bRouteDone = Move.Work.Route && OnLastSegment(Move.Work);
+    if (!bRouteDone)
+    {
+        if (Move.Goal.X != 0.f && Move.Goal.Y != 0.f && ++Move.Retries < 2)
+        {
+            return Move.Work.Search.Start(Body.State.Center, CollisionFromWorld(Move.Goal));
+        }
+
+        Move.Retries = 0;
+    }
+
+    int Left = 0;
+    int Top = 0;
+    int Right = Terrain.GetMarkerWidth() - 1;
+    int Bottom = Terrain.GetMarkerHeight() - 1;
+    if (const int Range = int(Move.Range); Range != 0)
+    {
+        const FWorldCell Cell = CellOf(Body.State.Position);
+        const int HalfX = (Range + int(BlockWidth) / 2) / int(BlockWidth);
+        const int HalfY = (Range + int(BlockHeight) / 2) / int(BlockHeight);
+        Left = std::max(Cell.X - HalfX, 0);
+        Top = std::max(Cell.Y - HalfY, 0);
+        Right = std::min(Cell.X + HalfX, Right);
+        Bottom = std::min(Cell.Y + HalfY, Bottom);
+    }
+
+    constexpr int Attempts = 10;
+    constexpr int OpenMargin = 2;
+    for (int Attempt = 0; Attempt < Attempts; ++Attempt)
+    {
+        const int X = Random.Range(Left, Right);
+        const int Y = Random.Range(Top, Bottom);
+        if (Terrain.IsOpenGround(X, Y, OpenMargin))
+        {
+            Move.Goal = { .X = float(X * int(BlockWidth) + int(BlockWidth) / 2), .Y = float(Y * int(BlockHeight) + int(BlockHeight) / 2) };
+            return Move.Work.Search.Start(Body.State.Center, CollisionFromWorld(Move.Goal));
+        }
+    }
+
+    return false;
+}
+
+// PatrolMoveUpdate at 0042e400 and RandomMoveUpdate at 0042dd20: plan a leg every Scan-delay or Delay, search for its route and follow it.
+template <typename FStartLeg>
+void UpdateMover(FObjectBody& Body, FRouteWork& Work, const uint32_t Mode, const float MaxDistance, const FStartLeg& StartLeg,
+    std::optional<std::vector<FPathObstacle>>& Obstacles, const FTerrainCollision& Terrain, const int32_t Step)
 {
     FActor& Actor = *Body.Actor;
-    FRouteWork& Work = Patrol.Work;
     if (Work.bOnSegment)
     {
         if (!KeepSegment(Body, Work))
@@ -2532,16 +2606,16 @@ void UpdatePatrol(FObjectBody& Body, FPatrol& Patrol, const FLevel& Level, std::
         }
         else
         {
-            // The route is re-planned every Scan-delay, even toward the same point.
+            // The route is re-planned at every interval, even toward the same point.
             Work.bOnSegment = false;
         }
 
-        Actor.Mode = BehaviourPatrol;
+        Actor.Mode = Mode;
         return;
     }
 
     Actor.RouteFlags &= ~RouteFollowing;
-    Actor.Mode = BehaviourPatrol;
+    Actor.Mode = Mode;
     if (!Work.bSearching)
     {
         if (Work.Timer >= 1)
@@ -2551,7 +2625,7 @@ void UpdatePatrol(FObjectBody& Body, FPatrol& Patrol, const FLevel& Level, std::
         }
 
         Work.Timer += Work.Interval;
-        if (StartPatrolLeg(Patrol, Body, Level))
+        if (StartLeg())
         {
             Work.SearchTimer = 0;
             Work.bSearching = true;
@@ -2572,7 +2646,7 @@ void UpdatePatrol(FObjectBody& Body, FPatrol& Patrol, const FLevel& Level, std::
 
     Work.SearchTimer += RouteSearchPeriodMilliseconds;
     bool bRouted = false;
-    const EPathStatus Status = AdvanceRoute(Body, Work, Obstacles, Terrain, 0.f, bRouted);
+    const EPathStatus Status = AdvanceRoute(Body, Work, Obstacles, Terrain, MaxDistance, bRouted);
     if (Status == EPathStatus::Searching)
     {
         Work.Timer -= Step;
@@ -2611,7 +2685,13 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
         const bool bSeekerRoute = (Actor.RouteFlags & RouteFollowing) != 0 && (Actor.RouteFlags & RouteMovementAllowed) == 0;
         if (Actor.Patrol && !bSeekerRoute)
         {
-            UpdatePatrol(Body, *Actor.Patrol, Level, Obstacles, Terrain, Step);
+            FPatrol& Patrol = *Actor.Patrol;
+            UpdateMover(Body, Patrol.Work, BehaviourPatrol, 0.f, [&] { return StartPatrolLeg(Patrol, Body, Level); }, Obstacles, Terrain, Step);
+        }
+        else if (Actor.RandomMove && Combat && !bSeekerRoute)
+        {
+            FRandomMove& Move = *Actor.RandomMove;
+            UpdateMover(Body, Move.Work, BehaviourRandom, Move.Range, [&] { return StartRandomLeg(Move, Body, Terrain, Combat->Random); }, Obstacles, Terrain, Step);
         }
 
         // ObjectComputeDisplacement (00438b20) adds the segment pull only for patrol and random movers.
@@ -2957,6 +3037,9 @@ std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive)
     constexpr uint32_t DurationMilliseconds = 30000;
     size_t Patrollers = 0;
     size_t Advanced = 0;
+    size_t Wanderers = 0;
+    size_t Destined = 0;
+    size_t Wandered = 0;
     std::vector<std::string> Stuck;
     for (const std::string& Name : Archive.GetNames())
     {
@@ -2975,9 +3058,11 @@ std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive)
         std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
         std::vector<int> FirstPoints(Bodies.size(), -1);
         std::vector<size_t> Visits(Bodies.size(), 0);
+        // Random movers draw their destinations from the level's generator; nothing here has a weapon.
+        FCombat Moves;
         for (uint32_t Time = 0; Time < DurationMilliseconds; Time += StepMilliseconds)
         {
-            StepActors(nullptr, Bodies, StepMilliseconds, *Terrain, *Level, nullptr);
+            StepActors(&Moves, Bodies, StepMilliseconds, *Terrain, *Level, nullptr);
             for (size_t Index = 0; Index < Bodies.size(); ++Index)
             {
                 const std::optional<FPatrol>& Patrol = Bodies[Index].Actor ? Bodies[Index].Actor->Patrol : std::nullopt;
@@ -2992,6 +3077,19 @@ std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive)
         for (size_t Index = 0; Index < Bodies.size(); ++Index)
         {
             const FObjectBody& Body = Bodies[Index];
+            if (Body.Actor && Body.Actor->RandomMove)
+            {
+                const FLevelObject& Object = Level->Objects[Body.ObjectIndex];
+                const float X = Body.State.Position.X - Object.X;
+                const float Y = Body.State.Position.Y - Object.Y;
+                constexpr float CellDistance = float(BlockWidth);
+                // FUN_0042e040 only accepts a destination inside open ground; corridor cops often find none and wait for a target.
+                const bool bHasGoal = Body.Actor->RandomMove->Goal.X != 0.f;
+                ++Wanderers;
+                Destined += bHasGoal ? 1 : 0;
+                Wandered += bHasGoal && X * X + Y * Y >= CellDistance * CellDistance ? 1 : 0;
+            }
+
             if (!Body.Actor || !Body.Actor->Patrol || !Body.Actor->Patrol->Path)
             {
                 continue;
@@ -3009,9 +3107,10 @@ std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive)
         }
     }
 
-    const std::string Summary = std::format("{} of {} patrolling cops moved on to their next point", Advanced, Patrollers);
+    const std::string Summary = std::format("{} of {} patrolling cops moved on to their next point, {} of {} random movers found open ground and {} of those left their cell",
+        Advanced, Patrollers, Destined, Wanderers, Wandered);
 
-    if (Patrollers == 0 || Advanced * 2 < Patrollers)
+    if (Patrollers == 0 || Advanced * 2 < Patrollers || Destined == 0 || Wandered * 2 < Destined)
     {
         return std::unexpected(std::format("{}; stuck: {}", Summary, Stuck.empty() ? std::string() : Stuck.front()));
     }

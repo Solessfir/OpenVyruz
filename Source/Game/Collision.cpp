@@ -391,6 +391,9 @@ std::expected<FTerrainCollision, std::string> BuildTerrainCollision(const FLevel
     }
 
     FTerrainCollision Result;
+    Result.Markers = Markers;
+    Result.MarkerWidth = Width;
+    Result.MarkerHeight = Height;
     for (auto It = Generated.rbegin(); It != Generated.rend(); ++It)
     {
         if (It->bDisabled)
@@ -423,6 +426,25 @@ std::expected<FTerrainCollision, std::string> BuildTerrainCollision(const FLevel
     }
 
     return Result;
+}
+
+bool FTerrainCollision::IsOpenGround(const int X, const int Y, const int Margin) const
+{
+    constexpr uint32_t EnclosedGround = 0xff;
+    const int Right = std::min(X + Margin, int(MarkerWidth) - 1);
+    const int Bottom = std::min(Y + Margin, int(MarkerHeight) - 1);
+    for (int CellX = std::max(X - Margin, 0); CellX <= Right; ++CellX)
+    {
+        for (int CellY = std::max(Y - Margin, 0); CellY <= Bottom; ++CellY)
+        {
+            if (Markers[size_t(CellX) * MarkerHeight + size_t(CellY)] != EnclosedGround)
+            {
+                return false;
+            }
+        }
+    }
+
+    return true;
 }
 
 std::optional<FCollisionPoint> IntersectTerrainShape(FCollisionCircle Previous, FCollisionCircle Candidate, const FStaticCollisionShape& Shape)

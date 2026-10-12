@@ -174,6 +174,17 @@ struct FPatrol
     FRouteWork Work;
 };
 
+// The TYPE Random attribute (kind 0x14) beside the work attribute that RandomMoveUpdate (0042dd20) drives.
+struct FRandomMove
+{
+    // Range limits both the route search and the window of cells a destination is drawn from; zero means the whole map.
+    float Range = 0.f;
+    // The last destination in world pixels; a route that did not reach its last segment retries it once (FUN_0042e040).
+    FCollisionPoint Goal;
+    int Retries = 0;
+    FRouteWork Work;
+};
+
 // The TYPE Seeker or TYPE Tracker attribute that SeekerUpdate (0042c5a0) drives on a moving actor; the target is always the player.
 struct FSeeker
 {
@@ -187,6 +198,10 @@ struct FSeeker
     int TargetCellX = 0;
     int TargetCellY = 0;
     FRouteWork Work;
+    // Guardian behaviour (TYPE Guardian, kind 8): the search covers Range in every direction, and without a target the actor returns to Location.
+    bool bGuardian = false;
+    float GuardRange = 0.f;
+    FCollisionPoint GuardLocation;
     std::optional<size_t> Weapon;
     FWeaponState WeaponState;
     FAmmoStock Ammo;
@@ -203,6 +218,7 @@ struct FActor
     uint32_t Mode = 0;
     std::optional<FSeeker> Seeker;
     std::optional<FPatrol> Patrol;
+    std::optional<FRandomMove> RandomMove;
     FPlayerCommand Command;
     // Object flag 2: pull the trigger in this step's weapon update.
     bool bTrigger = false;
