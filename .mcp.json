@@ -1,9 +1,15 @@
 {
   "mcpServers": {
-    "ghydra": {
+    "vyruz-ghidra": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "bridge_mcp_hydra.py"]
+      "command": "python",
+      "args": [
+        "-m", "ghidra_mcp", "--headless",
+        "--binary", "Vyruz.exe",
+        "--project", "the Ghidra project",
+        "--project-name", "Vyruz",
+        "--ghidra-install-dir", "the Ghidra folder"
+      ]
     }
   }
 }

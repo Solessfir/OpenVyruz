@@ -14,11 +14,11 @@ OpenVyruz is a functional (non-matching) reimplementation of `Vyruz.exe` 1.31.01
 
 ## Reverse-engineering workflow
 
-- `Vyruz.exe` is analyzed live in Ghidra through the `ghydra` MCP server (`.mcp.json`; instance project `Vyruz`, usually port 8193). Ghidra must be open on `Vyruz.exe` first.
+- `Vyruz.exe` is analyzed in Ghidra through GhidraMCP (`.mcp.json`, server `vyruz-ghidra`): Claude Code starts `ghidra_mcp --headless` over stdio, which opens `Vyruz.exe` in the project `the Ghidra project` and saves changes to it on exit. Close that program in the Ghidra GUI first, since the project cannot be opened twice.
 - The binary is MSVC C++ written in C style (almost no methods, no RTTI). Recover structure from `__FILE__` anchors; see the module map in README.
 - Read the decompiled code to understand behavior, then write clean, idiomatic port code. Never paste raw decompiler output into the repository.
-- When a function's behavior is understood, rename it in Ghidra (and its key globals), then save the program with `programs_save`. Reference the original address in a short comment on the port code that reimplements it, e.g. `RscFileRead at 004559f0`.
-- The binary is the ground truth. The Python scripts and notes in the original-data repository are hypotheses: verify every format detail against the exe or raw bytes before relying on it. Correct `Docs/DataFormats.md` when either turns out wrong.
+- When a function's behavior is understood, rename it in Ghidra (and its key globals), and confirm with `get_program_info` at the start of a session that the server has `Vyruz.exe` open; the headless server saves the project when the session ends. Reference the original address in a short comment on the port code that reimplements it, e.g. `RscFileRead at 004559f0`.
+- The binary is the ground truth. The Python scripts and notes in the original-data repository are hypotheses: verify every format detail against the exe or raw bytes before relying on it. Correct `Docs/DataFormats.md` when either turns out wrong. The same applies to the older Godot-port notes in `the original-data repository's Docs\` (`Reverse Engineering Reference.html`).
 - There is no ASLR, so live process memory addresses equal Ghidra addresses; reading a running original game is a valid way to establish ground truth.
 - Name port modules after the original source files (`pg\lib\pg\pgfile.cpp` -> `Source/Pg/...`, `vzed\engine.cpp` -> `Source/Game/...`).
 
