@@ -214,6 +214,14 @@ struct FActor
     bool bTurnOnPlace = false;
     // Body poses per direction: 2 for cops' 48 poses, 1 for the 24-pose vehicles (SeekerTurnBody, PlayerAdvancePose at 00438390).
     int PosesPerDirection = 2;
+    // Two-pieces (class flag 0x20 at +0x20, bit 2): a turret top that aims on its own while the body holds still in firing range.
+    bool bTwoPieces = false;
+    // Tanks scale the segment pull by 0.01 (DAT_005095b8) in ObjectComputeDisplacement.
+    float CorrectionScale = 1.f;
+    int TopPose = 1;
+    int TopTargetPose = 1;
+    int32_t TopTurnTimer = 0;
+    int32_t TopTurnTimeout = 0;
     // Object +0x13c: bit 1 follows a route, bit 2 lets the movement behaviour run beside the seeker.
     uint32_t RouteFlags = 0;
     // Object +0x194: the behaviour that ran last (1 seeker, 2 tracker, 0xc patrol); only patrol and random movers get the segment pull.

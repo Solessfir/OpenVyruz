@@ -36,6 +36,7 @@ constexpr uint32_t AnimationBlendMask = 0xFE;
 constexpr uint32_t AdditiveDrawMode = 6;
 constexpr uint32_t InverseSourceDrawMode = 8;
 constexpr int FourWayDirectionCount = 4;
+constexpr std::string_view TankKind = "tank";
 constexpr uint32_t FirstOccludingMapLayer = 2;
 
 // ObjectDraw at 00431d60 truncates world + 0.5 before applying scroll and altitude.
@@ -288,6 +289,8 @@ struct FObjectSprite
     size_t SheetIndex = 0;
     size_t ObjectIndex = 0;
     bool bShadow = false;
+    // A tank's turret top: the animation after its 24 body poses, one frame per top pose (ObjectDraw at 00431ae0, kind 0x20).
+    bool bTop = false;
     Gaf::FAnimationFrame Frame;
     float X = 0.f;
     float Y = 0.f;
@@ -417,6 +420,16 @@ std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive&
                 .Depth = SpriteDepth(GroundY, bShadow, Object.bInGround, Object.bZShadow),
                 .Blend = DrawMode == AdditiveDrawMode ? ESpriteBlend::Additive : DrawMode == InverseSourceDrawMode ? ESpriteBlend::InverseSourceColor : ESpriteBlend::Opaque,
             });
+
+            // The top shares the body's depth key and is drawn after it.
+            const size_t TopIndex = size_t(Object.GafIndex - 1 + ObjectDirectionCount);
+            if (!bShadow && Object.SubType == TankKind && TopIndex < GafAnimations.size() && GafAnimations[TopIndex].Frames.size() == ObjectDirectionCount)
+            {
+                FObjectSprite Top = Result.Sprites.back();
+                Top.bTop = true;
+                Top.Frame = GafAnimations[TopIndex].Frames[Index - size_t(Object.GafIndex - 1)];
+                Result.Sprites.push_back(Top);
+            }
         }
     }
 
@@ -431,6 +444,13 @@ void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level)
         const FLevelObject& Object = Level.Objects[Sprite.ObjectIndex];
         const Gaf::FAnimation& Animation = Sprites.Animations[Sprite.SheetIndex][ObjectAnimationIndex(Object, Sprite.bShadow)];
         Sprite.Frame = Animation.Frames.empty() ? Gaf::FAnimationFrame{} : Animation.Frames.front();
+        if (Sprite.bTop)
+        {
+            const int Direction = Object.Direction < ObjectDirectionCount ? Object.Direction : 0;
+            const size_t Frame = Object.TopPose > 0 ? size_t(Object.TopPose - 1) : size_t(Direction);
+            Sprite.Frame = Sprites.Animations[Sprite.SheetIndex][size_t(Object.GafIndex - 1 + ObjectDirectionCount)].Frames[Frame];
+        }
+
         const uint32_t DrawMode = Sprite.Frame.DrawFlags & AnimationBlendMask;
         Sprite.Blend = DrawMode == AdditiveDrawMode ? ESpriteBlend::Additive : DrawMode == InverseSourceDrawMode ? ESpriteBlend::InverseSourceColor : ESpriteBlend::Opaque;
         const int64_t GroundY = SpriteCoordinate(Object.Y);
@@ -453,6 +473,8 @@ int main(const int ArgCount, char** const Args)
 {
     std::optional<std::filesystem::path> DataPath;
     std::string LevelPath = "underground\\t1u1";
+    // Development aid: --start X,Y spawns the player at that world position.
+    std::optional<std::pair<float, float>> Start;
     bool bVerifyGafs = false;
     bool bVerifyLevels = false;
     bool bVerifyGame = false;
@@ -479,6 +501,11 @@ int main(const int ArgCount, char** const Args)
         else if (std::strcmp(Args[Index], "--level") == 0 && Index + 1 < ArgCount)
         {
             LevelPath = Args[++Index];
+        }
+        else if (float X = 0.f, Y = 0.f; std::strcmp(Args[Index], "--start") == 0 && Index + 1 < ArgCount && std::sscanf(Args[Index + 1], "%f,%f", &X, &Y) == 2)
+        {
+            Start = { X, Y };
+            ++Index;
         }
         else
         {
@@ -606,6 +633,12 @@ int main(const int ArgCount, char** const Args)
         if (Class && Collision)
         {
             PlayerClass = *Class;
+            if (Start)
+            {
+                PlayerObject->X = Start->first;
+                PlayerObject->Y = Start->second;
+            }
+
             Player = SpawnPlayer(*PlayerObject, *Class);
             Terrain = std::move(*Collision);
             if (std::expected<FCombat, std::string> Weapons = CreateCombat(*Level, *PlayerObject, Archive, Bodies))
@@ -707,6 +740,7 @@ int main(const int ArgCount, char** const Args)
                 else if (Body.Actor)
                 {
                     Object.Direction = Body.State.Direction;
+                    Object.TopPose = Body.Actor->bTwoPieces ? Body.Actor->TopPose : 0;
                 }
             }
 

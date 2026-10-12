@@ -840,8 +840,9 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
         // behaviours move or open them; pickups are collected instead of blocking.
         constexpr std::array<std::string_view, 6> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller" };
         // ponytail: cops and jeeps move so far; tanks need their turret top, walkers and spiders their stepping gait, helis their pose selection.
-        constexpr std::array<std::string_view, 2> ActorKinds = { "cop", "jeep" };
-        constexpr std::string_view JeepKind = "jeep";
+        constexpr std::array<std::string_view, 3> ActorKinds = { "cop", "jeep", "tank" };
+        constexpr std::string_view CopKind = "cop";
+        constexpr std::string_view TankKind = "tank";
         const bool bActor = std::ranges::contains(ActorKinds, Object.SubType);
         if (Object.BoundingBoxSize <= 0 || (!bActor && !std::ranges::contains(SolidKinds, Object.SubType)) || IsPickup(Object))
         {
@@ -905,12 +906,18 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
             Body.Class = *Movement;
             Body.State.Speed = Movement->ThrustInitial;
             Body.State.Direction = Object.Direction < DirectionCount ? Object.Direction : 0;
-            const int ActorPoses = Object.SubType == JeepKind ? 1 : PosesPerDirection;
+            const int ActorPoses = Object.SubType == CopKind ? PosesPerDirection : 1;
             Body.State.Pose = Body.State.TargetPose = Body.State.Direction * ActorPoses + 1;
+            constexpr float TankCorrectionScale = 0.01f;
             FActor& Actor = Body.Actor.emplace(FActor{
                 .Behaviour = *Behaviour,
                 .bTurnOnPlace = Number(&Properties, "Can-turn-on-place") != 0.f,
                 .PosesPerDirection = ActorPoses,
+                .bTwoPieces = Number(&Properties, "Two-pieces") != 0.f,
+                .CorrectionScale = Object.SubType == TankKind ? TankCorrectionScale : 1.f,
+                .TopPose = Body.State.Pose,
+                .TopTargetPose = Body.State.Pose,
+                .TopTurnTimeout = int32_t(Number(&Properties, "Turret-turn-timeout")),
             });
             if (const FLevelPropertyBlock* const Patrol = FindTypeBlock(Properties, "Patrol"); Patrol && (*Behaviour & BehaviourMovementMask) == BehaviourPatrol)
             {
@@ -2200,18 +2207,64 @@ FCollisionPoint SegmentCorrection(const FObjectBody& Body, const FRouteWork& Wor
 
 // SeekerTurnBody at 0042cfa0 for a body that can turn on the spot: one pose toward the segment per Turn-timeout.
 // ponytail: bodies that cannot turn on the spot scale the timeout with speed; only cops move so far, and they all turn on the spot.
-void TurnActorBody(FPlayerState& State, const FMovementClass& Class, const int PosesPerStep, const int Direction, const int32_t Step)
+// A two-piece body holds still while its top aims, and its top turns along with it.
+void TurnActorBody(FPlayerState& State, const FMovementClass& Class, FActor& Actor, const uint32_t Range, const int Direction, const int32_t Step)
 {
+    constexpr uint32_t Firing = 4;
+    if (Actor.bTwoPieces && (Range & Firing) != 0)
+    {
+        return;
+    }
+
     State.TurnTimer -= Step;
     if (State.TurnTimer >= 1)
     {
         return;
     }
 
+    const int PosesPerStep = Actor.PosesPerDirection;
+    const int PoseCount = DirectionCount * PosesPerStep;
     State.TurnTimer = std::max(0, State.TurnTimer + Class.TurnTimeout);
     State.TargetPose = Direction * PosesPerStep + 1;
-    State.Pose = AdvancePose(State.Pose, State.TargetPose, DirectionCount * PosesPerStep);
+    const int Previous = State.Pose;
+    State.Pose = AdvancePose(State.Pose, State.TargetPose, PoseCount);
     State.Direction = (State.Pose - 1) / PosesPerStep;
+    if (Actor.bTwoPieces && State.Pose != Previous)
+    {
+        const auto Rotate = [PoseCount, Delta = State.Pose - Previous](const int Pose)
+        {
+            return ((Pose - 1 + Delta) % PoseCount + PoseCount) % PoseCount + 1;
+        };
+        Actor.TopPose = Rotate(Actor.TopPose);
+        Actor.TopTargetPose = Rotate(Actor.TopTargetPose);
+    }
+}
+
+// SeekerTurnTop at 0042d150: in firing range, one top pose toward the target per Turret-turn-timeout.
+void TurnActorTop(FActor& Actor, const uint32_t Range, const int Direction, const int32_t Step)
+{
+    constexpr uint32_t Firing = 4;
+    if (!Actor.bTwoPieces || (Range & Firing) == 0)
+    {
+        return;
+    }
+
+    Actor.TopTurnTimer -= Step;
+    if (Actor.TopTurnTimer >= 1)
+    {
+        return;
+    }
+
+    Actor.TopTurnTimer = std::max(0, Actor.TopTurnTimer + Actor.TopTurnTimeout);
+    Actor.TopTargetPose = Direction * Actor.PosesPerDirection + 1;
+    Actor.TopPose = AdvancePose(Actor.TopPose, Actor.TopTargetPose, DirectionCount * Actor.PosesPerDirection);
+}
+
+// The direction the actor aims and fires in: its top's for a two-piece body.
+int AimDirection(const FObjectBody& Body)
+{
+    const FActor& Actor = *Body.Actor;
+    return Actor.bTwoPieces ? (Actor.TopPose - 1) / Actor.PosesPerDirection : Body.State.Direction;
 }
 
 // SeekerAimAndFire at 0042d2d0 for a body without a turret top: inside the weapon's Fire-Range, facing the target and not turning, the trigger
@@ -2223,10 +2276,10 @@ bool AimAndFire(const FCombat& Combat, const FObjectBody& Body, FActor& Actor, c
         return false;
     }
 
-    if (Body.State.Direction != Seeker.Work.SegmentDirection)
+    if (AimDirection(Body) != Seeker.Work.SegmentDirection)
     {
         // A body that cannot turn on the spot drives forward to come round.
-        if ((Seeker.Work.RangeState & RangeFiring) != 0 && !Actor.bTurnOnPlace)
+        if (!Actor.bTwoPieces && (Seeker.Work.RangeState & RangeFiring) != 0 && !Actor.bTurnOnPlace)
         {
             Actor.Command.Thrust = EPlayerThrust::Forward;
         }
@@ -2249,7 +2302,7 @@ bool AimAndFire(const FCombat& Combat, const FObjectBody& Body, FActor& Actor, c
 
     // FUN_00436520 reports a turn while the body pose has not reached its target pose.
     const bool bTurning = Body.State.Pose != Body.State.TargetPose;
-    if (WeaponReady(Combat, Seeker.WeaponState) && !bTurning && FindDirection(Delta) == Body.State.Direction)
+    if (WeaponReady(Combat, Seeker.WeaponState) && !bTurning && FindDirection(Delta) == AimDirection(Body))
     {
         Actor.bTrigger = true;
     }
@@ -2266,7 +2319,7 @@ void Engage(FCombat* const Combat, FObjectBody& Body, FRouteWork& Work, FSeeker*
     if ((Work.RangeState & RangeFiring) == 0)
     {
         const bool bDrive = (Work.RangeState & RangeNearEnd) == 0 || NextSegment(Work);
-        TurnActorBody(Body.State, Body.Class, Actor.PosesPerDirection, Work.SegmentDirection, Step);
+        TurnActorBody(Body.State, Body.Class, Actor, Work.RangeState, Work.SegmentDirection, Step);
         Actor.Command.Correction = SegmentCorrection(Body, Work);
         if (bDrive)
         {
@@ -2276,7 +2329,8 @@ void Engage(FCombat* const Combat, FObjectBody& Body, FRouteWork& Work, FSeeker*
         return;
     }
 
-    TurnActorBody(Body.State, Body.Class, Actor.PosesPerDirection, Work.SegmentDirection, Step);
+    TurnActorBody(Body.State, Body.Class, Actor, Work.RangeState, Work.SegmentDirection, Step);
+    TurnActorTop(Actor, Work.RangeState, Work.SegmentDirection, Step);
     if ((Work.RangeState & RangeClose) != 0)
     {
         Actor.Command.Thrust = EPlayerThrust::Backward;
@@ -2705,6 +2759,10 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
         {
             Actor.Command.Correction = {};
         }
+        else
+        {
+            Actor.Command.Correction = { .X = Actor.Command.Correction.X * Actor.CorrectionScale, .Y = Actor.Command.Correction.Y * Actor.CorrectionScale };
+        }
 
         // A pushed actor drifts without thrust until it slows down.
         if (Body.State.bPushed)
@@ -2719,7 +2777,7 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
             const FShooter Shooter{
                 .Position = Body.State.Position,
                 .Velocity = Body.State.Velocity,
-                .Direction = Body.State.Direction,
+                .Direction = AimDirection(Body),
                 .Altitude = int(Body.Altitude),
                 // ponytail: the muzzle range uses twice the bounding radius instead of the sprite bounds, as for turrets.
                 .SpriteSize = Body.Class.Radius * 2.f,

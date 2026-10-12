@@ -74,6 +74,8 @@ struct FLevelObject
     bool bDirectional = false;
     // Collected pickups and destroyed objects stay in the list so indices remain stable.
     bool bRemoved = false;
+    // A tank's 1-based top pose, the frame of its top animation; zero until its behaviour turns it.
+    int TopPose = 0;
     std::string SubType;
     FLevelPropertyBlock Properties;
 };
