@@ -650,7 +650,7 @@ int main(const int ArgCount, char** const Args)
                     Pressed(GLFW_KEY_A), Pressed(GLFW_KEY_D));
                 StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies);
                 StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
-                StepActors(Bodies, StepMilliseconds, *Terrain, *Level);
+                StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &*Player);
                 if (Combat)
                 {
                     const float MoneyBefore = Inventory.Money;

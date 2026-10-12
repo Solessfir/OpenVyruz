@@ -15,6 +15,7 @@
 #include <limits>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <string_view>
 #include <tuple>
 #include <vector>
@@ -30,6 +31,8 @@ constexpr int StrafeDirectionOffset = DirectionCount - 6;
 // DirectionDistance at 00404330 treats directions this far apart or more as facing away.
 constexpr int FacingAwayDistance = 7;
 constexpr int PosesPerDirection = PlayerPoseCount / DirectionCount;
+// PatrolMoveUpdate gives its work attribute a 64-unit arrival radius.
+constexpr uint32_t PatrolArrivalRadius = 64;
 
 // Game speeds are tuned for 14 ms steps; EngineRunLevel at 0043e5f0 stores 14 / step as a float.
 constexpr double ReferenceStepMilliseconds = 14.;
@@ -902,7 +905,7 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
             Body.State.Speed = Movement->ThrustInitial;
             Body.State.Direction = Object.Direction < DirectionCount ? Object.Direction : 0;
             Body.State.Pose = Body.State.TargetPose = Body.State.Direction * PosesPerDirection + 1;
-            FActor& Actor = Body.Actor.emplace(FActor{ .Behaviour = *Behaviour });
+            FActor& Actor = Body.Actor.emplace(FActor{ .Behaviour = *Behaviour, .bTurnOnPlace = Number(&Properties, "Can-turn-on-place") != 0.f });
             if (const FLevelPropertyBlock* const Patrol = FindTypeBlock(Properties, "Patrol"); Patrol && (*Behaviour & BehaviourMovementMask) == BehaviourPatrol)
             {
                 const int PathId = int(Number(Patrol, "Path-ID"));
@@ -911,7 +914,22 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
                     .Path = Path.base() == Level.PatrolPaths.begin() ? std::nullopt : std::optional(size_t(Path.base() - Level.PatrolPaths.begin()) - 1),
                     .bReverse = Number(Patrol, "Reverse") != 0.f,
                     .bClosed = Number(Patrol, "Closed") != 0.f,
-                    .ScanDelay = int32_t(Number(Patrol, "Scan-delay")),
+                    .Work = { .Interval = int32_t(Number(Patrol, "Scan-delay")), .Radius = PatrolArrivalRadius },
+                };
+            }
+
+            // SeekerFindAttribute (0042c510): a seeker drives the TYPE Seeker block, a tracker the TYPE Tracker block.
+            const uint32_t Target = *Behaviour & BehaviourTargetMask;
+            const bool bTracker = Target == BehaviourTracker;
+            if (const FLevelPropertyBlock* const Seeker = FindTypeBlock(Properties, bTracker ? "Tracker" : "Seeker"); Seeker && (Target == BehaviourSeeker || bTracker))
+            {
+                // ponytail: the Vision-Angle conversion is not traced; it is read as for turrets, half a direction per 30 degrees.
+                constexpr float DegreesPerVisionStep = 30.f;
+                Actor.Seeker = FSeeker{
+                    .bTracker = bTracker,
+                    .VisionDirections = int(Number(Seeker, "Vision-Angle") / DegreesPerVisionStep),
+                    .SensorRange = Number(Seeker, "Sensor-Range"),
+                    .Work = { .Interval = int32_t(Number(Seeker, "Scan-Delay")), .Radius = uint32_t(Number(Seeker, "Min-distance")) },
                 };
             }
         }
@@ -1888,7 +1906,32 @@ std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLev
         Combat.PlayerWeapon.Slope = Combat.Weapons[Combat.PlayerWeapon.Weapon].InitialSlope;
     }
 
-    // ponytail: only turrets run the seeker so far; cops, walkers and the other seekers need path following first.
+    // Moving seekers carry their first ADD Weapon and ADD Ammo.
+    for (FObjectBody& Body : Bodies)
+    {
+        FSeeker* const Seeker = Body.Actor && Body.Actor->Seeker ? &*Body.Actor->Seeker : nullptr;
+        const FLevelObject& Object = Level.Objects[Body.ObjectIndex];
+        const auto WeaponEntry = std::ranges::find_if(Object.Properties.Children, [](const FLevelPropertyBlock& Child) { return Child.Kind == "ADD" && Child.Name == "Weapon"; });
+        const auto AmmoEntry = std::ranges::find_if(Object.Properties.Children, [](const FLevelPropertyBlock& Child) { return Child.Kind == "ADD" && Child.Name == "Ammo"; });
+        if (!Seeker || WeaponEntry == Object.Properties.Children.end())
+        {
+            continue;
+        }
+
+        const std::expected<size_t, std::string> Weapon = LoadWeapon(Combat, Level, WeaponEntry->Find("Name"));
+        if (!Weapon)
+        {
+            return std::unexpected(std::format("{}: {}", Object.ClassName, Weapon.error()));
+        }
+
+        Seeker->Weapon = *Weapon;
+        Seeker->WeaponState = { .Weapon = *Weapon, .Slope = Combat.Weapons[*Weapon].InitialSlope };
+        if (AmmoEntry != Object.Properties.Children.end())
+        {
+            Seeker->Ammo = { .Name = ToLowerName(AmmoEntry->Find("Name")), .Count = ClassNumber(*AmmoEntry, "Count"), .Max = ClassNumber(*AmmoEntry, "Max") };
+        }
+    }
+
     for (FObjectBody& Body : Bodies)
     {
         const FLevelObject& Object = Level.Objects[Body.ObjectIndex];
@@ -2009,20 +2052,36 @@ namespace
 {
 // SeekerUpdate (0042c5a0) and the movement updates advance route searches every 17 ms.
 constexpr int32_t RouteSearchPeriodMilliseconds = 17;
+// Object +0x13c bits.
+constexpr uint32_t RouteFollowing = 1;
+constexpr uint32_t RouteMovementAllowed = 2;
+// Object +0x194 values.
+constexpr uint32_t ModeSeeker = 1;
+constexpr uint32_t ModeTracker = 2;
+// SeekerRangeState bits.
+constexpr uint32_t RangeNearEnd = 1;
+constexpr uint32_t RangeClose = 2;
+constexpr uint32_t RangeFiring = 4;
+
+// FUN_00407630: the direction of a vector after rotating it as if it were in world space; the range checks pass it collision-space deltas.
+int RotatedDirection(const FCollisionPoint Vector)
+{
+    return Vector.X == 0.f && Vector.Y == 0.f ? NoDirection : FindDirection(CollisionFromWorld(Vector));
+}
 
 // SeekerUpdateSegment at 0042c9d0; false for a degenerate segment.
-bool UpdateSegment(FPatrol& Patrol)
+bool UpdateSegment(FRouteWork& Work)
 {
-    Patrol.SegmentDelta = { .X = Patrol.SegmentEnd.X - Patrol.SegmentStart.X, .Y = Patrol.SegmentEnd.Y - Patrol.SegmentStart.Y };
-    Patrol.SegmentLengthSquared = Patrol.SegmentDelta.X * Patrol.SegmentDelta.X + Patrol.SegmentDelta.Y * Patrol.SegmentDelta.Y;
-    Patrol.SegmentDirection = FindDirection(Patrol.SegmentDelta);
-    return Patrol.SegmentDirection != NoDirection;
+    Work.SegmentDelta = { .X = Work.SegmentEnd.X - Work.SegmentStart.X, .Y = Work.SegmentEnd.Y - Work.SegmentStart.Y };
+    Work.SegmentLengthSquared = Work.SegmentDelta.X * Work.SegmentDelta.X + Work.SegmentDelta.Y * Work.SegmentDelta.Y;
+    Work.SegmentDirection = FindDirection(Work.SegmentDelta);
+    return Work.SegmentDirection != NoDirection;
 }
 
 // FUN_0042c960: step to the route's next segment; false once the route is used up.
-bool NextSegment(FPatrol& Patrol)
+bool NextSegment(FRouteWork& Work)
 {
-    FPathRoute* const Route = Patrol.Route ? &*Patrol.Route : nullptr;
+    FPathRoute* const Route = Work.Route ? &*Work.Route : nullptr;
     if (!Route || Route->Current >= Route->Points.size())
     {
         return false;
@@ -2034,63 +2093,93 @@ bool NextSegment(FPatrol& Patrol)
         return false;
     }
 
-    Patrol.SegmentStart = Route->Points[Route->Current - 1];
-    Patrol.SegmentEnd = Route->Points[Route->Current];
-    return UpdateSegment(Patrol);
+    Work.SegmentStart = Route->Points[Route->Current - 1];
+    Work.SegmentEnd = Route->Points[Route->Current];
+    return UpdateSegment(Work);
+}
+
+// The route's current node is its last point, or the route is used up.
+bool OnLastSegment(const FRouteWork& Work)
+{
+    return Work.Route->Current + 1 >= Work.Route->Points.size();
 }
 
 // SeekerOnSegment at 0042d820: the actor is still inside the segment's bounds, widened by its size and speed.
-bool OnSegment(const FObjectBody& Body, const FPatrol& Patrol)
+bool OnSegment(const FObjectBody& Body, const FRouteWork& Work)
 {
     const float Slack = float(double(Body.Class.Radius) * 2. + double(Body.State.SpeedMagnitude));
     const auto Within = [Slack](const float Value, const float Start, const float End)
     {
         return End < Start ? End - Slack <= Value && Value <= Slack + Start : Start - Slack <= Value && Value <= Slack + End;
     };
-    return Within(Body.State.Center.X, Patrol.SegmentStart.X, Patrol.SegmentEnd.X) && Within(Body.State.Center.Y, Patrol.SegmentStart.Y, Patrol.SegmentEnd.Y);
+    return Within(Body.State.Center.X, Work.SegmentStart.X, Work.SegmentEnd.X) && Within(Body.State.Center.Y, Work.SegmentStart.Y, Work.SegmentEnd.Y);
 }
 
-// SeekerRangeState at 0042cd30 without a target object: how close the actor is to the end of its segment.
-uint32_t PatrolRangeState(const FObjectBody& Body, const FPatrol& Patrol)
+// SeekerRangeState at 0042cd30, with SeekerDirectRange (0042ce40) first when there is a target.
+uint32_t RangeState(const FObjectBody& Body, const FRouteWork& Work, const FPlayerState* const Target)
 {
-    // PatrolMoveUpdate gives its work attribute a 64-unit arrival radius; inner corners count from 8 units.
-    constexpr uint32_t ArrivalRadius = 64;
-    constexpr float RouteEndScale = 0.5625f;
-    constexpr float CornerDistanceSquared = 64.f;
-    constexpr uint32_t NearEnd = 1;
-    constexpr uint32_t AtRouteEnd = 3;
-    const float X = Patrol.SegmentEnd.X - Body.State.Center.X;
-    const float Y = Patrol.SegmentEnd.Y - Body.State.Center.Y;
-    const float DistanceSquared = X * X + Y * Y;
-    if (Patrol.Route->Current + 1 < Patrol.Route->Points.size())
+    // The facing checks use FUN_00407630, which compares against the facing-table index (object +0x150, three directions on).
+    const bool bFacingCheck = Target && !Body.Actor->bTurnOnPlace;
+    const int TableDirection = Wrap(Body.State.Direction + DirectionVectorOffset);
+    const float RadiusSquared = float(Work.Radius * Work.Radius);
+    if (Target && OnLastSegment(Work))
     {
-        return DistanceSquared < CornerDistanceSquared ? NearEnd : 0;
+        const FCollisionPoint Delta{ .X = Target->Center.X - Body.State.Center.X, .Y = Target->Center.Y - Body.State.Center.Y };
+        constexpr float CloseScale = 0.25f;
+        const float DistanceSquared = Delta.X * Delta.X + Delta.Y * Delta.Y;
+        if (!bFacingCheck || DirectionDistance(RotatedDirection(Delta), TableDirection) <= 1)
+        {
+            if (DistanceSquared <= RadiusSquared * CloseScale)
+            {
+                return RangeFiring | RangeClose | RangeNearEnd;
+            }
+
+            if (DistanceSquared <= RadiusSquared)
+            {
+                return RangeFiring | RangeNearEnd;
+            }
+        }
     }
 
-    const float RadiusSquared = float(ArrivalRadius * ArrivalRadius);
+    const FCollisionPoint Delta{ .X = Work.SegmentEnd.X - Body.State.Center.X, .Y = Work.SegmentEnd.Y - Body.State.Center.Y };
+    const float DistanceSquared = Delta.X * Delta.X + Delta.Y * Delta.Y;
+    if (!OnLastSegment(Work))
+    {
+        // Inner corners count from 8 units.
+        constexpr float CornerDistanceSquared = 64.f;
+        return DistanceSquared < CornerDistanceSquared ? RangeNearEnd : 0;
+    }
+
+    if (bFacingCheck && DirectionDistance(RotatedDirection(Delta), TableDirection) > 1)
+    {
+        return 0;
+    }
+
+    constexpr float RouteEndScale = 0.5625f;
     if (DistanceSquared <= RadiusSquared * RouteEndScale)
     {
-        return AtRouteEnd;
+        return RangeClose | RangeNearEnd;
     }
 
-    return DistanceSquared < RadiusSquared ? NearEnd : 0;
+    return DistanceSquared < RadiusSquared ? RangeNearEnd : 0;
 }
 
 // FUN_0042cc60: one hundredth of the world-space offset back to the segment line, applied by ObjectComputeDisplacement.
-FCollisionPoint SegmentCorrection(const FObjectBody& Body, const FPatrol& Patrol)
+FCollisionPoint SegmentCorrection(const FObjectBody& Body, const FRouteWork& Work)
 {
-    const float X = Body.State.Center.X - Patrol.SegmentStart.X;
-    const float Y = Body.State.Center.Y - Patrol.SegmentStart.Y;
-    const float Dot = Y * Patrol.SegmentDelta.Y + X * Patrol.SegmentDelta.X;
-    const float Along = std::sqrt(Dot * Dot / Patrol.SegmentLengthSquared / Patrol.SegmentLengthSquared);
-    const float OffsetX = Along * Patrol.SegmentDelta.X - X;
-    const float OffsetY = Along * Patrol.SegmentDelta.Y - Y;
+    const float X = Body.State.Center.X - Work.SegmentStart.X;
+    const float Y = Body.State.Center.Y - Work.SegmentStart.Y;
+    const float Dot = Y * Work.SegmentDelta.Y + X * Work.SegmentDelta.X;
+    const float Along = std::sqrt(Dot * Dot / Work.SegmentLengthSquared / Work.SegmentLengthSquared);
+    const float OffsetX = Along * Work.SegmentDelta.X - X;
+    const float OffsetY = Along * Work.SegmentDelta.Y - Y;
     constexpr float WorldXScale = 0.008944272f;
     constexpr float WorldYScale = 0.004472136f;
     return CollisionFromWorld({ .X = (OffsetX - OffsetY) * WorldXScale, .Y = (OffsetY + OffsetX) * WorldYScale });
 }
 
 // SeekerTurnBody at 0042cfa0 for a body that can turn on the spot: one pose toward the segment per Turn-timeout.
+// ponytail: bodies that cannot turn on the spot scale the timeout with speed; only cops move so far, and they all turn on the spot.
 void TurnActorBody(FPlayerState& State, const FMovementClass& Class, const int Direction, const int32_t Step)
 {
     State.TurnTimer -= Step;
@@ -2105,18 +2194,261 @@ void TurnActorBody(FPlayerState& State, const FMovementClass& Class, const int D
     State.Direction = (State.Pose - 1) / PosesPerDirection;
 }
 
-// SeekerEngage at 0042caa0 for a route point: turn toward the segment, then drive along it unless the route has run out.
-void EngageSegment(FObjectBody& Body, FPatrol& Patrol, const int32_t Step)
+// SeekerAimAndFire at 0042d2d0 for a body without a turret top: inside the weapon's Fire-Range, facing the target and not turning, the trigger
+// is pulled once the weapon's Delay has passed.
+bool AimAndFire(const FCombat& Combat, const FObjectBody& Body, FActor& Actor, const FSeeker& Seeker, const FPlayerState& Target)
 {
-    constexpr uint32_t NearEnd = 1;
-    Patrol.RangeState = PatrolRangeState(Body, Patrol);
-    const bool bDrive = (Patrol.RangeState & NearEnd) == 0 || NextSegment(Patrol);
-    TurnActorBody(Body.State, Body.Class, Patrol.SegmentDirection, Step);
-    Body.Actor->Command.Correction = SegmentCorrection(Body, Patrol);
-    if (bDrive)
+    if (!OnLastSegment(Seeker.Work))
     {
-        Body.Actor->Command.Thrust = EPlayerThrust::Forward;
+        return false;
     }
+
+    if (Body.State.Direction != Seeker.Work.SegmentDirection)
+    {
+        // A body that cannot turn on the spot drives forward to come round.
+        if ((Seeker.Work.RangeState & RangeFiring) != 0 && !Actor.bTurnOnPlace)
+        {
+            Actor.Command.Thrust = EPlayerThrust::Forward;
+        }
+
+        return false;
+    }
+
+    if (!Seeker.Weapon)
+    {
+        return false;
+    }
+
+    const FWeaponClass& Weapon = Combat.Weapons[*Seeker.Weapon];
+    const FCollisionPoint Delta{ .X = Target.Center.X - Body.State.Center.X, .Y = Target.Center.Y - Body.State.Center.Y };
+    const int FireRange = int(Weapon.FireRange);
+    if (uint32_t(int64_t(Delta.X * Delta.X + Delta.Y * Delta.Y)) > uint32_t(FireRange * FireRange))
+    {
+        return false;
+    }
+
+    // FUN_00436520 reports a turn while the body pose has not reached its target pose.
+    const bool bTurning = Body.State.Pose != Body.State.TargetPose;
+    if (WeaponReady(Combat, Seeker.WeaponState) && !bTurning && FindDirection(Delta) == Body.State.Direction)
+    {
+        Actor.bTrigger = true;
+    }
+
+    return true;
+}
+
+// SeekerEngage at 0042caa0: turn toward the segment and drive along it; within Min-distance of the target, face it, back off when too close
+// and fire.
+void Engage(FCombat* const Combat, FObjectBody& Body, FRouteWork& Work, FSeeker* const Seeker, const FPlayerState* const Target, const int32_t Step)
+{
+    FActor& Actor = *Body.Actor;
+    Work.RangeState = RangeState(Body, Work, Target);
+    if ((Work.RangeState & RangeFiring) == 0)
+    {
+        const bool bDrive = (Work.RangeState & RangeNearEnd) == 0 || NextSegment(Work);
+        TurnActorBody(Body.State, Body.Class, Work.SegmentDirection, Step);
+        Actor.Command.Correction = SegmentCorrection(Body, Work);
+        if (bDrive)
+        {
+            Actor.Command.Thrust = EPlayerThrust::Forward;
+        }
+
+        return;
+    }
+
+    TurnActorBody(Body.State, Body.Class, Work.SegmentDirection, Step);
+    if ((Work.RangeState & RangeClose) != 0)
+    {
+        Actor.Command.Thrust = EPlayerThrust::Backward;
+        Body.State.bPushed = false;
+        Body.State.Speed = std::min(Body.State.Speed, 0.f);
+    }
+
+    // The segment now ends at the target, still starting from where it did.
+    Work.SegmentEnd = Target->Center;
+    UpdateSegment(Work);
+    if (!Seeker || !Combat)
+    {
+        return;
+    }
+
+    const FWeaponClass* const Weapon = Seeker->Weapon ? &Combat->Weapons[*Seeker->Weapon] : nullptr;
+    if (AimAndFire(*Combat, Body, Actor, *Seeker, *Target))
+    {
+        if (Weapon)
+        {
+            UpdateSlope(Seeker->WeaponState, *Weapon, true);
+        }
+
+        // A seeker stops to shoot.
+        if (Actor.Command.Thrust == EPlayerThrust::Forward)
+        {
+            Actor.Command.Thrust = EPlayerThrust::None;
+        }
+    }
+    else if (Weapon)
+    {
+        UpdateSlope(Seeker->WeaponState, *Weapon, false);
+    }
+}
+
+// Drops the route segment once the actor has left it; otherwise marks the actor as following a route.
+bool KeepSegment(FObjectBody& Body, FRouteWork& Work)
+{
+    if (!OnSegment(Body, Work))
+    {
+        Body.Actor->RouteFlags &= ~RouteFollowing;
+        Work.bOnSegment = false;
+        Work.bSearching = false;
+        return false;
+    }
+
+    Body.Actor->RouteFlags |= RouteFollowing;
+    return true;
+}
+
+// Advances a pending route search; on a usable route the actor starts following its first segment.
+EPathStatus AdvanceRoute(FObjectBody& Body, FRouteWork& Work, std::optional<std::vector<FPathObstacle>>& Obstacles, const FTerrainCollision& Terrain,
+    const float MaxDistance, bool& bRouted)
+{
+    bRouted = false;
+    if (!Obstacles)
+    {
+        Obstacles = TerrainPathObstacles(Terrain);
+    }
+
+    const FCollisionPoint HalfExtent{ .X = Body.Class.Radius, .Y = Body.Class.Radius };
+    const EPathStatus Status = Work.Search.Advance(*Obstacles, HalfExtent, MaxDistance);
+    if (Status != EPathStatus::Found && Status != EPathStatus::Finished)
+    {
+        return Status;
+    }
+
+    // A failed route keeps the previous one, as FUN_0042d760 restores the saved work attribute.
+    std::optional<FPathRoute> Route = Work.Search.SelectFinishedRoute(*Obstacles, HalfExtent);
+    if (Route)
+    {
+        std::optional<FPathRoute> Previous = std::move(Work.Route);
+        Work.Route = std::move(Route);
+        Work.Route->Current = 0;
+        bRouted = NextSegment(Work);
+        if (!bRouted)
+        {
+            Work.Route = std::move(Previous);
+        }
+    }
+
+    return Status;
+}
+
+// SeekerFindTarget at 0042da80 for the player: alive, within Sensor-Range and within the vision cone around the body's facing.
+// ponytail: the grid-cell window around the seeker is replaced by the distance test it ends in; a player outside the window but in range is still found.
+bool FindTarget(const FObjectBody& Body, const FSeeker& Seeker, const FPlayerState& Player)
+{
+    const FCollisionPoint Delta{ .X = Player.Center.X - Body.State.Center.X, .Y = Player.Center.Y - Body.State.Center.Y };
+    const int Range = int(Seeker.SensorRange);
+    return Delta.X * Delta.X + Delta.Y * Delta.Y <= float(Range * Range) && DirectionDistance(FindDirection(Delta), Body.State.Direction) <= Seeker.VisionDirections;
+}
+
+// SeekerUpdate at 0042c5a0 for a moving seeker or tracker.
+// ponytail: Guardians do not return to their post yet when no target is in sight.
+void UpdateSeeker(FCombat* const Combat, FObjectBody& Body, FSeeker& Seeker, const FPlayerState* const Player,
+    std::optional<std::vector<FPathObstacle>>& Obstacles, const FTerrainCollision& Terrain, const int32_t Step)
+{
+    FActor& Actor = *Body.Actor;
+    FRouteWork& Work = Seeker.Work;
+    const FPlayerState* const Target = Seeker.bHasTarget ? Player : nullptr;
+    if (Work.bOnSegment && !KeepSegment(Body, Work))
+    {
+        return;
+    }
+
+    Actor.Mode = Seeker.bTracker ? ModeTracker : ModeSeeker;
+    if (Work.bOnSegment)
+    {
+        if (Work.Timer >= 1)
+        {
+            Work.Timer -= Step;
+            Engage(Combat, Body, Work, &Seeker, Target, Step);
+            return;
+        }
+
+        // Every Scan-delay the route is checked: it ends once the target has moved, by position on the last segment and by cell before it.
+        const bool bLast = OnLastSegment(Work);
+        const FWorldCell Cell = Player ? CellOf(Player->Position) : FWorldCell{};
+        const bool bMoved = !Player || (bLast ? Player->Position.X != Seeker.TargetPosition.X || Player->Position.Y != Seeker.TargetPosition.Y
+                                              : Cell.X != Seeker.TargetCellX || Cell.Y != Seeker.TargetCellY);
+        if (bMoved)
+        {
+            Work.bOnSegment = false;
+            return;
+        }
+
+        Work.Timer += Work.Interval;
+        return;
+    }
+
+    Actor.RouteFlags &= ~RouteFollowing;
+    if (!Work.bSearching)
+    {
+        if (Work.Timer >= 1)
+        {
+            Work.Timer -= Step;
+            return;
+        }
+
+        Work.Timer += Work.Interval;
+        Seeker.bHasTarget = Player && FindTarget(Body, Seeker, *Player);
+        if (Seeker.bHasTarget && Work.Search.Start(Body.State.Center, Player->Center))
+        {
+            Seeker.TargetPosition = Player->Position;
+            const FWorldCell Cell = CellOf(Player->Position);
+            Seeker.TargetCellX = Cell.X;
+            Seeker.TargetCellY = Cell.Y;
+            Work.SearchTimer = 0;
+            Work.bSearching = true;
+        }
+        else
+        {
+            Actor.RouteFlags |= RouteMovementAllowed;
+        }
+
+        return;
+    }
+
+    Work.SearchTimer -= Step;
+    if (Work.SearchTimer > 0)
+    {
+        return;
+    }
+
+    Work.SearchTimer += RouteSearchPeriodMilliseconds;
+    bool bRouted = false;
+    const EPathStatus Status = AdvanceRoute(Body, Work, Obstacles, Terrain, Seeker.SensorRange, bRouted);
+    if (Status == EPathStatus::Searching && Seeker.bTracker)
+    {
+        Work.Timer -= Step;
+        return;
+    }
+
+    if (bRouted)
+    {
+        // A route to the target replaces the patrol's (FUN_0042d7d0).
+        Work.bOnSegment = true;
+        Actor.RouteFlags = (Actor.RouteFlags & ~RouteMovementAllowed) | RouteFollowing;
+        if (Actor.Patrol)
+        {
+            Actor.Patrol->Work.bOnSegment = false;
+            Actor.Patrol->Work.bSearching = false;
+        }
+    }
+    else if (Status != EPathStatus::Failed && Status != EPathStatus::Searching)
+    {
+        Actor.RouteFlags |= RouteMovementAllowed;
+    }
+
+    Work.bSearching = false;
+    Work.Timer += Work.Interval;
 }
 
 // FUN_0042e740: aim the next search at the current patrol point, moving on only after arriving at the end of a finished route.
@@ -2152,7 +2484,7 @@ bool StartPatrolLeg(FPatrol& Patrol, const FObjectBody& Body, const FLevel& Leve
 
         Patrol.bStarted = true;
     }
-    else if (Patrol.Route && Patrol.Route->Current >= Patrol.Route->Points.size() && (Patrol.RangeState & 1) != 0)
+    else if (Patrol.Work.Route && Patrol.Work.Route->Current >= Patrol.Work.Route->Points.size() && (Patrol.Work.RangeState & RangeNearEnd) != 0)
     {
         // Open paths turn back at either end; closed ones wrap around.
         for (;;)
@@ -2176,97 +2508,86 @@ bool StartPatrolLeg(FPatrol& Patrol, const FObjectBody& Body, const FLevel& Leve
 
     const std::array<int32_t, 2>& Point = Path.Points[size_t(Patrol.Point)];
     Patrol.Goal = { .X = float(Point[0]), .Y = float(Point[1]) };
-    return Patrol.Search.Start(Body.State.Center, CollisionFromWorld(Patrol.Goal));
+    return Patrol.Work.Search.Start(Body.State.Center, CollisionFromWorld(Patrol.Goal));
 }
 
 // PatrolMoveUpdate at 0042e400.
 void UpdatePatrol(FObjectBody& Body, FPatrol& Patrol, const FLevel& Level, std::optional<std::vector<FPathObstacle>>& Obstacles,
     const FTerrainCollision& Terrain, const int32_t Step)
 {
-    if (Patrol.bOnSegment)
+    FActor& Actor = *Body.Actor;
+    FRouteWork& Work = Patrol.Work;
+    if (Work.bOnSegment)
     {
-        if (!OnSegment(Body, Patrol))
+        if (!KeepSegment(Body, Work))
         {
-            Patrol.bOnSegment = false;
-            Patrol.Timer = 0;
+            Work.Timer = 0;
             return;
         }
 
-        if (Patrol.Timer >= 1)
+        if (Work.Timer >= 1)
         {
-            Patrol.Timer -= Step;
-            EngageSegment(Body, Patrol, Step);
+            Work.Timer -= Step;
+            Engage(nullptr, Body, Work, nullptr, nullptr, Step);
         }
         else
         {
             // The route is re-planned every Scan-delay, even toward the same point.
-            Patrol.bOnSegment = false;
+            Work.bOnSegment = false;
         }
 
+        Actor.Mode = BehaviourPatrol;
         return;
     }
 
-    if (!Patrol.bSearching)
+    Actor.RouteFlags &= ~RouteFollowing;
+    Actor.Mode = BehaviourPatrol;
+    if (!Work.bSearching)
     {
-        if (Patrol.Timer >= 1)
+        if (Work.Timer >= 1)
         {
-            Patrol.Timer -= Step;
+            Work.Timer -= Step;
             return;
         }
 
-        Patrol.Timer += Patrol.ScanDelay;
+        Work.Timer += Work.Interval;
         if (StartPatrolLeg(Patrol, Body, Level))
         {
-            Patrol.SearchTimer = 0;
-            Patrol.bSearching = true;
+            Work.SearchTimer = 0;
+            Work.bSearching = true;
+        }
+        else
+        {
+            Actor.RouteFlags &= ~RouteMovementAllowed;
         }
 
         return;
     }
 
-    Patrol.SearchTimer -= Step;
-    if (Patrol.SearchTimer > 0)
+    Work.SearchTimer -= Step;
+    if (Work.SearchTimer > 0)
     {
         return;
     }
 
-    Patrol.SearchTimer += RouteSearchPeriodMilliseconds;
-    if (!Obstacles)
-    {
-        Obstacles = TerrainPathObstacles(Terrain);
-    }
-
-    const FCollisionPoint HalfExtent{ .X = Body.Class.Radius, .Y = Body.Class.Radius };
-    const EPathStatus Status = Patrol.Search.Advance(*Obstacles, HalfExtent);
+    Work.SearchTimer += RouteSearchPeriodMilliseconds;
+    bool bRouted = false;
+    const EPathStatus Status = AdvanceRoute(Body, Work, Obstacles, Terrain, 0.f, bRouted);
     if (Status == EPathStatus::Searching)
     {
-        Patrol.Timer -= Step;
+        Work.Timer -= Step;
         return;
     }
 
-    if (Status == EPathStatus::Found || Status == EPathStatus::Finished)
-    {
-        // A failed route keeps the previous one, as FUN_0042d760 restores the saved work attribute.
-        std::optional<FPathRoute> Route = Patrol.Search.SelectFinishedRoute(*Obstacles, HalfExtent);
-        if (Route)
-        {
-            const std::optional<FPathRoute> Previous = std::move(Patrol.Route);
-            Patrol.Route = std::move(Route);
-            Patrol.Route->Current = 0;
-            Patrol.bOnSegment = NextSegment(Patrol);
-            if (!Patrol.bOnSegment)
-            {
-                Patrol.Route = Previous;
-            }
-        }
-    }
-
-    Patrol.bSearching = false;
-    Patrol.Timer += Patrol.ScanDelay;
+    Work.bOnSegment = bRouted;
+    Actor.RouteFlags = bRouted ? Actor.RouteFlags | RouteFollowing | RouteMovementAllowed : Actor.RouteFlags & ~RouteMovementAllowed;
+    Work.bSearching = false;
+    Work.Timer += Work.Interval;
 }
 }
 
-void StepActors(const std::span<FObjectBody> Bodies, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level)
+void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
+    const FLevel& Level, const FPlayerState* const Player)
 {
     const int32_t Step = int32_t(StepMilliseconds);
     std::optional<std::vector<FPathObstacle>> Obstacles;
@@ -2280,15 +2601,45 @@ void StepActors(const std::span<FObjectBody> Bodies, const uint32_t StepMillisec
         // EngineUpdateObjects (004406e0) clears the command and the segment pull before the behaviour updates.
         FActor& Actor = *Body.Actor;
         Actor.Command = {};
-        if (Actor.Patrol)
+        Actor.bTrigger = false;
+        if (Actor.Seeker)
+        {
+            UpdateSeeker(Combat, Body, *Actor.Seeker, Player, Obstacles, Terrain, Step);
+        }
+
+        // The movement behaviour pauses while the seeker follows its own route.
+        const bool bSeekerRoute = (Actor.RouteFlags & RouteFollowing) != 0 && (Actor.RouteFlags & RouteMovementAllowed) == 0;
+        if (Actor.Patrol && !bSeekerRoute)
         {
             UpdatePatrol(Body, *Actor.Patrol, Level, Obstacles, Terrain, Step);
         }
 
-        // A pushed actor drifts without thrust until it slows down (ObjectComputeDisplacement at 00438b20).
+        // ObjectComputeDisplacement (00438b20) adds the segment pull only for patrol and random movers.
+        if (Actor.Mode != BehaviourPatrol && Actor.Mode != BehaviourRandom)
+        {
+            Actor.Command.Correction = {};
+        }
+
+        // A pushed actor drifts without thrust until it slows down.
         if (Body.State.bPushed)
         {
             Actor.Command.Thrust = EPlayerThrust::None;
+        }
+
+        // ObjectUpdateWeapon (00444ca0) fires once the trigger is pulled.
+        if (Combat && Actor.bTrigger && Actor.Seeker && Actor.Seeker->Weapon)
+        {
+            FSeeker& Seeker = *Actor.Seeker;
+            const FShooter Shooter{
+                .Position = Body.State.Position,
+                .Velocity = Body.State.Velocity,
+                .Direction = Body.State.Direction,
+                .Altitude = int(Body.Altitude),
+                // ponytail: the muzzle range uses twice the bounding radius instead of the sprite bounds, as for turrets.
+                .SpriteSize = Body.Class.Radius * 2.f,
+                .ObjectIndex = Body.ObjectIndex,
+            };
+            FireWeapon(*Combat, Seeker.WeaponState, Shooter, &Seeker.Ammo);
         }
 
         StepPlayer(Body.State, Body.Class, Actor.Command, StepMilliseconds, Terrain, Level, Bodies, &Body);
@@ -2626,7 +2977,7 @@ std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive)
         std::vector<size_t> Visits(Bodies.size(), 0);
         for (uint32_t Time = 0; Time < DurationMilliseconds; Time += StepMilliseconds)
         {
-            StepActors(Bodies, StepMilliseconds, *Terrain, *Level);
+            StepActors(nullptr, Bodies, StepMilliseconds, *Terrain, *Level, nullptr);
             for (size_t Index = 0; Index < Bodies.size(); ++Index)
             {
                 const std::optional<FPatrol>& Patrol = Bodies[Index].Actor ? Bodies[Index].Actor->Patrol : std::nullopt;
@@ -2681,6 +3032,9 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     size_t Duels = 0;
     size_t DuelShots = 0;
     float DamageTaken = 0.f;
+    size_t CopDuels = 0;
+    size_t CopShots = 0;
+    std::set<std::string> CopNames;
     size_t Destroyed = 0;
     size_t Effects = 0;
     // A direct cardinal route locks, a diagonal route is rejected, and an overlapping target aborts; each attempt refills the scan timer.
@@ -2817,6 +3171,50 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             DamageTaken += EnergyBefore - (Inventory.Energy + Inventory.Shield);
         }
 
+        // A cop with a weapon must spot the player waiting in its line of fire inside Min-distance, route to it, turn and shoot.
+        Spot.reset();
+        const FObjectBody* Cop = nullptr;
+        for (const FObjectBody& Body : Bodies)
+        {
+            const FSeeker* const Seeker = Body.Actor && Body.Actor->Seeker && Body.Actor->Seeker->Weapon ? &*Body.Actor->Seeker : nullptr;
+            constexpr float InsideMinDistance = 0.75f;
+            const float Distance = Seeker ? float(Seeker->Work.Radius) * InsideMinDistance : 0.f;
+            for (int Direction = 0; Seeker && !Spot && Direction < DirectionCount; ++Direction)
+            {
+                constexpr float TenthsPerUnit = 10.f;
+                const FCollisionPoint Facing = FacingVector(Direction);
+                const FCollisionPoint Candidate{ .X = Body.State.Center.X + Facing.X * Distance * TenthsPerUnit, .Y = Body.State.Center.Y + Facing.Y * Distance * TenthsPerUnit };
+                const FCollisionPoint World = WorldFromCollision(Candidate);
+                FPathSearch Search;
+                Search.Start(Body.State.Center, Candidate);
+                const EPathStatus Status = Search.Advance(Obstacles, { .X = Body.Class.Radius, .Y = Body.Class.Radius }, Seeker->SensorRange);
+                if (World.X > 1.f && World.Y > 1.f && World.X < float(Level->WorldExtentX) && World.Y < float(Level->WorldExtentY) &&
+                    (Status == EPathStatus::Found || Status == EPathStatus::Finished))
+                {
+                    Spot = Candidate;
+                    Cop = &Body;
+                }
+            }
+        }
+
+        if (Spot)
+        {
+            Player.Center = *Spot;
+            Player.Position = Player.PreviousPosition = WorldFromCollision(*Spot);
+            Player.Velocity = {};
+            for (uint32_t Time = 0; Time < DuelMilliseconds; Time += StepMilliseconds)
+            {
+                Combat->Clock += StepMilliseconds;
+                const size_t Before = Combat->Projectiles.size();
+                StepActors(&*Combat, Bodies, StepMilliseconds, *Terrain, *Level, &Player);
+                CopShots += Combat->Projectiles.size() - Before;
+                StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex });
+            }
+
+            ++CopDuels;
+            CopNames.insert(Level->Objects[Cop->ObjectIndex].ClassName);
+        }
+
         ++Levels;
         Shots += LevelShots;
         Destroyed += BodyCount - Bodies.size();
@@ -2827,6 +3225,12 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         return std::unexpected(std::format("no turret fired in {} duels", Duels));
     }
 
-    return std::format("{} levels, {} player shots, {} turret shots while spinning, {} objects destroyed, at least {} effects; {} turret duels: {} shots, {:.0f} damage taken",
-        Levels, Shots, TurretShots, Destroyed, Effects, Duels, DuelShots, DamageTaken);
+    if (CopDuels == 0 || CopShots == 0)
+    {
+        return std::unexpected(std::format("no cop fired in {} duels", CopDuels));
+    }
+
+    return std::format("{} levels, {} player shots, {} turret shots while spinning, {} objects destroyed, at least {} effects; {} turret duels: {} shots, {:.0f} damage taken; "
+        "{} cop duels ({} classes): {} shots",
+        Levels, Shots, TurretShots, Destroyed, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots);
 }

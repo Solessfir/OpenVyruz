@@ -138,17 +138,13 @@ struct FTurret
     bool bTrigger = false;
 };
 
-// The TYPE Patrol attribute (kind 0xe) and the work attribute (kind 7) that PatrolMoveUpdate (0042e400) keeps beside it.
-struct FPatrol
+// A seeker's or mover's work attribute (kind 6 or 7): its scan timer, pending route search and the route segment it follows.
+struct FRouteWork
 {
-    // Index into FLevel::PatrolPaths; FUN_0042e910 takes the last path with the attribute's Path-ID.
-    std::optional<size_t> Path;
-    int Point = -1;
-    bool bReverse = false;
-    bool bClosed = false;
-    bool bStarted = false;
-    int32_t ScanDelay = 0;
-    FCollisionPoint Goal;
+    // Scan-delay: the timer refills by it when a plan starts and again when its search ends.
+    int32_t Interval = 0;
+    // SeekerRangeState radius: 64 for patrols, Min-distance for seekers.
+    uint32_t Radius = 0;
     int32_t Timer = 0;
     int32_t SearchTimer = 0;
     bool bSearching = false;
@@ -161,15 +157,55 @@ struct FPatrol
     FCollisionPoint SegmentDelta;
     float SegmentLengthSquared = 0.f;
     int SegmentDirection = 0;
-    // SeekerRangeState bits from the last engage: 1 near the segment end, 2 at the route end.
+    // SeekerRangeState bits from the last engage: 1 near the segment end, 2 close, 4 within firing distance of the target.
     uint32_t RangeState = 0;
+};
+
+// The TYPE Patrol attribute (kind 0xe) beside the work attribute that PatrolMoveUpdate (0042e400) drives.
+struct FPatrol
+{
+    // Index into FLevel::PatrolPaths; FUN_0042e910 takes the last path with the attribute's Path-ID.
+    std::optional<size_t> Path;
+    int Point = -1;
+    bool bReverse = false;
+    bool bClosed = false;
+    bool bStarted = false;
+    FCollisionPoint Goal;
+    FRouteWork Work;
+};
+
+// The TYPE Seeker or TYPE Tracker attribute that SeekerUpdate (0042c5a0) drives on a moving actor; the target is always the player.
+struct FSeeker
+{
+    // Trackers keep searching around detours; seekers give up on them.
+    bool bTracker = false;
+    int VisionDirections = 0;
+    float SensorRange = 0.f;
+    bool bHasTarget = false;
+    // The target's world position and cell when the route was planned; a moved target ends the route at the next scan.
+    FCollisionPoint TargetPosition;
+    int TargetCellX = 0;
+    int TargetCellY = 0;
+    FRouteWork Work;
+    std::optional<size_t> Weapon;
+    FWeaponState WeaponState;
+    FAmmoStock Ammo;
 };
 
 struct FActor
 {
     uint32_t Behaviour = 0;
+    // Class property Can-turn-on-place (class flag 0x20).
+    bool bTurnOnPlace = false;
+    // Object +0x13c: bit 1 follows a route, bit 2 lets the movement behaviour run beside the seeker.
+    uint32_t RouteFlags = 0;
+    // Object +0x194: the behaviour that ran last (1 seeker, 2 tracker, 0xc patrol); only patrol and random movers get the segment pull.
+    uint32_t Mode = 0;
+    std::optional<FSeeker> Seeker;
     std::optional<FPatrol> Patrol;
     FPlayerCommand Command;
+    // Object flag 2: pull the trigger in this step's weapon update.
+    bool bTrigger = false;
 };
 
 struct FExplosionBlock
@@ -363,8 +399,9 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
 void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
     const FLevel& Level, std::span<FObjectBody> Bodies = {}, const FObjectBody* Self = nullptr);
 // Moves pushed bodies for one step, in object order.
-// Patrolling actors plan and follow their routes, then move like the player with the resulting command.
-void StepActors(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
+// Actors look for the player, patrol, chase and shoot, then move like the player with the resulting command. Without combat they only patrol.
+void StepActors(FCombat* Combat, std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
+    const FPlayerState* Player);
 void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
 // Loads the player's weapons, arms the level's turrets and loads every FX class the level's ammo and explosions can spawn.
 std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive,
