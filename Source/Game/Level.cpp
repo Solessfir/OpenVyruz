@@ -704,6 +704,11 @@ std::expected<std::string, std::string> ResolveGafPath(const std::vector<std::st
 }
 }
 
+std::optional<float> ParseLevelFloat(const std::string_view Text)
+{
+    return ParseFloat(Text);
+}
+
 std::string_view FLevelPropertyBlock::Find(const std::string_view Field) const
 {
     const std::string LowerField = ToLower(Field);

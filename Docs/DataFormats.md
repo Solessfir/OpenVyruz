@@ -413,14 +413,20 @@ Binary. One file in the entire game: `CAVE\DEMO.3DR` (645,664 bytes), pairs with
 
 ```
 header: 4 bytes  (uint32 record count)
-records: repeating 20 bytes
-  uint32  timestamp_ms   (elapsed ms since recording start, ~60Hz tick)
-  uint32  input_flags    (input/action bitmask)
-  float32 pos_x
+records: repeating 20 bytes, one per game step
+  uint32  time_ms     (clock reading at the start of the step)
+  uint32  input       (RecordInput bits during the step)
+  float32 pos_x       (player position before the step)
   float32 pos_y
-  uint32  anim_frame     (sprite animation frame index, 0-23)
+  int32   direction   (player facing before the step, 0-23)
 ```
-32,283 records, 270.62s duration. `input_flags` bit meanings not decoded.
+32,283 records, 270.62 s. `DemoLoad` (`004292b0`) reads the file whole. The shipped exe can replay but not record: `RecordInput` (`004290e0`) only ORs bits into the last record and nothing appends records.
+
+Input bits: `0x02` fire, `0x04` forward, `0x08` backward, `0x10` turn left, `0x20` turn right, `0x40` strafe left, `0x80` strafe right. `0x10000` appears in the first records and is not used by player movement.
+
+Replay (`DemoReplayStep`, `004291d0`) consumes record `k` once game time reaches its time; until then the input is zero. `ReplayPlayerInput` (`00438800`) then sets the facing and, only when the recorded position differs, moves the player there before the step's movement.
+
+The recording was made with the 10 ms demo step cap: a frame of `E` ms produced `ceil(E / 10)` records with steps of 10 ms and a remainder, logged 0-2 ms apart. See [PlayerMovement.md](PlayerMovement.md) for how the replay check uses this.
 
 ## Other Formats
 

@@ -1,4 +1,5 @@
 #include "Game/Collision.h"
+#include "Game/Engine.h"
 #include "Game/Level.h"
 #include "Game/Loop.h"
 #include "Pg/File.h"
@@ -446,8 +447,12 @@ int main(const int ArgCount, char** const Args)
     {
         const bool bFrameLoop = VerifyFrameLoop();
         const std::expected<void, std::string> Collision = VerifyTerrainCollision();
-        std::printf("Frame loop: %s, terrain collision: %s\n", bFrameLoop ? "passed" : "failed", Collision ? "passed" : Collision.error().c_str());
-        return bFrameLoop && Collision ? 0 : 1;
+        const std::expected<void, std::string> Movement = VerifyPlayerMovement();
+        const std::expected<std::string, std::string> Demo = VerifyDemoReplay(Archive);
+        std::printf("Demo replay: %s\n", Demo ? Demo->c_str() : Demo.error().c_str());
+        std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
+            Collision ? "passed" : Collision.error().c_str(), Movement ? "passed" : Movement.error().c_str());
+        return bFrameLoop && Collision && Movement && Demo ? 0 : 1;
     }
 
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
@@ -473,7 +478,8 @@ int main(const int ArgCount, char** const Args)
     FRenderer Renderer;
     Renderer.Init(Window);
 
-    // Static level view until the game loop is ported: the MAP_ layers drawn bottom-up, scrolled with the arrow keys.
+    // Level view: MAP_ layers drawn bottom-up with the placed objects. The player drives with the original movement code; levels
+    // without a player fall back to scrolling with the arrow keys.
     const FSpriteSheet Blocks = Renderer.CreateSpriteSheet(Level->Blocks);
     std::expected<FObjectSprites, std::string> Objects = CreateObjectSprites(Archive, Renderer, *Level);
     if (!Objects)
@@ -488,9 +494,28 @@ int main(const int ArgCount, char** const Args)
     constexpr double ScrollSpeed = 600.0;
     const float MapWidth = float(Level->GridWidth * BlockWidth);
     const float MapHeight = float(Level->GridHeight * BlockHeight);
-    const auto Player = std::ranges::find_if(Level->Objects, [](const FLevelObject& Object) { return Object.ClassName == "Vyruz"; });
-    double CameraX = Player != Level->Objects.end() ? Player->X - ScreenWidth * 0.5 : 0.0;
-    double CameraY = Player != Level->Objects.end() ? Player->Y - ScreenHeight * 0.5 : 0.0;
+    const auto PlayerObject = std::ranges::find_if(Level->Objects, [](const FLevelObject& Object) { return Object.Behaviour == "Player"; });
+    std::optional<FMovementClass> PlayerClass;
+    std::optional<FPlayerState> Player;
+    std::optional<FTerrainCollision> Terrain;
+    if (PlayerObject != Level->Objects.end())
+    {
+        std::expected<FMovementClass, std::string> Class = ReadMovementClass(*PlayerObject);
+        std::expected<FTerrainCollision, std::string> Collision = BuildTerrainCollision(*Level);
+        if (Class && Collision)
+        {
+            PlayerClass = *Class;
+            Player = SpawnPlayer(*PlayerObject, *Class);
+            Terrain = std::move(*Collision);
+        }
+        else
+        {
+            std::fprintf(stderr, "Player is not controllable: %s\n", !Class ? Class.error().c_str() : Collision.error().c_str());
+        }
+    }
+
+    double CameraX = PlayerObject != Level->Objects.end() ? PlayerObject->X - ScreenWidth * 0.5 : 0.0;
+    double CameraY = PlayerObject != Level->Objects.end() ? PlayerObject->Y - ScreenHeight * 0.5 : 0.0;
     std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
     std::fflush(stdout);
 
@@ -506,9 +531,30 @@ int main(const int ArgCount, char** const Args)
         while (RemainingMilliseconds != 0)
         {
             const uint32_t StepMilliseconds = NextGameStep(RemainingMilliseconds, FramePeriod, false);
-            const double ScrollStep = StepMilliseconds * ScrollSpeed / MillisecondsPerSecond;
-            CameraX += (glfwGetKey(Window, GLFW_KEY_RIGHT) - glfwGetKey(Window, GLFW_KEY_LEFT)) * ScrollStep;
-            CameraY += (glfwGetKey(Window, GLFW_KEY_DOWN) - glfwGetKey(Window, GLFW_KEY_UP)) * ScrollStep;
+            const auto Pressed = [Window](const int Key) { return glfwGetKey(Window, Key) == GLFW_PRESS; };
+            if (Player)
+            {
+                const FPlayerCommand Command = PlayerCommandFromKeys(Pressed(GLFW_KEY_UP), Pressed(GLFW_KEY_DOWN), Pressed(GLFW_KEY_LEFT), Pressed(GLFW_KEY_RIGHT),
+                    Pressed(GLFW_KEY_A), Pressed(GLFW_KEY_D));
+                StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level);
+            }
+            else
+            {
+                const double ScrollStep = StepMilliseconds * ScrollSpeed / MillisecondsPerSecond;
+                CameraX += (Pressed(GLFW_KEY_RIGHT) - Pressed(GLFW_KEY_LEFT)) * ScrollStep;
+                CameraY += (Pressed(GLFW_KEY_DOWN) - Pressed(GLFW_KEY_UP)) * ScrollStep;
+            }
+        }
+
+        if (Player)
+        {
+            // ponytail: the body shows the nearest of the 24 direction poses; the in-between turning frames of the rot animation come later.
+            PlayerObject->X = Player->Position.X;
+            PlayerObject->Y = Player->Position.Y;
+            PlayerObject->Direction = (Player->Pose - 1) / (PlayerPoseCount / ObjectDirectionCount);
+            // ponytail: the camera simply centres on the player; the original follow and lead logic (FUN_00440650) is not ported yet.
+            CameraX = Player->Position.X - ScreenWidth * 0.5;
+            CameraY = Player->Position.Y - ScreenHeight * 0.5;
         }
 
         UpdateObjectSprites(*Objects, *Level);

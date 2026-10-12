@@ -60,20 +60,21 @@ The game needs the original `vz-data.rsc`, which is not included. It looks besid
 ./Binaries/linux/Development/Vyruz <path to vz-data.rsc>
 ```
 
-`--verify-gaf` decodes every `.gaf` in `vz-data.rsc`, including animation frames, hotspots, mirror flags and names, and exits non-zero on any failure. `--verify-levels` loads all 25 levels (`.3DX`, `.3DI`, `.3DO` with resolved `.3DC` class properties, `.3DG`), checks their object and shadow GAFs and animation indices, and decodes their animated map GAFs.
+`--verify-gaf` decodes every `.gaf` in `vz-data.rsc`, including animation frames, hotspots, mirror flags and names, and exits non-zero on any failure. `--verify-levels` loads all 25 levels (`.3DX`, `.3DI`, `.3DO` with resolved `.3DC` class properties, `.3DG`), checks their object and shadow GAFs and animation indices, and decodes their animated map GAFs. `--verify-game` runs the frame-loop, terrain-collision and player-movement self-checks and replays `CAVE\DEMO.3DR` through the ported player movement, failing if fewer than 80% of steps match the recording exactly or fewer than 90% within half a pixel.
 
-Without a verify flag the window shows a level's static map and placed objects, scrolled with the arrow keys and centered on the player start. Object bodies and grounded shadows use their initial animation pose, original hotspots, mirrored crops, altitude and depth ordering. `--level <zone>\<name>` picks the level (default `underground\t1u1`). This is a static preview: behaviour updates, animated map objects, weapon attachments and object occlusion by the baked map are not implemented yet.
+Without a verify flag the window shows a level's map and placed objects, and the player drives with the original movement and terrain collision: Up/Down thrust forward and backward, Left/Right turn, A/D strafe. The camera stays centred on the player. Object bodies and grounded shadows use their initial animation pose, original hotspots, mirrored crops, altitude and depth ordering. `--level <zone>\<name>` picks the level (default `underground\t1u1`); a level without a player scrolls with the arrow keys instead. Not implemented yet: object behaviours and object collisions, weapons, the original camera follow, animated map objects, the in-between turning frames, and object occlusion by the baked map.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
 | `Source\Pg\` | Reimplementation of the original `pg\lib\` engine library (archive, GAF, LZSS) |
-| `Source\Game\` | Reimplementation of the original `vzed\` game code (level loader) |
+| `Source\Game\` | Reimplementation of the original `vzed\` game code (level loader, frame clock, terrain collision, player movement) |
 | `Source\Render\` | Vulkan renderer replacing the original Direct3D 6 path |
 | `Source\Shaders\` | Slang shaders |
 | `Docs\DataFormats.md` | Reverse-engineered data formats |
 | `Docs\MainLoop.md` | Startup, level loading and frame loop of the original exe |
+| `Docs\PlayerMovement.md` | Player input, turning, displacement and bounce, and the demo replay check |
 | `External\` | Third-party submodules (GLFW) |
 
 ## Original Module Map

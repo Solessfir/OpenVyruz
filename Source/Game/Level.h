@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -104,3 +105,6 @@ struct FLevel
 // Loads <Zone>\<Name>.3DX/.3DI/.3DO/.3DG plus the COMMON and zone .3DC class libraries, e.g. "UNDERGROUND\T1U1".
 // Mirrors VzLoadLevel (0041f7c0) -> LevelLoadFiles (00429710) and LevelLoad3dg (0041eae0).
 std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, std::string_view LevelPath);
+
+// Parses one numeric property value the way the class loader stores it (a finite float).
+std::optional<float> ParseLevelFloat(std::string_view Text);

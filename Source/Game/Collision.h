@@ -16,10 +16,13 @@ struct FCollisionPoint
     float Y = 0.f;
 };
 
+// AnimInitializeBounds at 0041a5d0 gives objects this radius unless the class sets Bounding-Box-Size.
+inline constexpr float DefaultCollisionRadius = 20.f;
+
 struct FCollisionCircle
 {
     FCollisionPoint Center;
-    float Radius = 0.f;
+    float Radius = DefaultCollisionRadius;
 };
 
 struct FStaticCollisionShape
