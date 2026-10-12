@@ -33,6 +33,8 @@ constexpr int FacingAwayDistance = 7;
 constexpr int PosesPerDirection = PlayerPoseCount / DirectionCount;
 // PatrolMoveUpdate gives its work attribute a 64-unit arrival radius.
 constexpr uint32_t PatrolArrivalRadius = 64;
+constexpr uint32_t SpiderArrivalRadius = 4;
+constexpr uint32_t WalkerArrivalRadius = 5;
 
 // Game speeds are tuned for 14 ms steps; EngineRunLevel at 0043e5f0 stores 14 / step as a float.
 constexpr double ReferenceStepMilliseconds = 14.;
@@ -310,8 +312,9 @@ FCollisionPoint Displacement(FPlayerState& Player, const FMovementClass& Class, 
     if (bPush && PreviousMagnitude < PushLimit && Player.Speed != 0.f)
     {
         const FCollisionPoint Facing = FacingVector(Player.Direction);
-        X = float(double(Player.Speed) * double(Facing.X) / double(Class.Weight) + X);
-        Y = float(double(Player.Speed) * double(Facing.Y) / double(Class.Weight) + Y);
+        const double Weight = Class.bThrustIgnoresWeight ? 1. : double(Class.Weight);
+        X = float(double(Player.Speed) * double(Facing.X) / Weight + X);
+        Y = float(double(Player.Speed) * double(Facing.Y) / Weight + Y);
     }
 
     if (Strafe != 0.f)
@@ -814,7 +817,7 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
 
     if (!Contact)
     {
-        Player.Velocity = { .X = float(double(TimeScale) * Delta.X), .Y = float(double(TimeScale) * Delta.Y) };
+        Player.Velocity = Class.bDropsVelocity ? FCollisionPoint{} : FCollisionPoint{ .X = float(double(TimeScale) * Delta.X), .Y = float(double(TimeScale) * Delta.Y) };
         Player.Center = Candidate;
         return;
     }
@@ -840,9 +843,11 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
         // behaviours move or open them; pickups are collected instead of blocking.
         constexpr std::array<std::string_view, 6> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller" };
         // ponytail: cops and jeeps move so far; tanks need their turret top, walkers and spiders their stepping gait, helis their pose selection.
-        constexpr std::array<std::string_view, 3> ActorKinds = { "cop", "jeep", "tank" };
+        constexpr std::array<std::string_view, 5> ActorKinds = { "cop", "jeep", "tank", "walker", "spider" };
         constexpr std::string_view CopKind = "cop";
         constexpr std::string_view TankKind = "tank";
+        constexpr std::string_view WalkerKind = "walker";
+        constexpr std::string_view SpiderKind = "spider";
         const bool bActor = std::ranges::contains(ActorKinds, Object.SubType);
         if (Object.BoundingBoxSize <= 0 || (!bActor && !std::ranges::contains(SolidKinds, Object.SubType)) || IsPickup(Object))
         {
@@ -904,6 +909,9 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
             }
 
             Body.Class = *Movement;
+            const bool bLegged = Object.SubType == WalkerKind || Object.SubType == SpiderKind;
+            Body.Class.bThrustIgnoresWeight = bLegged;
+            Body.Class.bDropsVelocity = bLegged || Object.SubType == TankKind;
             Body.State.Speed = Movement->ThrustInitial;
             Body.State.Direction = Object.Direction < DirectionCount ? Object.Direction : 0;
             const int ActorPoses = Object.SubType == CopKind ? PosesPerDirection : 1;
@@ -914,7 +922,8 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
                 .bTurnOnPlace = Number(&Properties, "Can-turn-on-place") != 0.f,
                 .PosesPerDirection = ActorPoses,
                 .bTwoPieces = Number(&Properties, "Two-pieces") != 0.f,
-                .CorrectionScale = Object.SubType == TankKind ? TankCorrectionScale : 1.f,
+                .CorrectionScale = Object.SubType == TankKind || bLegged ? TankCorrectionScale : 1.f,
+                .bSpider = Object.SubType == SpiderKind,
                 .TopPose = Body.State.Pose,
                 .TopTargetPose = Body.State.Pose,
                 .TopTurnTimeout = int32_t(Number(&Properties, "Turret-turn-timeout")),
@@ -927,7 +936,9 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
                     .Path = Path.base() == Level.PatrolPaths.begin() ? std::nullopt : std::optional(size_t(Path.base() - Level.PatrolPaths.begin()) - 1),
                     .bReverse = Number(Patrol, "Reverse") != 0.f,
                     .bClosed = Number(Patrol, "Closed") != 0.f,
-                    .Work = { .Interval = int32_t(Number(Patrol, "Scan-delay")), .Radius = PatrolArrivalRadius },
+                    .Work = { .Interval = int32_t(Number(Patrol, "Scan-delay")), .Radius = Object.SubType == SpiderKind ? SpiderArrivalRadius
+                                                                                           : Object.SubType == WalkerKind ? WalkerArrivalRadius
+                                                                                                                          : PatrolArrivalRadius },
                 };
             }
 
@@ -2225,10 +2236,13 @@ void TurnActorBody(FPlayerState& State, const FMovementClass& Class, FActor& Act
     const int PosesPerStep = Actor.PosesPerDirection;
     const int PoseCount = DirectionCount * PosesPerStep;
     State.TurnTimer = std::max(0, State.TurnTimer + Class.TurnTimeout);
-    State.TargetPose = Direction * PosesPerStep + 1;
+    // A spider stops at the nearest of the four axis directions.
+    constexpr int SpiderStep = DirectionCount / 4;
+    const int Target = Actor.bSpider ? (Direction + SpiderStep / 2) / SpiderStep * SpiderStep % DirectionCount : Direction;
+    State.TargetPose = Target * PosesPerStep + 1;
     const int Previous = State.Pose;
     State.Pose = AdvancePose(State.Pose, State.TargetPose, PoseCount);
-    State.Direction = (State.Pose - 1) / PosesPerStep;
+    State.Direction = Actor.bSpider ? (State.Pose - 1) / SpiderStep * SpiderStep : (State.Pose - 1) / PosesPerStep;
     if (Actor.bTwoPieces && State.Pose != Previous)
     {
         const auto Rotate = [PoseCount, Delta = State.Pose - Previous](const int Pose)
@@ -2321,7 +2335,8 @@ void Engage(FCombat* const Combat, FObjectBody& Body, FRouteWork& Work, FSeeker*
         const bool bDrive = (Work.RangeState & RangeNearEnd) == 0 || NextSegment(Work);
         TurnActorBody(Body.State, Body.Class, Actor, Work.RangeState, Work.SegmentDirection, Step);
         Actor.Command.Correction = SegmentCorrection(Body, Work);
-        if (bDrive)
+        constexpr int SpiderStep = DirectionCount / 4;
+        if (bDrive && (!Actor.bSpider || (Body.State.Pose - 1) % SpiderStep == 0))
         {
             Actor.Command.Thrust = EPlayerThrust::Forward;
         }
@@ -2516,6 +2531,14 @@ void UpdateSeeker(FCombat* const Combat, FObjectBody& Body, FSeeker& Seeker, con
     {
         Work.Timer -= Step;
         return;
+    }
+
+    // FUN_0042ca30: a spider takes only a single straight leg along one of the four axis directions.
+    constexpr int SpiderStep = DirectionCount / 4;
+    if (bRouted && Actor.bSpider && (Work.Route->Points.size() != 2 || Work.SegmentDirection % SpiderStep != 0))
+    {
+        bRouted = false;
+        Work.bOnSegment = false;
     }
 
     if (bRouted)
@@ -2752,6 +2775,12 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
         {
             FRandomMove& Move = *Actor.RandomMove;
             UpdateMover(Body, Move.Work, BehaviourRandom, Move.Range, [&] { return StartRandomLeg(Move, Body, Terrain, Combat->Random); }, Obstacles, Terrain, Step);
+        }
+
+        // SeekerUpdate leaves a spider without thrust; only its patrol moves it.
+        if (Actor.bSpider && (Actor.Mode == ModeSeeker || Actor.Mode == ModeTracker))
+        {
+            Actor.Command.Thrust = EPlayerThrust::None;
         }
 
         // ObjectComputeDisplacement (00438b20) adds the segment pull only for patrol and random movers.

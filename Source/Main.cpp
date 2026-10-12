@@ -37,6 +37,13 @@ constexpr uint32_t AdditiveDrawMode = 6;
 constexpr uint32_t InverseSourceDrawMode = 8;
 constexpr int FourWayDirectionCount = 4;
 constexpr std::string_view TankKind = "tank";
+
+// ObjectDraw at 00431ae0 draws a walker's body (kind 0x19) 32 pixels above its other sprites.
+float BodyLift(const FLevelObject& Object, const bool bShadow)
+{
+    constexpr float WalkerLift = 32.f;
+    return !bShadow && Object.SubType == "walker" ? WalkerLift : 0.f;
+}
 constexpr uint32_t FirstOccludingMapLayer = 2;
 
 // ObjectDraw at 00431d60 truncates world + 0.5 before applying scroll and altitude.
@@ -416,7 +423,7 @@ std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive&
                 .bShadow = bShadow,
                 .Frame = Animation.Frames.front(),
                 .X = float(SpriteCoordinate(Object.X)),
-                .Y = float(GroundY) - (bShadow ? 0.f : Object.Altitude),
+                .Y = float(GroundY) - (bShadow ? 0.f : Object.Altitude) - BodyLift(Object, bShadow),
                 .Depth = SpriteDepth(GroundY, bShadow, Object.bInGround, Object.bZShadow),
                 .Blend = DrawMode == AdditiveDrawMode ? ESpriteBlend::Additive : DrawMode == InverseSourceDrawMode ? ESpriteBlend::InverseSourceColor : ESpriteBlend::Opaque,
             });
@@ -455,7 +462,7 @@ void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level)
         Sprite.Blend = DrawMode == AdditiveDrawMode ? ESpriteBlend::Additive : DrawMode == InverseSourceDrawMode ? ESpriteBlend::InverseSourceColor : ESpriteBlend::Opaque;
         const int64_t GroundY = SpriteCoordinate(Object.Y);
         Sprite.X = float(SpriteCoordinate(Object.X));
-        Sprite.Y = float(GroundY) - (Sprite.bShadow ? 0.f : Object.Altitude);
+        Sprite.Y = float(GroundY) - (Sprite.bShadow ? 0.f : Object.Altitude) - BodyLift(Object, Sprite.bShadow);
         Sprite.Depth = SpriteDepth(GroundY, Sprite.bShadow, Object.bInGround, Object.bZShadow);
     }
 

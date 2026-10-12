@@ -70,6 +70,10 @@ struct FMovementClass
     FCollisionPoint FrictionThreshold;
     int TurnTimeout = 0;
     bool bUseInertia = false;
+    // Walkers and spiders (kinds 0x19 and 0x1f): thrust is not divided by Weight (ObjectComputeDisplacement at 00438b20).
+    bool bThrustIgnoresWeight = false;
+    // Walkers, spiders and tanks keep no velocity after a free move (EngineUpdateObjects at 004406e0).
+    bool bDropsVelocity = false;
     float Radius = DefaultCollisionRadius;
 };
 
@@ -216,8 +220,11 @@ struct FActor
     int PosesPerDirection = 2;
     // Two-pieces (class flag 0x20 at +0x20, bit 2): a turret top that aims on its own while the body holds still in firing range.
     bool bTwoPieces = false;
-    // Tanks scale the segment pull by 0.01 (DAT_005095b8) in ObjectComputeDisplacement.
+    // Tanks, walkers and spiders scale the segment pull by 0.01 (DAT_005095b8) in ObjectComputeDisplacement.
     float CorrectionScale = 1.f;
+    // Spiders (kind 0x1f) stop only at every sixth pose, drive only when stopped there, take only straight axis routes to a target and never
+    // thrust for their seeker.
+    bool bSpider = false;
     int TopPose = 1;
     int TopTargetPose = 1;
     int32_t TopTurnTimer = 0;
