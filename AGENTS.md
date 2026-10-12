@@ -8,7 +8,7 @@ Applies to the whole repository. The current user request takes precedence over 
 
 OpenVyruz is a functional (non-matching) reimplementation of `Vyruz.exe` 1.31.01. The goal is a native Windows 11 and Linux (Wayland first) game that loads the original `vz-data.rsc` and can be completed 100%. Version 1 covers the single-player campaign plus the intro and cutscenes; multiplayer is out of scope.
 
-- Gameplay must match the original: same fixed tick rate, RNG, integer and fixed-point math, and evaluation order. Only the platform layer (window, input, audio, file I/O, rendering) is redesigned.
+- Gameplay must match the original: same frame stepping (a variable millisecond step capped at the display period, 10 ms for demos; see [Docs/MainLoop.md](Docs/MainLoop.md)), RNG, integer and floating-point math, and evaluation order. Only the platform layer (window, input, audio, file I/O, rendering) is redesigned.
 - The original rendered with hardware Direct3D 6 at 640x480x16. The port uses a full Vulkan 1.3 renderer (dynamic rendering, synchronization2) that reproduces the original render states, drawn in the original 640x480 coordinate space and letterboxed.
 - No original game files, extracted assets, or decompiler output dumps are ever committed. The data lives in the separate original-data repository (`the original-data repository`, `Game\Vyruz\`).
 
@@ -69,6 +69,6 @@ Comments explain why: original-game quirks, format constraints, engine behavior,
 
 ## Current state
 
-Implemented: Premake + GLFW + Vulkan window with letterboxed 640x480 space; `.rsc` archive reader (`Source/Pg/ResourceArchive`); GAF/LZSS sprite loader (`Source/Pg/Gaf`, all 178 GAFs decode); sprite-sheet packing and a textured-quad sprite pipeline (`Source/Render/Renderer`); level loader for `.3DX/.3DI/.3DO/.3DC/.3DG` (`Source/Game/Level`, all 25 levels pass `--verify-levels`); a static scrollable level view in `Main.cpp`. The original startup and frame loop are documented in [Docs/MainLoop.md](Docs/MainLoop.md).
+Implemented: Premake + GLFW + Vulkan window with letterboxed 640x480 space; `.rsc` archive reader (`Source/Pg/ResourceArchive`); GAF/LZSS sprite loader (`Source/Pg/Gaf`, all 178 GAFs decode); sprite-sheet packing and a textured-quad sprite pipeline (`Source/Render/Renderer`); level loader for `.3DX/.3DI/.3DO/.3DC/.3DG` with resolved class properties (`Source/Game/Level`, all 25 levels pass `--verify-levels`); placed objects drawn in their initial pose with hotspots, shadows, blend modes and the original depth order; the frame clock and variable millisecond step (`Source/Game/Loop`); static terrain collision built for every level and its movement query (`Source/Game/Collision`, checked by `--verify-game`). The view in `Main.cpp` is still a static scrollable preview. The original startup and frame loop are documented in [Docs/MainLoop.md](Docs/MainLoop.md).
 
-Next: spawn the `.3DO` objects with their `.3DC` classes (property merge order per DataFormats) and draw their GAFs, then port the frame loop's variable millisecond step and the game update (`FUN_004406e0`).
+Next: port the game update (`FUN_004406e0`) starting with player input and movement against the terrain collision, then object behaviours.

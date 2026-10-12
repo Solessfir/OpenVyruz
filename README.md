@@ -50,7 +50,7 @@ From Windows, `wsl -d archlinux -- bash Scripts/WslCheck.sh [gcc|clang]` builds 
 
 ## Running
 
-The game needs the original `vz-data.rsc`, which is not included. Pass the directory containing it as the argument; the default is `../Vyruz/Game/Vyruz`, the original-data repository checked out next to this one.
+The game needs the original `vz-data.rsc`, which is not included. It looks beside the executable by default. Pass an archive file or the directory containing it to use another location.
 
 ```powershell
 .\Binaries\windows\Development\Vyruz.exe <path to vz-data.rsc>

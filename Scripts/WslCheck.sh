@@ -19,3 +19,4 @@ make --jobs="$(nproc)" config=development Vyruz
 binary="${build_root}/Binaries/linux/Development/Vyruz"
 "${binary}" --verify-gaf "${data_root}" | tail -n 1
 "${binary}" --verify-levels "${data_root}" | tail -n 1
+"${binary}" --verify-game "${data_root}" | tail -n 1
