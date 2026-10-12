@@ -877,6 +877,11 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
         });
     }
 
+    for (auto& [ClassName, Class] : Classes)
+    {
+        Level.Classes.emplace(ClassName, std::move(Class.Resolved));
+    }
+
     if (ParseInt(Objects->Find("OBJECT-COUNT")) != int(Level.Objects.size()))
     {
         return std::unexpected(std::format("{}.3do: OBJECT-COUNT does not match {} objects", Base, Level.Objects.size()));

@@ -450,9 +450,11 @@ int main(const int ArgCount, char** const Args)
         const std::expected<void, std::string> Movement = VerifyPlayerMovement();
         const std::expected<std::string, std::string> Demo = VerifyDemoReplay(Archive);
         std::printf("Demo replay: %s\n", Demo ? Demo->c_str() : Demo.error().c_str());
+        const std::expected<std::string, std::string> Combat = VerifyCombat(Archive);
+        std::printf("Combat: %s\n", Combat ? Combat->c_str() : Combat.error().c_str());
         std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
             Collision ? "passed" : Collision.error().c_str(), Movement ? "passed" : Movement.error().c_str());
-        return bFrameLoop && Collision && Movement && Demo ? 0 : 1;
+        return bFrameLoop && Collision && Movement && Demo && Combat ? 0 : 1;
     }
 
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
@@ -498,6 +500,9 @@ int main(const int ArgCount, char** const Args)
     std::optional<FMovementClass> PlayerClass;
     std::optional<FPlayerState> Player;
     std::optional<FTerrainCollision> Terrain;
+    std::optional<FCombat> Combat;
+    // The smaller side of the player's current frame, which AnimUpdateBounds makes the body's bounds.
+    float PlayerSpriteSize = 0.f;
     std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
     std::vector<FPickup> Pickups = CreatePickups(*Level);
     FPlayerInventory Inventory = PlayerObject != Level->Objects.end() ? CreateInventory(*PlayerObject) : FPlayerInventory{};
@@ -510,6 +515,14 @@ int main(const int ArgCount, char** const Args)
             PlayerClass = *Class;
             Player = SpawnPlayer(*PlayerObject, *Class);
             Terrain = std::move(*Collision);
+            if (std::expected<FCombat, std::string> Weapons = CreateCombat(*Level, *PlayerObject))
+            {
+                Combat = std::move(*Weapons);
+            }
+            else
+            {
+                std::fprintf(stderr, "Player cannot fire: %s\n", Weapons.error().c_str());
+            }
         }
         else
         {
@@ -541,6 +554,18 @@ int main(const int ArgCount, char** const Args)
                     Pressed(GLFW_KEY_A), Pressed(GLFW_KEY_D));
                 StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies);
                 StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
+                if (Combat)
+                {
+                    const float MoneyBefore = Inventory.Money;
+                    Combat->Clock += StepMilliseconds;
+                    StepPlayerWeapon(*Combat, Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL), *Player, *PlayerObject, PlayerSpriteSize, Inventory);
+                    StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Inventory);
+                    if (Inventory.Money != MoneyBefore)
+                    {
+                        std::printf("Money %.0f\n", Inventory.Money);
+                        std::fflush(stdout);
+                    }
+                }
                 if (CollectPickups(*Player, *PlayerClass, Inventory, Pickups, *Level) != 0)
                 {
                     std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
@@ -587,6 +612,12 @@ int main(const int ArgCount, char** const Args)
                     Animations[RotAnimation].Frames.size() == size_t(PlayerPoseCount))
                 {
                     Sprite.Frame = Animations[RotAnimation].Frames[size_t(Player->Pose - 1)];
+                    const std::vector<FSpriteFrame>& Frames = Objects->Sheets[Sprite.SheetIndex].Frames;
+                    if (Sprite.Frame.BitmapIndex != 0 && Sprite.Frame.BitmapIndex <= Frames.size())
+                    {
+                        const FSpriteFrame& Bitmap = Frames[Sprite.Frame.BitmapIndex - 1];
+                        PlayerSpriteSize = float(std::min(Bitmap.Width, Bitmap.Height));
+                    }
                 }
             }
         }

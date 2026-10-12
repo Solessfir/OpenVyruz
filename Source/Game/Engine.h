@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Game/Collision.h"
+#include "Pg/Random.h"
 
 #include <cstdint>
 #include <expected>
@@ -86,12 +87,25 @@ struct FPlayerState
     bool bPushed = false;
 };
 
+struct FAbsorption
+{
+    std::string AmmoClass;
+    float Coeff = 1.f;
+};
+
 // A placed object that takes part in collisions (Bounding-Box-Size above zero), with its own inertia once pushed.
 struct FObjectBody
 {
     size_t ObjectIndex = 0;
     FMovementClass Class;
     FPlayerState State;
+    // Damage state as ApplyDamage (0043ca30) changes it.
+    float Energy = 0.f;
+    float Shield = 0.f;
+    float Reward = 0.f;
+    bool bIndestructible = false;
+    bool bDamaged = false;
+    std::vector<FAbsorption> Absorptions;
 };
 
 inline constexpr int PlayerPoseCount = 48;
@@ -126,6 +140,63 @@ struct FPlayerInventory
     std::vector<FAmmoStock> Ammo;
 };
 
+// The TYPE Weapon block of a weapon class (weapon.3dc), as the class loader stores it.
+struct FWeaponClass
+{
+    std::string Name;
+    std::string Ammo;
+    uint32_t Delay = 0;
+    float WeaponsGap = 0.f;
+    bool bLeftSide = false;
+    bool bRightSide = false;
+    bool bAlternated = false;
+    int StartDistance = 0;
+    int FireAltitude = 0;
+    // Radians; LoadObjectClassLibrary converts the degrees in the file.
+    float InitialSlope = 0.f;
+    float SlopeStep = 0.f;
+};
+
+// An ammo class: its movement and the TYPE Ammo block.
+struct FAmmoClass
+{
+    std::string Name;
+    FMovementClass Movement;
+    float Damage = 0.f;
+    float DamageZone = 0.f;
+    uint32_t DamageAfter = 0;
+};
+
+// A fired ammo object (kind Ammo); bullets with a slope sink as they fly until they reach the ground.
+struct FProjectile
+{
+    size_t AmmoIndex = 0;
+    FPlayerState State;
+    int Altitude = 0;
+    float AltitudeAccumulator = 0.f;
+    float Slope = 0.f;
+    bool bSloped = false;
+    uint32_t DamageTimer = 0;
+};
+
+// The player's weapons (ADD Weapon blocks), the shots in flight and the game clock and random generator they use.
+struct FCombat
+{
+    std::vector<FWeaponClass> Weapons;
+    std::vector<FAmmoClass> AmmoClasses;
+    size_t CurrentWeapon = 0;
+    std::vector<FProjectile> Projectiles;
+    FRandom Random;
+    // The game clock in milliseconds; never zero, since a zero last-shot time means no shot yet.
+    uint32_t Clock = 1;
+    uint32_t LastFireTime = 0;
+    // Weapon flag 2 and slope (WeaponRaiseSlope at 0042c210).
+    bool bTriggerHeld = false;
+    float Slope = 0.f;
+    // Weapon flag 1, flipped on every shot of an Alternated-fire weapon.
+    bool bAlternateSide = false;
+};
+
 // Live keyboard semantics of ReadPlayerInput (00438540): turning and strafing combine.
 FPlayerCommand PlayerCommandFromKeys(bool bForward, bool bBackward, bool bTurnLeft, bool bTurnRight, bool bStrafeLeft, bool bStrafeRight);
 // Demo semantics of ReplayPlayerInput (00438800): strafing cancels turning.
@@ -144,6 +215,15 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
     const FLevel& Level, std::span<FObjectBody> Bodies = {}, const FObjectBody* Self = nullptr);
 // Moves pushed bodies for one step, in object order.
 void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
+std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player);
+// One step of the player's weapon: the slope ramp, then a shot when the trigger is held and the weapon's delay has passed (WeaponFire at 00443bd0).
+// SpriteSize is the smaller side of the player's current frame, which picks the random muzzle distance.
+void StepPlayerWeapon(FCombat& Combat, bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, float SpriteSize, FPlayerInventory& Inventory);
+// Moves every shot, detonating it against terrain, bodies or the ground; destroyed bodies are removed and their Reward goes to the player.
+void StepProjectiles(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
+    FPlayerInventory& Inventory);
 std::expected<void, std::string> VerifyPlayerMovement();
+// Loads every level's weapons and fires them for a few seconds of game time.
+std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive);
 // Replays the CAVE\DEMO.3DR inputs through StepPlayer and compares every step with the recorded position.
 std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archive);

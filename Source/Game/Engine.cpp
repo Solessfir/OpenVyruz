@@ -69,7 +69,7 @@ constexpr int Wrap(const int Direction)
     return ((Direction % DirectionCount) + DirectionCount) % DirectionCount;
 }
 
-FCollisionPoint FacingVector(const int Direction, const int Offset = 0)
+constexpr FCollisionPoint FacingVector(const int Direction, const int Offset = 0)
 {
     return DirectionVector(Wrap(Direction + Offset + DirectionVectorOffset));
 }
@@ -117,12 +117,29 @@ constexpr int DirectionDistance(int A, int B)
 static_assert(DirectionDistance(1, 23) == 2 && DirectionDistance(3, 15) == 12 && DirectionDistance(5, NoDirection) == 0);
 
 // The x87 code keeps intermediates in double precision and rounds only on stores to float fields.
-FCollisionPoint WorldFromCollision(const FCollisionPoint Collision)
+constexpr FCollisionPoint WorldFromCollision(const FCollisionPoint Collision)
 {
     return {
         .X = float((double(Collision.X) - double(Collision.Y)) * double(0.8944272f)),
         .Y = float((double(Collision.X) + double(Collision.Y)) * double(0.4472136f)),
     };
+}
+
+// Exact bits of the world-space table at 0050d440 that WeaponFire (00443bd0) offsets the muzzle with: x, y per direction. It is the world
+// image of each facing vector, but rounded differently from what WorldFromCollision produces.
+constexpr std::array<uint32_t, ObjectDirectionCount * 2> WorldFacingBits = {
+    0xBDB72DBC, 0x3D372DC9, 0xBD8186E9, 0x3D6058EB, 0xBD061898, 0x3D7A3A08, 0x00000000, 0x3D8186E9,
+    0x3D061898, 0x3D7A3A08, 0x3D8186E9, 0x3D6058EB, 0x3DB72DBC, 0x3D372DC9, 0x3DE05921, 0x3D0186E9,
+    0x3DFA3A08, 0x3C8618B3, 0x3E0186DB, 0x00000000, 0x3DFA3A08, 0xBC8618B3, 0x3DE05921, 0xBD0186E9,
+    0x3DB72DBC, 0xBD372DC9, 0x3D8186E9, 0xBD6058EB, 0x3D061898, 0xBD7A3A08, 0x00000000, 0xBD8186E9,
+    0xBD061898, 0xBD7A3A08, 0xBD8186E9, 0xBD6058EB, 0xBDB72DBC, 0xBD372DC9, 0xBDE05921, 0xBD0186E9,
+    0xBDFA3A08, 0xBC8618B3, 0xBE0186DB, 0x00000000, 0xBDFA3A08, 0x3C8618B3, 0xBDE05921, 0x3D0186E9,
+};
+
+constexpr FCollisionPoint WorldFacingVector(const int Direction)
+{
+    const size_t Index = size_t(Wrap(Direction)) * 2;
+    return { .X = std::bit_cast<float>(WorldFacingBits[Index]), .Y = std::bit_cast<float>(WorldFacingBits[Index + 1]) };
 }
 
 // AnimUpdateBounds at 0041b4b0 recomputes the collision centre from the world position.
@@ -519,6 +536,13 @@ const FLevelPropertyBlock* FindBlock(const FLevelPropertyBlock& Block, const std
     return nullptr;
 }
 
+std::string ToLowerName(const std::string_view Text)
+{
+    std::string Lower(Text);
+    std::ranges::transform(Lower, Lower.begin(), [](const char Character) { return char(std::tolower(uint8_t(Character))); });
+    return Lower;
+}
+
 std::optional<FCollisionPoint> ParsePair(const std::string_view Text)
 {
     const size_t Comma = Text.find(',');
@@ -561,13 +585,14 @@ FPlayerCommand PlayerCommandFromInput(const uint32_t InputBits)
     return Command;
 }
 
-std::expected<FMovementClass, std::string> ReadMovementClass(const FLevelObject& Object)
+namespace
 {
-    const FLevelPropertyBlock& Properties = Object.Properties;
+std::expected<FMovementClass, std::string> ReadMovementProperties(const FLevelPropertyBlock& Properties, const std::string_view ClassName, const int BoundingBoxSize)
+{
     const auto Number = [&](const FLevelPropertyBlock& Block, const std::string_view Field) -> std::expected<float, std::string>
     {
         const std::optional<float> Value = ParseLevelFloat(Block.Find(Field));
-        return Value ? std::expected<float, std::string>(*Value) : std::unexpected(std::format("{}: missing or invalid {}", Object.ClassName, Field));
+        return Value ? std::expected<float, std::string>(*Value) : std::unexpected(std::format("{}: missing or invalid {}", ClassName, Field));
     };
 
     const FLevelPropertyBlock* const Thrust = FindBlock(Properties, "Thrust");
@@ -576,7 +601,7 @@ std::expected<FMovementClass, std::string> ReadMovementClass(const FLevelObject&
     const std::optional<FCollisionPoint> Threshold = ParsePair(Properties.Find("Friction-threshold"));
     if (!Thrust || !Weight || !Friction || !Threshold)
     {
-        return std::unexpected(std::format("{}: missing Thrust, Weight or friction properties", Object.ClassName));
+        return std::unexpected(std::format("{}: missing Thrust, Weight or friction properties", ClassName));
     }
 
     FMovementClass Class;
@@ -610,15 +635,21 @@ std::expected<FMovementClass, std::string> ReadMovementClass(const FLevelObject&
 
     if (Class.Weight == 0.f)
     {
-        return std::unexpected(std::format("{}: zero Weight", Object.ClassName));
+        return std::unexpected(std::format("{}: zero Weight", ClassName));
     }
 
     Class.Friction = *Friction;
     Class.FrictionThreshold = *Threshold;
     Class.TurnTimeout = int(*TurnTimeout);
     Class.bUseInertia = *UseInertia != 0.f;
-    Class.Radius = Object.BoundingBoxSize != 0 ? float(Object.BoundingBoxSize) : DefaultCollisionRadius;
+    Class.Radius = BoundingBoxSize != 0 ? float(BoundingBoxSize) : DefaultCollisionRadius;
     return Class;
+}
+}
+
+std::expected<FMovementClass, std::string> ReadMovementClass(const FLevelObject& Object)
+{
+    return ReadMovementProperties(Object.Properties, Object.ClassName, Object.BoundingBoxSize);
 }
 
 FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class)
@@ -751,7 +782,25 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
             .bUseInertia = Number(&Properties, "Use-inertia") != 0.f,
             .Radius = float(Object.BoundingBoxSize),
         };
-        FObjectBody Body{ .ObjectIndex = Index, .Class = Class };
+        FObjectBody Body{
+            .ObjectIndex = Index,
+            .Class = Class,
+            .Energy = Number(FindBlock(Properties, "Energy"), "Initial"),
+            .Shield = Number(FindBlock(Properties, "Shield"), "Initial"),
+            .Reward = Number(&Properties, "Reward"),
+            .bIndestructible = Number(&Properties, "Indestructible") != 0.f,
+        };
+        for (const FLevelPropertyBlock& Child : Properties.Children)
+        {
+            if (Child.Kind == "TYPE" && Child.Name == "Absorption")
+            {
+                Body.Absorptions.push_back({ .AmmoClass = ToLowerName(Child.Find("Class-name")), .Coeff = Number(&Child, "Coeff") });
+            }
+        }
+
+        // .3DO instances can override the starting Energy and Shield with plain fields.
+        Body.Energy = ParseLevelFloat(Properties.Find("Energy")).value_or(Body.Energy);
+        Body.Shield = ParseLevelFloat(Properties.Find("Shield")).value_or(Body.Shield);
         Body.State.Position = Body.State.PreviousPosition = { .X = Object.X, .Y = Object.Y };
         Body.State.Center = CollisionFromWorld(Body.State.Position);
         Bodies.push_back(std::move(Body));
@@ -1120,4 +1169,498 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
     }
 
     return Collected;
+}
+
+namespace
+{
+// ApplyDamage at 0043ca30: the shield absorbs first and is reset once it breaks.
+void ApplyDamage(FObjectBody& Body, float Amount)
+{
+    if (Body.bIndestructible)
+    {
+        return;
+    }
+
+    Body.bDamaged = true;
+    if (0.f < Body.Shield)
+    {
+        Body.Shield = float(double(Body.Shield) - double(Amount));
+        if (0.f <= Body.Shield)
+        {
+            return;
+        }
+
+        // ponytail: the shield resets to a class field at +0x6c that is not decoded yet; zero until then.
+        Amount = -Body.Shield;
+        Body.Shield = 0.f;
+    }
+
+    Body.Energy = float(double(Body.Energy) - double(Amount));
+}
+
+struct FWorldCell
+{
+    int X = 0;
+    int Y = 0;
+};
+
+// The 64 x 32 world-pixel grid cell an object is linked into.
+FWorldCell CellOf(const FCollisionPoint World)
+{
+    return { .X = int(uint32_t(int64_t(World.X)) / BlockWidth), .Y = int(uint32_t(int64_t(World.Y)) / BlockHeight) };
+}
+
+// AreaDamage at 0043cb20: every live body near the blast takes damage falling off linearly over Damage-zone collision units.
+void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float Damage, const float Zone, std::vector<FObjectBody>& Bodies)
+{
+    if (Damage == 0.f || Zone == 0.f)
+    {
+        return;
+    }
+
+    // Only the grid cells within the zone's extent are scanned.
+    const int Radius = int(Zone);
+    const int CellRadiusX = int(uint32_t(Radius) / BlockWidth) + 1;
+    const int CellRadiusY = int(uint32_t(Radius) / BlockHeight) + 1;
+    for (FObjectBody& Body : Bodies)
+    {
+        const FWorldCell BodyCell = CellOf(Body.State.Position);
+        if (Body.Energy <= 0.f || std::abs(BodyCell.X - Cell.X) > CellRadiusX || std::abs(BodyCell.Y - Cell.Y) > CellRadiusY)
+        {
+            continue;
+        }
+
+        const double DeltaX = double(Body.State.Center.X) - double(Center.X);
+        const double DeltaY = double(Body.State.Center.Y) - double(Center.Y);
+        const int DistanceSquared = int(DeltaX * DeltaX + DeltaY * DeltaY);
+        if (DistanceSquared >= Radius * Radius)
+        {
+            continue;
+        }
+
+        const int Distance = int(std::sqrt(double(DistanceSquared)));
+        const float Amount = DistanceSquared == 0 ? Damage : float(double(Radius - Distance) / double(Radius) * double(Damage));
+        ApplyDamage(Body, Amount);
+    }
+}
+
+FObjectBody* FindStruckBody(std::vector<FObjectBody>& Bodies, const FCollisionCircle Shot, std::optional<FCollisionPoint>& Contact)
+{
+    FObjectBody* Struck = nullptr;
+    for (FObjectBody& Body : Bodies)
+    {
+        const std::optional<FCollisionPoint> BodyContact = IntersectCircles(Shot, { .Center = Body.State.Center, .Radius = Body.Class.Radius });
+        if (BodyContact && (!Contact || PrefersContact(*Contact, *BodyContact, Shot.Center)))
+        {
+            Contact = BodyContact;
+            Struck = &Body;
+        }
+    }
+
+    return Struck;
+}
+
+// Kinds whose destruction pays the class Reward (mask 0x1ffc0 in EngineUpdateObjects at 004406e0).
+bool PaysReward(const std::string_view SubType)
+{
+    constexpr std::array<std::string_view, 11> RewardKinds = { "cop", "staticgen", "vyruz", "walker", "burner", "jeep", "roller", "heli", "turret", "spider", "tank" };
+    return std::ranges::contains(RewardKinds, SubType);
+}
+
+const FLevelPropertyBlock* FindTypeBlock(const FLevelPropertyBlock& Class, const std::string_view Name)
+{
+    const auto Found = std::ranges::find_if(Class.Children, [Name](const FLevelPropertyBlock& Child) { return Child.Kind == "TYPE" && Child.Name == Name; });
+    return Found == Class.Children.end() ? nullptr : &*Found;
+}
+
+// LoadObjectClassLibrary stores slopes as degrees * pi * (1 / 180), both float constants (0050953c, 00509538).
+float SlopeRadians(const float Degrees)
+{
+    constexpr float InverseHalfTurn = 1.f / 180.f;
+    return float(double(float(double(Degrees) * double(Pi))) * double(InverseHalfTurn));
+}
+}
+
+std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player)
+{
+    FCombat Combat;
+    const auto FindClass = [&Level](const std::string_view Name) -> const FLevelPropertyBlock*
+    {
+        const auto Found = Level.Classes.find(ToLowerName(Name));
+        return Found == Level.Classes.end() ? nullptr : &Found->second;
+    };
+    const auto Number = [](const FLevelPropertyBlock& Block, const std::string_view Field) { return ParseLevelFloat(Block.Find(Field)).value_or(0.f); };
+    for (const FLevelPropertyBlock& Child : Player.Properties.Children)
+    {
+        if (Child.Kind != "ADD" || Child.Name != "Weapon")
+        {
+            continue;
+        }
+
+        const std::string_view Name = Child.Find("Name");
+        const FLevelPropertyBlock* const Class = FindClass(Name);
+        const FLevelPropertyBlock* const Block = Class ? FindTypeBlock(*Class, "Weapon") : nullptr;
+        if (!Block)
+        {
+            return std::unexpected(std::format("unknown weapon class '{}'", Name));
+        }
+
+        Combat.Weapons.push_back({
+            .Name = std::string(Name),
+            .Ammo = ToLowerName(Block->Find("Ammo")),
+            .Delay = uint32_t(Number(*Block, "Delay")),
+            .WeaponsGap = Number(*Block, "Weapons-gap"),
+            .bLeftSide = Number(*Block, "Left-side") != 0.f,
+            .bRightSide = Number(*Block, "Right-side") != 0.f,
+            .bAlternated = Number(*Block, "Alternated-fire") != 0.f,
+            .StartDistance = int(Number(*Block, "Start-distance")),
+            .FireAltitude = int(Number(*Block, "Fire-altitude")),
+            .InitialSlope = SlopeRadians(Number(*Block, "Initial-slope")),
+            .SlopeStep = SlopeRadians(Number(*Block, "Slope-step")),
+        });
+
+        const std::string AmmoName = Combat.Weapons.back().Ammo;
+        if (std::ranges::contains(Combat.AmmoClasses, AmmoName, &FAmmoClass::Name))
+        {
+            continue;
+        }
+
+        const FLevelPropertyBlock* const Ammo = FindClass(AmmoName);
+        const FLevelPropertyBlock* const AmmoBlock = Ammo ? FindTypeBlock(*Ammo, "Ammo") : nullptr;
+        if (!AmmoBlock)
+        {
+            return std::unexpected(std::format("unknown ammo class '{}'", AmmoName));
+        }
+
+        // Ammo classes leave most movement fields out; the class record keeps them zeroed.
+        const auto Field = [&Number](const FLevelPropertyBlock* const Block, const std::string_view Name) { return Block ? Number(*Block, Name) : 0.f; };
+        const FLevelPropertyBlock* const Thrust = FindBlock(*Ammo, "Thrust");
+        const FLevelPropertyBlock* const Weight = FindBlock(*Ammo, "Weight");
+        const int BoundingBoxSize = int(Number(*Ammo, "Bounding-box-size"));
+        const FMovementClass Movement{
+            .ThrustInitial = Field(Thrust, "Initial"),
+            .ThrustMin = Field(Thrust, "Min"),
+            .ThrustMax = Field(Thrust, "Max"),
+            .Weight = Weight ? Number(*Weight, "Initial") : 1.f,
+            .AccelerationStep = Number(*Ammo, "Acceleration-step"),
+            .DecelerationStep = Number(*Ammo, "Decceleration-step"),
+            .SpeedMax = Number(*Ammo, "Speed-max"),
+            .Elasticity = Number(*Ammo, "Elasticity"),
+            .Grip = Number(*Ammo, "Grip"),
+            .Friction = ParsePair(Ammo->Find("Friction-factor")).value_or(FCollisionPoint{}),
+            .FrictionThreshold = ParsePair(Ammo->Find("Friction-threshold")).value_or(FCollisionPoint{}),
+            .bUseInertia = Number(*Ammo, "Use-inertia") != 0.f,
+            .Radius = BoundingBoxSize != 0 ? float(BoundingBoxSize) : DefaultCollisionRadius,
+        };
+        if (Movement.Weight == 0.f)
+        {
+            return std::unexpected(std::format("{}: zero Weight", AmmoName));
+        }
+
+        Combat.AmmoClasses.push_back({
+            .Name = AmmoName,
+            .Movement = Movement,
+            .Damage = Number(*AmmoBlock, "Damage"),
+            .DamageZone = Number(*AmmoBlock, "Damage-zone"),
+            .DamageAfter = uint32_t(Number(*AmmoBlock, "Damage-after")),
+        });
+    }
+
+    Combat.Slope = Combat.Weapons.empty() ? 0.f : Combat.Weapons.front().InitialSlope;
+    return Combat;
+}
+
+void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, const float SpriteSize, FPlayerInventory& Inventory)
+{
+    if (Combat.Weapons.empty())
+    {
+        return;
+    }
+
+    const FWeaponClass& Weapon = Combat.Weapons[Combat.CurrentWeapon];
+    // WeaponRaiseSlope (0042c210) and WeaponResetSlope (0042c280) run from ReadPlayerInput: holding the trigger flattens the slope step by step.
+    if (Weapon.InitialSlope != 0.f)
+    {
+        if (!bFire || !Combat.bTriggerHeld)
+        {
+            Combat.bTriggerHeld = bFire;
+            Combat.Slope = Weapon.InitialSlope;
+        }
+        else if (Combat.Slope != 0.f)
+        {
+            Combat.Slope = float(double(Weapon.SlopeStep) + double(Combat.Slope));
+            if (0.f < Combat.Slope)
+            {
+                Combat.Slope = 0.f;
+            }
+        }
+    }
+
+    if (!bFire)
+    {
+        return;
+    }
+
+    // ObjectUpdateWeapon at 00444ca0 holds the trigger until Delay milliseconds of game clock have passed since the last shot; the first shot is immediate.
+    if (Combat.LastFireTime == 0)
+    {
+        Combat.LastFireTime = Combat.Clock;
+    }
+
+    if (Combat.LastFireTime != Combat.Clock && Combat.Clock - Combat.LastFireTime < Weapon.Delay)
+    {
+        return;
+    }
+
+    Combat.LastFireTime = Combat.Clock;
+    const auto Stock = std::ranges::find_if(Inventory.Ammo, [&Weapon](const FAmmoStock& Entry) { return ToLowerName(Entry.Name) == Weapon.Ammo; });
+    const auto Ammo = std::ranges::find(Combat.AmmoClasses, Weapon.Ammo, &FAmmoClass::Name);
+    // ponytail: the original switches to the next loaded weapon when this one runs dry (WeaponHasAmmo at 00444450); here the weapon just stops.
+    if (Stock == Inventory.Ammo.end() || Stock->Count < 1.f || Ammo == Combat.AmmoClasses.end() || Player.Direction == NoDirection)
+    {
+        return;
+    }
+
+    // Twin weapons fire from both sides of the body, Weapons-gap apart across the facing.
+    FCollisionPoint Gap;
+    if (Weapon.WeaponsGap != 0.f)
+    {
+        constexpr float RadiansPerDirection = -0.2617994f;
+        const double Half = double(Weapon.WeaponsGap) * 0.5;
+        const double Angle = double(Player.Direction) * double(RadiansPerDirection);
+        const float Along = float(std::cos(Angle) * Half);
+        const double Across = std::sin(Angle) * Half;
+        Gap = { .X = float((double(Along) - Across) * double(0.8944272f)), .Y = float((Across + double(Along)) * double(0.4472136f)) };
+    }
+
+    if (Weapon.bAlternated)
+    {
+        Combat.bAlternateSide = !Combat.bAlternateSide;
+    }
+
+    const int SideCount = Weapon.WeaponsGap != 0.f ? 2 : 1;
+    for (int Side = 0; Side < SideCount; ++Side)
+    {
+        const bool bSecondSide = Side == 1;
+        const bool bSideFitted = Weapon.WeaponsGap == 0.f || (bSecondSide ? Weapon.bRightSide : Weapon.bLeftSide);
+        const bool bSideTurn = !Weapon.bAlternated || Combat.bAlternateSide != bSecondSide;
+        if (!bSideFitted || !bSideTurn)
+        {
+            continue;
+        }
+
+        // Without a Start-distance the muzzle sits a random distance out, up to 40% of the body's smaller sprite side.
+        int Distance = Weapon.StartDistance;
+        if (Distance == 0)
+        {
+            constexpr double MuzzleFraction = 0.4f;
+            constexpr double MuzzleScale = 10.f;
+            const uint32_t Random = Combat.Random.Next();
+            const uint32_t Span = uint32_t(int64_t(double(SpriteSize) * MuzzleFraction * MuzzleScale));
+            Distance = Span == 0 ? 0 : int(Random % Span);
+        }
+
+        const FCollisionPoint Direction = WorldFacingVector(Player.Direction);
+        FCollisionPoint Muzzle{
+            .X = float(double(float(double(Distance) * double(Direction.X))) + double(Player.Position.X)),
+            .Y = float(double(float(double(Distance) * double(Direction.Y))) + double(Player.Position.Y)),
+        };
+        if (Weapon.WeaponsGap != 0.f)
+        {
+            const double Sign = bSecondSide ? -1. : 1.;
+            Muzzle = { .X = float(double(Muzzle.X) + Sign * double(Gap.X)), .Y = float(double(Muzzle.Y) + Sign * double(Gap.Y)) };
+        }
+
+        FProjectile Shot{
+            .AmmoIndex = size_t(Ammo - Combat.AmmoClasses.begin()),
+            .Altitude = Weapon.FireAltitude != 0 ? Weapon.FireAltitude : int(PlayerObject.Altitude),
+            .DamageTimer = Ammo->DamageAfter,
+        };
+        Shot.State.Position = Shot.State.PreviousPosition = Muzzle;
+        Shot.State.Center = CollisionFromWorld(Muzzle);
+        Shot.State.Direction = Player.Direction;
+        Shot.State.Speed = Ammo->Movement.ThrustInitial;
+        const FCollisionPoint Facing = FacingVector(Player.Direction);
+        Shot.State.Velocity = {
+            .X = float(double(float(double(Shot.State.Speed) * double(Facing.X))) + double(Player.Velocity.X)),
+            .Y = float(double(float(double(Shot.State.Speed) * double(Facing.Y))) + double(Player.Velocity.Y)),
+        };
+        if (Weapon.InitialSlope < 0.f)
+        {
+            Shot.bSloped = true;
+            Shot.AltitudeAccumulator = float(Shot.Altitude);
+            Shot.Slope = Combat.Slope;
+        }
+
+        Combat.Projectiles.push_back(Shot);
+        Stock->Count -= 1.f;
+        if (Stock->Count < 1.f)
+        {
+            break;
+        }
+    }
+}
+
+void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
+    FPlayerInventory& Inventory)
+{
+    const float TimeScale = float(ReferenceStepMilliseconds / double(StepMilliseconds));
+    constexpr FPlayerCommand Straight{ .Thrust = EPlayerThrust::Forward };
+    std::erase_if(Combat.Projectiles, [&](FProjectile& Shot)
+    {
+        const FAmmoClass& Ammo = Combat.AmmoClasses[Shot.AmmoIndex];
+        const auto Detonate = [&](FObjectBody* const Target)
+        {
+            // AmmoHit at 0043d7d0 blasts around the shot's last committed centre, then AmmoImpact (0043d350) shoves and damages the object it struck.
+            AreaDamage(Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies);
+            if (Target)
+            {
+                constexpr double ImpactPush = 40.;
+                const FCollisionPoint Facing = FacingVector(Shot.State.Direction);
+                Target->State.Velocity.X = float(double(Facing.X) * ImpactPush / double(Target->Class.Weight) + double(Target->State.Velocity.X));
+                Target->State.Velocity.Y = float(double(Facing.Y) * ImpactPush / double(Target->Class.Weight) + double(Target->State.Velocity.Y));
+                const auto Absorption = std::ranges::find(Target->Absorptions, Ammo.Name, &FAbsorption::AmmoClass);
+                ApplyDamage(*Target, Absorption == Target->Absorptions.end() ? Ammo.Damage : float(double(Ammo.Damage) * double(Absorption->Coeff)));
+            }
+
+            return true;
+        };
+
+        // Sloped bullets sink by sin(slope) of their altitude each step and burst on the ground (the Ammo branch of EngineUpdateObjects).
+        if (Shot.bSloped)
+        {
+            Shot.AltitudeAccumulator = float(std::sin(double(Shot.Slope)) * double(Shot.Altitude) + double(Shot.AltitudeAccumulator));
+            Shot.Altitude = int(Shot.AltitudeAccumulator);
+            if (Shot.Altitude < 1)
+            {
+                Shot.Altitude = 0;
+                return Detonate(nullptr);
+            }
+        }
+
+        if (Shot.DamageTimer != 0)
+        {
+            if (Shot.DamageTimer <= StepMilliseconds)
+            {
+                return Detonate(nullptr);
+            }
+
+            Shot.DamageTimer -= StepMilliseconds;
+        }
+
+        const FCollisionPoint Delta = Displacement(Shot.State, Ammo.Movement, Straight, TimeScale);
+        if (IsZero(Delta))
+        {
+            return false;
+        }
+
+        const FCollisionPoint Target{ .X = float(double(Delta.X) + double(Shot.State.Center.X)), .Y = float(double(Delta.Y) + double(Shot.State.Center.Y)) };
+        Shot.State.PreviousPosition = Shot.State.Position;
+        Shot.State.Position = WorldFromCollision(Target);
+        // Objects other than the player are dropped once they leave the level.
+        constexpr float LowerLimit = 1.f;
+        if (Shot.State.Position.X < LowerLimit || float(Level.WorldExtentX) <= Shot.State.Position.X || Shot.State.Position.Y < LowerLimit ||
+            float(Level.WorldExtentY) <= Shot.State.Position.Y)
+        {
+            return true;
+        }
+
+        const FCollisionPoint Candidate = CollisionFromWorld(Shot.State.Position);
+        const FCollisionCircle Moved{ .Center = Candidate, .Radius = Ammo.Movement.Radius };
+        const std::optional<FTerrainHit> TerrainHit = QueryTerrainCollision(Terrain, { .Center = Shot.State.Center, .Radius = Ammo.Movement.Radius }, Moved);
+        std::optional<FCollisionPoint> Contact = TerrainHit ? std::optional(TerrainHit->Point) : std::nullopt;
+        // ponytail: shots never hit the player who fired them, and bouncing ammo (on-hit = 0: grenades, saws, pulsars) bursts on first contact too.
+        FObjectBody* const Struck = FindStruckBody(Bodies, Moved, Contact);
+        if (!Contact)
+        {
+            Shot.State.Center = Candidate;
+            return false;
+        }
+
+        Shot.State.Position = WorldFromCollision(*Contact);
+        return Detonate(Struck);
+    });
+
+    std::erase_if(Bodies, [&](const FObjectBody& Body)
+    {
+        // Objects die in their next update once damage has taken their energy to zero.
+        if (!Body.bDamaged || 0.f < Body.Energy)
+        {
+            return false;
+        }
+
+        FLevelObject& Object = Level.Objects[Body.ObjectIndex];
+        Object.bRemoved = true;
+        if (0.f < Body.Reward && PaysReward(Object.SubType))
+        {
+            Inventory.Money += Body.Reward;
+        }
+
+        return true;
+    });
+}
+
+std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
+{
+    // Every level's player spins on the spot for a few seconds with the trigger held; each must load its weapons and fire.
+    constexpr uint32_t StepMilliseconds = 14;
+    constexpr uint32_t DurationMilliseconds = 6000;
+    constexpr float SpriteSize = 64.f;
+    size_t Levels = 0;
+    size_t Shots = 0;
+    size_t Destroyed = 0;
+    for (const std::string& Name : Archive.GetNames())
+    {
+        if (!Name.ends_with(".3do"))
+        {
+            continue;
+        }
+
+        std::expected<FLevel, std::string> Level = LoadLevel(Archive, Name.substr(0, Name.size() - 4));
+        if (!Level)
+        {
+            return std::unexpected(Level.error());
+        }
+
+        const auto PlayerObject = std::ranges::find_if(Level->Objects, [](const FLevelObject& Object) { return Object.Behaviour == "Player"; });
+        if (PlayerObject == Level->Objects.end())
+        {
+            continue;
+        }
+
+        const std::expected<FMovementClass, std::string> Class = ReadMovementClass(*PlayerObject);
+        const std::expected<FTerrainCollision, std::string> Terrain = BuildTerrainCollision(*Level);
+        std::expected<FCombat, std::string> Combat = CreateCombat(*Level, *PlayerObject);
+        if (!Class || !Terrain || !Combat)
+        {
+            return std::unexpected(std::format("{}: {}", Name, !Class ? Class.error() : !Terrain ? Terrain.error() : Combat.error()));
+        }
+
+        FPlayerState Player = SpawnPlayer(*PlayerObject, *Class);
+        FPlayerInventory Inventory = CreateInventory(*PlayerObject);
+        std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+        const size_t BodyCount = Bodies.size();
+        size_t LevelShots = 0;
+        const FPlayerCommand Spin{ .Turn = EPlayerTurn::Left };
+        for (uint32_t Time = 0; Time < DurationMilliseconds; Time += StepMilliseconds)
+        {
+            StepPlayer(Player, *Class, Spin, StepMilliseconds, *Terrain, *Level, Bodies);
+            Combat->Clock += StepMilliseconds;
+            const size_t Before = Combat->Projectiles.size();
+            StepPlayerWeapon(*Combat, true, Player, *PlayerObject, SpriteSize, Inventory);
+            LevelShots += Combat->Projectiles.size() - Before;
+            StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Inventory);
+        }
+
+        if (LevelShots == 0)
+        {
+            return std::unexpected(std::format("{}: the player never fired", Name));
+        }
+
+        ++Levels;
+        Shots += LevelShots;
+        Destroyed += BodyCount - Bodies.size();
+    }
+
+    return std::format("{} levels, {} shots, {} objects destroyed", Levels, Shots, Destroyed);
 }
