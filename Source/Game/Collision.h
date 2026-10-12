@@ -64,4 +64,8 @@ FCollisionPoint ToWorldSpace(FCollisionPoint Collision);
 std::expected<FTerrainCollision, std::string> BuildTerrainCollision(const FLevel& Level);
 std::optional<FCollisionPoint> IntersectTerrainShape(FCollisionCircle Previous, FCollisionCircle Candidate, const FStaticCollisionShape& Shape);
 std::optional<FTerrainHit> QueryTerrainCollision(const FTerrainCollision& Terrain, FCollisionCircle Previous, FCollisionCircle Candidate);
+// Circle against circle at 004069d0: the moving circle's candidate centre touches a resting circle.
+std::optional<FCollisionPoint> IntersectCircles(FCollisionCircle Moving, FCollisionCircle Resting);
+// Contact selection at 0041b770: true when Next replaces Previous as the contact nearest Center.
+bool PrefersContact(FCollisionPoint Previous, FCollisionPoint Next, FCollisionPoint Center);
 std::expected<void, std::string> VerifyTerrainCollision();

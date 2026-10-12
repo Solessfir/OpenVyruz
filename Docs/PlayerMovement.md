@@ -34,3 +34,11 @@ The new collision centre is converted back to the world, clamped to `[1, extent 
 ## Verification against DEMO.3DR
 
 `--verify-game` replays `CAVE\DEMO.3DR`. The recording came from a development build: its records are taken with the 10 ms demo step cap, its timestamps are clock readings at each step start, and its `Friction-threshold` was 0.001 (the line commented out in the shipped `OBJECT.3DC`). Rebuilding each step's state from the recording, 26454 of 32282 steps match within 0.001 px and 30156 within 0.5 px. The remainder come from object collisions, which are not modelled yet, and from step lengths that the 1 ms timestamps can only place to within a millisecond.
+
+## Object collisions
+
+`MovementCollision` (`004105d0`) sweeps one endpoint list that holds both terrain shapes and object bounds. Objects collide as circles with radius `Bounding-Box-Size`; a size of zero leaves them out. Circle against circle (`004069d0`) subtracts 2 from the centre distance before comparing it with the summed radii.
+
+An object hit is resolved by `ObjectPush` (`00436dd0`). Moving away from the contact accepts the move, as for terrain. A target with zero `Friction-factor` is immovable and reflects the mover's velocity component along the contact normal, scaled by `Elasticity`. Otherwise both exchange that component weighted by `Weight / 10`, and the target is flagged as pushed: its velocity then carries it with friction until its speed drops below 1.
+
+The port treats static scenery with a bounding box as solid. Pickups, gates, lifts, keys, teleports and actors are left out until their behaviours exist, and the demo replay stays terrain-only: the recording shoots barrels and crates and shoves pallets, so its path crosses their start positions.

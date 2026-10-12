@@ -4,7 +4,9 @@
 
 #include <cstdint>
 #include <expected>
+#include <span>
 #include <string>
+#include <vector>
 
 class FResourceArchive;
 struct FLevel;
@@ -80,6 +82,16 @@ struct FPlayerState
     int Pose = 1;
     int TargetPose = 1;
     int TurnTimer = 0;
+    // Object flag 0x100: set on objects that were hit, so their velocity carries them until it drops below 1.
+    bool bPushed = false;
+};
+
+// A placed object that takes part in collisions (Bounding-Box-Size above zero), with its own inertia once pushed.
+struct FObjectBody
+{
+    size_t ObjectIndex = 0;
+    FMovementClass Class;
+    FPlayerState State;
 };
 
 inline constexpr int PlayerPoseCount = 48;
@@ -91,9 +103,13 @@ FPlayerCommand PlayerCommandFromInput(uint32_t InputBits);
 
 std::expected<FMovementClass, std::string> ReadMovementClass(const FLevelObject& Object);
 FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class);
-// One game step of the player's part of EngineUpdateObjects (004406e0).
+// Every collidable object except the player; classes without movement properties keep zeroed fields like the original class record.
+std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level);
+// One game step of the player's part of EngineUpdateObjects (004406e0). Bodies are the other collidable objects; Self skips one of them.
 void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
-    const FLevel& Level);
+    const FLevel& Level, std::span<FObjectBody> Bodies = {}, const FObjectBody* Self = nullptr);
+// Moves pushed bodies for one step, in object order.
+void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
 std::expected<void, std::string> VerifyPlayerMovement();
 // Replays the CAVE\DEMO.3DR inputs through StepPlayer and compares every step with the recorded position.
 std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archive);

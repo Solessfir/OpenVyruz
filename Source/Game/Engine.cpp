@@ -172,6 +172,12 @@ int AdvancePose(const int Pose, const int Target)
 // PlayerTurn at 00443990: a new direction is only taken once the body pose has caught up with the previous one.
 void TurnPlayer(FPlayerState& Player, const FMovementClass& Class, const EPlayerTurn Turn, const uint32_t StepMilliseconds)
 {
+    // Objects without a turn timeout never turn; refilling the timer by zero would never end.
+    if (Class.TurnTimeout <= 0)
+    {
+        return;
+    }
+
     Player.TurnTimer -= int(StepMilliseconds);
     if (Player.TurnTimer >= 1)
     {
@@ -226,6 +232,13 @@ FCollisionPoint Displacement(FPlayerState& Player, const FMovementClass& Class, 
     double X = 0.;
     double Y = 0.;
     float PreviousMagnitude = 0.f;
+    if (Player.bPushed)
+    {
+        X = Player.Velocity.X;
+        Y = Player.Velocity.Y;
+        PreviousMagnitude = Player.SpeedMagnitude;
+    }
+
     if (Class.bUseInertia)
     {
         X = Player.Velocity.X;
@@ -303,6 +316,12 @@ FCollisionPoint Displacement(FPlayerState& Player, const FMovementClass& Class, 
     }
 
     Player.SpeedMagnitude = Magnitude;
+    constexpr float PushedStopMagnitude = 1.f;
+    if (Player.bPushed && Magnitude < PushedStopMagnitude)
+    {
+        Player.bPushed = false;
+    }
+
     if (TimeScale != 1.f)
     {
         X = float(X / double(TimeScale));
@@ -391,6 +410,77 @@ EBounce Bounce(FPlayerState& Player, const FMovementClass& Class, const FPlayerC
 
     Player.Velocity = { .X = float(X), .Y = float(Y) };
     return Result;
+}
+
+// ObjectPush at 00436dd0: an object hit. Immovable targets (zero friction) reflect the mover; otherwise both exchange momentum by weight.
+EBounce Push(FPlayerState& Mover, const FMovementClass& MoverClass, const FPlayerCommand& Command, FObjectBody& Target, const FCollisionPoint Contact)
+{
+    const FCollisionPoint Relative{ .X = float(double(Contact.X) - double(Mover.Center.X)), .Y = float(double(Contact.Y) - double(Mover.Center.Y)) };
+    FCollisionPoint Motion = Mover.Velocity;
+    const bool bMoved = Mover.Position.X != Mover.PreviousPosition.X || Mover.Position.Y != Mover.PreviousPosition.Y;
+    if (!bMoved && Command.Thrust != EPlayerThrust::None)
+    {
+        const FCollisionPoint Facing = FacingVector(Mover.Direction);
+        Motion = { .X = float(double(Mover.Speed) * double(Facing.X)), .Y = float(double(Mover.Speed) * double(Facing.Y)) };
+    }
+
+    if (DirectionDistance(FindDirection(Relative), FindDirection(Motion)) >= FacingAwayDistance)
+    {
+        return EBounce::Accept;
+    }
+
+    const auto AngleFrom = [](const double X, const double Y)
+    {
+        const double Angle = std::atan(Y / X);
+        return X < 0. ? Angle + double(Pi) : Angle;
+    };
+    const auto Project = [&](const FCollisionPoint Vector, const double Angle)
+    {
+        const double Length = std::cos(Angle - AngleFrom(Vector.X, Vector.Y)) * std::sqrt(double(Vector.X) * Vector.X + double(Vector.Y) * Vector.Y);
+        return FCollisionPoint{ .X = float(std::cos(Angle) * float(Length)), .Y = float(std::sin(Angle) * float(Length)) };
+    };
+
+    const double Normal = AngleFrom(double(Mover.Center.X) - Contact.X, double(Mover.Center.Y) - Contact.Y);
+    const FCollisionPoint Along = Project(Motion, Normal);
+    const auto Elastic = [](const double Value, const float Elasticity) { return Elasticity == 1.f ? Value : Value * Elasticity; };
+    if (Target.Class.Friction.X == 0.f)
+    {
+        Mover.Velocity = { .X = float(-Elastic(Along.X, MoverClass.Elasticity)), .Y = float(-Elastic(Along.Y, MoverClass.Elasticity)) };
+        return EBounce::Bounced;
+    }
+
+    constexpr double WeightScale = 0.1;
+    const double MoverWeight = float(MoverClass.Weight * WeightScale);
+    const double TargetWeight = float(Target.Class.Weight * WeightScale);
+    const double Total = float(TargetWeight + MoverWeight);
+    FCollisionPoint Other{};
+    if (!IsZero(Target.State.Velocity))
+    {
+        if (MoverClass.Friction.X == 0.f)
+        {
+            const double TargetNormal = float(AngleFrom(double(Target.State.Center.X) - Contact.X, double(Target.State.Center.Y) - Contact.Y));
+            const FCollisionPoint Back = Project(Target.State.Velocity, TargetNormal);
+            Target.State.Velocity = { .X = float(-Elastic(Back.X, Target.Class.Elasticity)), .Y = float(-Elastic(Back.Y, Target.Class.Elasticity)) };
+            Target.State.bPushed = true;
+            return EBounce::Bounced;
+        }
+
+        const double TargetNormal = float(AngleFrom(double(Target.State.Center.X) - Contact.X, double(Target.State.Center.Y) - Contact.Y));
+        Other = Project(Target.State.Velocity, TargetNormal);
+    }
+
+    // Elastic exchange along the contact normal, weighted by Weight / 10.
+    const auto Exchange = [&](const double Mine, const double Theirs, float& MoverOut, float& TargetOut)
+    {
+        const double Shared = float((MoverWeight * Mine + Theirs * TargetWeight) / Total);
+        const double Relative = float((Mine - Theirs) / Total);
+        MoverOut = float(Shared - float(Elastic(Relative, MoverClass.Elasticity)) * TargetWeight);
+        TargetOut = float(float(Elastic(Relative, Target.Class.Elasticity)) * MoverWeight + Shared);
+    };
+    Exchange(Along.X, Other.X, Mover.Velocity.X, Target.State.Velocity.X);
+    Exchange(Along.Y, Other.Y, Mover.Velocity.Y, Target.State.Velocity.Y);
+    Target.State.bPushed = true;
+    return EBounce::Bounced;
 }
 
 const FLevelPropertyBlock* FindBlock(const FLevelPropertyBlock& Block, const std::string_view Kind)
@@ -523,7 +613,7 @@ FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class
 }
 
 void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
-    const FLevel& Level)
+    const FLevel& Level, const std::span<FObjectBody> Bodies, const FObjectBody* const Self)
 {
     TurnPlayer(Player, Class, Command.Turn, StepMilliseconds);
     if (Command.Thrust == EPlayerThrust::None && Command.Strafe == 0.f && IsZero(Player.Velocity))
@@ -571,8 +661,28 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
 
     const FCollisionPoint Candidate = CollisionFromWorld(Player.Position);
     Player.Velocity = { .X = float(double(Candidate.X) - double(Player.Center.X)), .Y = float(double(Candidate.Y) - double(Player.Center.Y)) };
-    const std::optional<FTerrainHit> Hit = QueryTerrainCollision(Terrain, { .Center = Player.Center, .Radius = Class.Radius }, { .Center = Candidate, .Radius = Class.Radius });
-    if (!Hit)
+    const std::optional<FTerrainHit> TerrainHit = QueryTerrainCollision(Terrain, { .Center = Player.Center, .Radius = Class.Radius }, { .Center = Candidate, .Radius = Class.Radius });
+
+    // ponytail: objects are scanned after the terrain in object order instead of interleaved through the sweep endpoints; the nearest contact
+    // still wins, so only exact ties between a wall and an object can resolve differently.
+    std::optional<FCollisionPoint> Contact = TerrainHit ? std::optional(TerrainHit->Point) : std::nullopt;
+    FObjectBody* HitBody = nullptr;
+    for (FObjectBody& Body : Bodies)
+    {
+        if (&Body == Self)
+        {
+            continue;
+        }
+
+        const std::optional<FCollisionPoint> BodyContact = IntersectCircles({ .Center = Candidate, .Radius = Class.Radius }, { .Center = Body.State.Center, .Radius = Body.Class.Radius });
+        if (BodyContact && (!Contact || PrefersContact(*Contact, *BodyContact, Candidate)))
+        {
+            Contact = BodyContact;
+            HitBody = &Body;
+        }
+    }
+
+    if (!Contact)
     {
         Player.Velocity = { .X = float(double(TimeScale) * Delta.X), .Y = float(double(TimeScale) * Delta.Y) };
         Player.Center = Candidate;
@@ -581,10 +691,65 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
 
     // ObjectRestorePosition at 004449f0 undoes the move before the bounce is resolved.
     Player.Position = Player.PreviousPosition;
-    if (Bounce(Player, Class, Command, Hit->Point) == EBounce::Accept)
+    const EBounce Result = HitBody ? Push(Player, Class, Command, *HitBody, *Contact) : Bounce(Player, Class, Command, *Contact);
+    if (Result == EBounce::Accept)
     {
         // Moving away from the contact commits the collision centre; the world position catches up on the next step.
         Player.Center = Candidate;
+    }
+}
+
+std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
+{
+    std::vector<FObjectBody> Bodies;
+    for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
+    {
+        const FLevelObject& Object = Level.Objects[Index];
+        // ponytail: only static scenery for now; enemies, pickups, gates and lifts join once their behaviours move, collect or open them.
+        const auto IsSpecial = [&Object](const FLevelPropertyBlock& Block)
+        {
+            // Pickups are indestructible items; crates also carry item blocks for the surprises they drop.
+            constexpr std::array<std::string_view, 4> SpecialTypes = { "Gate", "Lift", "Key", "Teleport" };
+            const bool bPickup = Block.Name == "Item" && ParseLevelFloat(Object.Properties.Find("Indestructible")).value_or(0.f) != 0.f;
+            return Block.Kind == "TYPE" && (bPickup || std::ranges::contains(SpecialTypes, Block.Name));
+        };
+        if (Object.BoundingBoxSize <= 0 || Object.Behaviour != "Fixed" || std::ranges::any_of(Object.Properties.Children, IsSpecial))
+        {
+            continue;
+        }
+
+        const FLevelPropertyBlock& Properties = Object.Properties;
+        const auto Number = [](const FLevelPropertyBlock* Block, const std::string_view Field)
+        {
+            return Block ? ParseLevelFloat(Block->Find(Field)).value_or(0.f) : 0.f;
+        };
+        FMovementClass Class{
+            .Weight = Number(FindBlock(Properties, "Weight"), "Initial"),
+            .DecelerationStep = Number(&Properties, "Decceleration-step"),
+            .Elasticity = Number(&Properties, "Elasticity"),
+            .Grip = Number(&Properties, "Grip"),
+            .Friction = ParsePair(Properties.Find("Friction-factor")).value_or(FCollisionPoint{}),
+            .FrictionThreshold = ParsePair(Properties.Find("Friction-threshold")).value_or(FCollisionPoint{}),
+            .bUseInertia = Number(&Properties, "Use-inertia") != 0.f,
+            .Radius = float(Object.BoundingBoxSize),
+        };
+        FObjectBody Body{ .ObjectIndex = Index, .Class = Class };
+        Body.State.Position = Body.State.PreviousPosition = { .X = Object.X, .Y = Object.Y };
+        Body.State.Center = CollisionFromWorld(Body.State.Position);
+        Bodies.push_back(std::move(Body));
+    }
+
+    return Bodies;
+}
+
+void StepObjectBodies(const std::span<FObjectBody> Bodies, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level)
+{
+    for (FObjectBody& Body : Bodies)
+    {
+        if (Body.State.bPushed || !IsZero(Body.State.Velocity))
+        {
+            StepPlayer(Body.State, Body.Class, {}, StepMilliseconds, Terrain, Level, Bodies, &Body);
+        }
     }
 }
 
@@ -641,6 +806,30 @@ std::expected<void, std::string> VerifyPlayerMovement()
     if (Player.Speed != float(ForwardSteps) || !(Player.Position.X > 2000.f) || std::abs(Player.Position.Y - 2000.f) > Tolerance)
     {
         return std::unexpected("Player forward step self-check failed");
+    }
+
+    // Driving east into a body: an immovable one (zero friction) stops the player short of it, a movable one is pushed away.
+    for (const float BodyFriction : { 0.f, 0.9f })
+    {
+        FPlayerState Mover{ .Position = { .X = 2000.f, .Y = 2000.f }, .Direction = 9 };
+        Mover.Center = CollisionFromWorld(Mover.Position);
+        FObjectBody Body{ .Class = { .Weight = 4.f, .Elasticity = 1.f, .Friction = { .X = BodyFriction, .Y = BodyFriction }, .Radius = 10.f } };
+        Body.State.Position = Body.State.PreviousPosition = { .X = 2100.f, .Y = 2000.f };
+        Body.State.Center = CollisionFromWorld(Body.State.Position);
+        std::array<FObjectBody, 1> Bodies{ Body };
+        constexpr int PushSteps = 200;
+        for (int Step = 0; Step < PushSteps; ++Step)
+        {
+            StepPlayer(Mover, Class, { .Thrust = EPlayerThrust::Forward }, ReferenceStep, Terrain, Level, Bodies);
+            StepObjectBodies(Bodies, ReferenceStep, Terrain, Level);
+        }
+
+        const bool bBlocked = Mover.Position.X < Bodies[0].State.Position.X;
+        const bool bPushed = Bodies[0].State.Position.X > 2100.f;
+        if (!bBlocked || bPushed != (BodyFriction != 0.f))
+        {
+            return std::unexpected("Object collision self-check failed");
+        }
     }
 
     return {};
@@ -719,6 +908,8 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
     constexpr float CloseTolerance = 0.5f;
     size_t Exact = 0;
     size_t Close = 0;
+    // ponytail: the replay keeps to terrain until weapons and object movement exist; the demo shoots barrels and crates and shoves pallets,
+    // so the recorded path crosses where those objects started.
     FPlayerState Player = SpawnPlayer(*Object, *Class);
     FPlayerState FreeRun = Player;
     FreeRun.Position = { .X = Records.front().X, .Y = Records.front().Y };

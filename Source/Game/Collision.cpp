@@ -583,3 +583,24 @@ std::expected<void, std::string> VerifyTerrainCollision()
 
     return {};
 }
+
+std::optional<FCollisionPoint> IntersectCircles(const FCollisionCircle Moving, const FCollisionCircle Resting)
+{
+    // The original shaves two units off the centre distance before comparing it with the summed radii.
+    constexpr double ContactSlack = 2.;
+    const double DeltaX = double(Resting.Center.X) - Moving.Center.X;
+    const double DeltaY = double(Resting.Center.Y) - Moving.Center.Y;
+    const float Distance = float(std::sqrt(DeltaX * DeltaX + DeltaY * DeltaY) - ContactSlack);
+    if (double(Moving.Radius) + Resting.Radius < Distance || Distance == 0.f)
+    {
+        return std::nullopt;
+    }
+
+    const double Fraction = (double(Distance) - Resting.Radius) / Distance;
+    return FCollisionPoint{ .X = float(Fraction * DeltaX + Moving.Center.X), .Y = float(Fraction * DeltaY + Moving.Center.Y) };
+}
+
+bool PrefersContact(const FCollisionPoint Previous, const FCollisionPoint Next, const FCollisionPoint Center)
+{
+    return !KeepPreviousContact(Previous, Next, Center);
+}

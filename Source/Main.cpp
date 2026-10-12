@@ -498,6 +498,7 @@ int main(const int ArgCount, char** const Args)
     std::optional<FMovementClass> PlayerClass;
     std::optional<FPlayerState> Player;
     std::optional<FTerrainCollision> Terrain;
+    std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
     if (PlayerObject != Level->Objects.end())
     {
         std::expected<FMovementClass, std::string> Class = ReadMovementClass(*PlayerObject);
@@ -536,7 +537,8 @@ int main(const int ArgCount, char** const Args)
             {
                 const FPlayerCommand Command = PlayerCommandFromKeys(Pressed(GLFW_KEY_UP), Pressed(GLFW_KEY_DOWN), Pressed(GLFW_KEY_LEFT), Pressed(GLFW_KEY_RIGHT),
                     Pressed(GLFW_KEY_A), Pressed(GLFW_KEY_D));
-                StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level);
+                StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies);
+                StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
             }
             else
             {
@@ -549,6 +551,12 @@ int main(const int ArgCount, char** const Args)
         if (Player)
         {
             // ponytail: the body shows the nearest of the 24 direction poses; the in-between turning frames of the rot animation come later.
+            for (const FObjectBody& Body : Bodies)
+            {
+                Level->Objects[Body.ObjectIndex].X = Body.State.Position.X;
+                Level->Objects[Body.ObjectIndex].Y = Body.State.Position.Y;
+            }
+
             PlayerObject->X = Player->Position.X;
             PlayerObject->Y = Player->Position.Y;
             PlayerObject->Direction = (Player->Pose - 1) / (PlayerPoseCount / ObjectDirectionCount);
