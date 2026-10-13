@@ -93,6 +93,6 @@ Every one replaces a message at its position. The lift and gate texts come from 
 
 Not ported yet:
 
-- The fast kill bonus and the bitmap message type.
+- The bitmap message type.
 - The screen shake offset (session `+0x21f8`), which moves every part of the panel.
 - The map's sounds, and its picture is point-sampled rather than stretched block by block.

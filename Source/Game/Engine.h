@@ -697,6 +697,9 @@ struct FCombat
     uint32_t Clock = 1;
     // A Final-object died: the level is destroyed and the finale runs (FUN_0043db70, then FUN_00445dd0 in EngineRunLevel).
     bool bFinale = false;
+    // Session +0x274c and +0x2750: the fast-kill window and the hunters the player's blasts finished off in it.
+    int32_t FastKillTimer = 0;
+    int FastKillCount = 0;
     // Level objects the steps created, such as dropped items, for the window and the pickups to take on.
     std::vector<size_t> CreatedObjects;
 };

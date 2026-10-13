@@ -2798,6 +2798,48 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
                     Player->Velocity = { .X = Player->Velocity.X + Inventory.Shove.X, .Y = Player->Velocity.Y + Inventory.Shove.Y };
                     Inventory.Shove = {};
+                    // EngineRunLevel each step: once the fast-kill window closes with the player alive, two or more kills in it pay ((kills - 2) * 5 + 10) * 1000, say so for 8 seconds in red v-bonus font 5, fading, and cheer by the game clock.
+                    if (Combat->FastKillTimer > int32_t(StepMilliseconds))
+                    {
+                        Combat->FastKillTimer -= int32_t(StepMilliseconds);
+                    }
+                    else if (Inventory.Energy > 0.f)
+                    {
+                        Combat->FastKillTimer = 0;
+                        if (Combat->FastKillCount > 1)
+                        {
+                            constexpr int32_t BonusX = 100;
+                            constexpr int32_t BonusRise = 0x66;
+                            constexpr uint32_t BonusLifeMilliseconds = 8000;
+                            constexpr uint32_t BonusFont = 5;
+                            constexpr uint32_t BonusColor = 0xff2010;
+                            constexpr int32_t BonusBlinkMilliseconds = 10;
+                            const int32_t Bonus = ((Combat->FastKillCount - 2) * 5 + 10) * 1000;
+                            Inventory.Money += float(Bonus);
+                            Inventory.Earned += float(Bonus);
+                            Messages.Add({
+                                .Text = std::format("Well done {} !!!\nFast Kill Bonus +{} $", Settings.PlayerName, Bonus),
+                                .X = float(BonusX),
+                                .Y = float(int32_t(ScreenHeight) / 2 - BonusRise),
+                                .LifeMilliseconds = BonusLifeMilliseconds,
+                                .bTypewriter = true,
+                                .Gaf = EMessageGaf::Bonus,
+                                .Font = BonusFont,
+                                .Color = { .Diffuse = BonusColor },
+                                .BlinkPeriod = BonusBlinkMilliseconds,
+                                .bFade = true,
+                            }, EMessagePlacement::Always);
+                            constexpr std::array FastKillVoices = { EVoice::WellDone, EVoice::Yeepee, EVoice::ComeOn, EVoice::Ariba, EVoice::Laugh, EVoice::TheBest, EVoice::WantMore,
+                                EVoice::Hey };
+                            constexpr uint32_t CheerDelay = 500;
+                            constexpr uint32_t CheerDuration = 1000;
+                            constexpr uint32_t CheerHold = 5000;
+                            QueueVoice(FastKillVoices[Combat->Clock % FastKillVoices.size()], CheerDelay, CheerDuration, CheerHold);
+                        }
+
+                        Combat->FastKillCount = 0;
+                    }
+
                     // FUN_0043db70 starts the finale: the motor channel stops and Yeepee replaces the queued lines. With Gamma FX each flash plays electric.wav.
                     if (Combat->bFinale && !bFinaleStarted)
                     {

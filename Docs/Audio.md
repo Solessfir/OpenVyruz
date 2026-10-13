@@ -119,6 +119,6 @@ The fire input is what `ReadPlayerInput` (`00438540`) returns. The two timers be
 ## Not ported yet
 
 - **ADD Weapon channels**: an ADD Weapon entry's own channel (`+0x18`) is not read; every object uses its weapon class's range.
-- **Voices without their action**: Help and Inventory (screens not ported), the fast-kill bonus's cheers, and the Yeepee of `FUN_0043db70`.
+- **Voices without their action**: Help and Inventory (screens not ported).
 - **Other animated objects**: items, things, FX and the map animations play their animation sounds from where they are.
 - **Options**: the audio menus.

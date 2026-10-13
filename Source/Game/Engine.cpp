@@ -5492,6 +5492,23 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             // AmmoHit at 0043d7d0 blasts around the shot's last committed centre, then AmmoImpact (0043d350) shoves and damages what it struck.
             const bool bPlayerShot = Shot.Owner == Player.ObjectIndex;
             AreaDamage(Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies, Player, bPlayerShot);
+            // AreaDamage opens a 500 ms window (session +0x2748) on the first hunter a player's blast finishes off and counts each one after it.
+            constexpr int32_t FastKillWindowMilliseconds = 0x1f4;
+            for (size_t Index = 0; Index < WasAlive.size(); ++Index)
+            {
+                if (WasAlive[Index] && Bodies[Index].Energy <= 0.f && HuntsPlayer(Bodies[Index]))
+                {
+                    if (Combat.FastKillTimer < 1)
+                    {
+                        Combat.FastKillCount = 1;
+                        Combat.FastKillTimer = FastKillWindowMilliseconds;
+                    }
+                    else
+                    {
+                        ++Combat.FastKillCount;
+                    }
+                }
+            }
             if (Target)
             {
                 constexpr double ImpactPush = 40.;
