@@ -556,6 +556,11 @@ struct FAmmoClass
     int ListedArea = 0;
     // Usable-when-invisible (the ammo attribute's flag 8): only such ammo fires while the player is invisible.
     bool bUsableWhenInvisible = false;
+    // On-object-hit without On-hit (the ammo attribute's flags 2 and 1): grenades, saws and pulsars burst on objects but bounce off the terrain.
+    bool bBouncesOffTerrain = false;
+    // The class's Energy, which hard bounces wear down, and Indestructible (class flag 0x40 at +0x20), which spares it.
+    float Energy = 0.f;
+    bool bIndestructible = false;
 };
 
 // An FX class (fx.3dc) and the animation it plays.
@@ -574,7 +579,6 @@ struct FEffectClass
     float Stretch = 1.f;
 };
 
-// A running FX object; an explosion's blast goes off once with it.
 // A map animation: FUN_00433930, at the end of LevelStartMapAnimations (0041f0b0), makes a decor object (category 4) for each slot of each .3DI cell whose descriptor is a loaded Anim one, column by column, and adds it to the cell's object list.
 struct FDecorAnimation
 {
@@ -591,6 +595,7 @@ struct FDecorAnimation
     FAnimationPlayback Playback;
 };
 
+// A running FX object; an explosion's blast goes off once with it.
 struct FEffect
 {
     size_t ClassIndex = 0;
@@ -618,6 +623,9 @@ struct FProjectile
     uint32_t DamageTimer = 0;
     // Level object index of the shooter, which its own shots pass through.
     size_t Owner = 0;
+    float Energy = 0.f;
+    // Terrain bounces so far, which --verify-game checks.
+    uint32_t Bounces = 0;
 };
 
 // The Video Details options (session +0x27e0) that the port follows.

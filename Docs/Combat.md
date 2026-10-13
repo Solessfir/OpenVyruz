@@ -37,6 +37,8 @@ Ammo objects with `Behaviour = Straight` thrust forward through `ObjectComputeDi
 
 On contact `AmmoHit` (`0043d7d0`) moves the shot to the contact point and calls `AreaDamage` (`0043cb20`) around its last committed collision centre. `AmmoImpact` (`0043d350`) then pushes the struck object by `40 / Weight` along the shot's facing and damages it by `damage`, scaled by a matching `TYPE Absorption` coefficient (`AbsorptionScale`, `0043d780`).
 
+The `TYPE Ammo` attribute's flags decide what a contact does: `On-hit` (flag 1) bursts the shot on anything, `On-object-hit` (flag 2) only on objects. A shot with `On-object-hit` but not `On-hit` (grenades, saws, pulsars) that meets the terrain is put back and bounces (`ObjectBounce`, `004367d0`), then turns to its new heading. A hard knock, more than 2 units of travel that step, takes a tenth of its speed times its weight from its own energy (unless it is `Indestructible`), and a shot emptied that way bursts where it is. `--verify-game` throws grenades all round from each level's start and requires some to bounce and fly on.
+
 `AreaDamage` scans the grid cells within the zone and damages every live object whose collision centre lies within `Damage-zone` units: the full damage at distance zero, otherwise `(zone - trunc(sqrt(trunc(d^2)))) / zone * damage`.
 
 `ApplyDamage` (`0043ca30`) takes damage from the shield first; when the shield breaks, the rest goes to energy. An object whose energy reaches zero is destroyed in its next update. Cops, generators, walkers, burners, jeeps, rollers, helicopters, turrets, spiders and tanks pay their `Reward` to the player.
@@ -100,7 +102,7 @@ The port runs the original incremental route search from collision centre to col
 ## Not ported yet
 
 - The shield reset value (a class field at `+0x6c`).
-- Bouncing ammo (`on-hit = 0`: grenades, saws, pulsars), which the port bursts on first contact.
+- The spark a bouncing shot throws off (`FUN_0043d140`, one of four `Bounce-fx` classes by side).
 - The idle look-around of two-piece bodies, which turn their top (`FUN_00444b80`).
 - The player's shove and absorption.
 - Water splashes, what a surprise does when collected, the generator's opening animation, the `CREATE` trails and smoke (they draw from their own random stream), and sounds.

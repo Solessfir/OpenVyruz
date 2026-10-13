@@ -2679,6 +2679,7 @@ std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Lev
             }
         }
 
+        const FLevelPropertyBlock* const EnergyBlock = FindBlock(*Ammo, "Energy");
         Combat.AmmoClasses.push_back({
             .Name = AmmoName,
             .Movement = Movement,
@@ -2689,6 +2690,9 @@ std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Lev
             .ListedDamage = ListedDamage,
             .ListedArea = ListedArea,
             .bUsableWhenInvisible = ClassNumber(*AmmoBlock, "Usable-when-invisible") != 0.f,
+            .bBouncesOffTerrain = ParseLevelFloat(AmmoBlock->Find("On-hit")).value_or(1.f) == 0.f && ClassNumber(*AmmoBlock, "On-object-hit") != 0.f,
+            .Energy = EnergyBlock ? ClassNumber(*EnergyBlock, "Initial") : 0.f,
+            .bIndestructible = ClassNumber(*Ammo, "Indestructible") != 0.f,
         });
     }
 
@@ -2881,6 +2885,7 @@ void FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, F
             .Altitude = Weapon.FireAltitude != 0 ? Weapon.FireAltitude : Shooter.Altitude,
             .DamageTimer = Ammo->DamageAfter,
             .Owner = Shooter.ObjectIndex,
+            .Energy = Ammo->Energy,
         };
         Shot.State.Position = Shot.State.PreviousPosition = Muzzle;
         Shot.State.Center = CollisionFromWorld(Muzzle);
@@ -5479,7 +5484,6 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         const FCollisionCircle Moved{ .Center = Candidate, .Radius = Ammo.Movement.Radius };
         const std::optional<FTerrainHit> TerrainHit = QueryTerrainCollision(Terrain, { .Center = Shot.State.Center, .Radius = Ammo.Movement.Radius }, Moved);
         std::optional<FCollisionPoint> Contact = TerrainHit ? std::optional(TerrainHit->Point) : std::nullopt;
-        // ponytail: bouncing ammo (on-hit = 0: grenades, saws, pulsars) bursts on first contact too.
         FObjectBody* const Struck = FindStruckBody(Bodies, Moved, Shot.Owner, Contact);
         bool bPlayerStruck = false;
         if (Shot.Owner != Player.ObjectIndex)
@@ -5495,6 +5499,35 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         if (!Contact)
         {
             Shot.State.Center = Candidate;
+            return false;
+        }
+
+        // EngineUpdateObjects (004406e0) puts bouncing ammo that met the terrain back and bounces it (ObjectBounce at 004367d0), then turns it to its new heading.
+        // A hard knock (more than 2 units of travel) takes a tenth of its speed times its weight from its energy, and an emptied shot bursts where it is.
+        // ponytail: the Bounce-fx spark (FUN_0043d140) and ObjectAdjustImpactPoint are left out, as for the player's bounce.
+        if (Ammo.bBouncesOffTerrain && !Struck && !bPlayerStruck)
+        {
+            Shot.State.Position = Shot.State.PreviousPosition;
+            constexpr float HardKnockTravel = 2.f;
+            constexpr double KnockDamageScale = 0.1f;
+            const float Knock = Shot.State.SpeedMagnitude * Ammo.Movement.Weight;
+            if (!Ammo.bIndestructible && Knock != 0.f && HardKnockTravel < std::abs(Delta.X) + std::abs(Delta.Y))
+            {
+                const float Damage = float(double(Knock) * KnockDamageScale);
+                Shot.Energy = Shot.Energy <= Damage ? 0.f : Shot.Energy - Damage;
+                if (Shot.Energy <= 0.f)
+                {
+                    return Detonate(nullptr, false, false);
+                }
+            }
+
+            Bounce(Shot.State, Ammo.Movement, Straight, *Contact);
+            ++Shot.Bounces;
+            if (const int Heading = FindDirection(Shot.State.Velocity); Heading != NoDirection)
+            {
+                Shot.State.Direction = Heading;
+            }
+
             return false;
         }
 
@@ -5891,6 +5924,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     size_t Levels = 0;
     size_t Shots = 0;
     size_t TurretShots = 0;
+    size_t GrenadeBounces = 0;
     size_t Duels = 0;
     size_t DuelShots = 0;
     float DamageTaken = 0.f;
@@ -5988,6 +6022,29 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         if (LevelShots == 0)
         {
             return std::unexpected(std::format("{}: the player never fired", Name));
+        }
+
+        // Grenades bounce off the terrain: thrown all round from where the player stopped, some must bounce and fly on before their fuse.
+        if (const std::expected<size_t, std::string> Grenades = LoadWeapon(*Combat, *Level, "Grenade-Launcher"))
+        {
+            constexpr uint32_t FlightMilliseconds = 2500;
+            Combat->Projectiles.clear();
+            FWeaponState Throw{ .Weapon = *Grenades };
+            FAmmoStock Stock{ .Name = Combat->Weapons[*Grenades].Ammo, .Count = float(DirectionCount), .Max = float(DirectionCount) };
+            for (int Direction = 0; Direction < DirectionCount; ++Direction)
+            {
+                Throw.LastFireTime = 0;
+                FireWeapon(*Combat, Throw, { .Position = Player.Position, .Direction = Direction, .SpriteSize = SpriteSize, .ObjectIndex = PlayerIndex }, &Stock);
+            }
+
+            for (uint32_t Time = 0; Time < FlightMilliseconds; Time += StepMilliseconds)
+            {
+                Combat->Clock += StepMilliseconds;
+                StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
+            }
+
+            GrenadeBounces += size_t(std::ranges::count_if(Combat->Projectiles, [](const FProjectile& Shot) { return Shot.Bounces > 0; }));
+            Combat->Projectiles.clear();
         }
 
         // Then the player waits in clear view of the first turret that has such a spot inside its weapon's range, and must draw fire.
@@ -6230,12 +6287,17 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         return std::unexpected(std::format("no turret fired in {} duels", Duels));
     }
 
+    if (GrenadeBounces == 0)
+    {
+        return std::unexpected("no grenade bounced off the terrain");
+    }
+
     if (CopDuels == 0 || CopShots == 0)
     {
         return std::unexpected(std::format("no cop fired in {} duels", CopDuels));
     }
 
-    return std::format("{} levels, {} player shots, {} turret shots while spinning, {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; {} turret duels: {} shots, {:.0f} damage taken; "
-        "{} cop duels ({} classes): {} shots; {} of {} generators gave birth",
-        Levels, Shots, TurretShots, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators);
+    return std::format("{} levels, {} player shots, {} turret shots while spinning, {} grenades bounced, {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; "
+        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth",
+        Levels, Shots, TurretShots, GrenadeBounces, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators);
 }
