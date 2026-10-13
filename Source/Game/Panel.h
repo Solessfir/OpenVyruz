@@ -113,6 +113,7 @@ public:
     // MapToggleWithPanel at 0043b570: the map shows the text-only mode 1 and gives the previous mode back when it closes.
     void ShowMap(bool bShown);
     int GetMode() const { return Mode; }
+    void SetDetails(const FVideoDetails& InDetails) { Details = InDetails; }
     // A panel.gaf animation's current frame at X, Y, as the map's icons draw (PanelDrawMapIcon at 004363f0).
     std::optional<FHudSprite> DrawAnimation(size_t Animation, float X, float Y) const;
     // A message's visible text in its font, as MessagesUpdate prints it.
@@ -154,6 +155,7 @@ private:
     int Mode = 5;
     int SavedMode = 5;
     int ModeStep = -1;
+    FVideoDetails Details;
 };
 
 // A GAF's bitmaps and animations, and its FNT_ fonts, as VzLoadGaf loads them for the panel and the menus.

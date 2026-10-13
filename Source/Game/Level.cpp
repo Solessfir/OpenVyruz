@@ -801,6 +801,7 @@ std::expected<FLevelObject, std::string> BuildObject(const std::vector<std::stri
         .bInGround = *InGround != 0,
         .bZShadow = *ZShadow != 0,
         .bDirectional = std::ranges::find(DirectionalTypes, SubType) != std::end(DirectionalTypes),
+        .bDetail = IntegerProperty("Is-detail").value_or(0) != 0,
         .SubType = SubType,
         .Properties = std::move(Properties),
     };

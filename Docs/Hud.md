@@ -15,12 +15,12 @@ Mode 0 shows nothing. From mode 1 on it draws, in this order, each part from the
 
 | Part | Modes | Anchor | Content |
 |---|---|---|---|
-| Borders | 1 to 5 | 0, 0 | With option flag `0x20` (`tv-borders`, on at the highest detail preset): `hbar2` stretched to the view's width, `vbar2` and `vbar1` (at width - 1) stretched to its height, and `hbar1` (at height - 1) to its width; the stretch is the view size over the bitmap's |
+| Borders | 1 to 5 | 0, 0 | With option flag `0x20` (`tv-borders`): `hbar2` stretched to the view's width, `vbar2` and `vbar1` (at width - 1) stretched to its height, and `hbar1` (at height - 1) to its width; the stretch is the view size over the bitmap's |
 | Score | 3 to 5 | 0, 0 | `score2` (frame 1, then its current frame), `scorebas`; money as `%08d $` in font 1 at 36, 30 |
 | Bars | 2 to 5 | width / 2, 0 | `NRJ1` frame 1, plus its current frame while shield / max is at most 0.01; `shield` and `armor` clipped to `trunc(width * value / max)` as the inclusive right edge of the bitmap (pgbmp `FUN_0044ed60`) |
 | Weapons | 3 to 5 | width - 1, 0 | `Weapons1` frame 1; `Weapons3`, or `Weapons4` while the player's acceleration (`+0x1a4`) differs from its class value; the lights `Weapons2`; the selected weapon's icon (session `+0x22b8`) at -60, 70; ammo as `%08d` in font 1 at -107, 9 |
 | Speed | 4 and 5 | 0, height - 1 | `speed2`, `speedtop`, `speedside`; the radar dots; speed as `%03d` in font 2 at 105, -4 |
-| Screen | 5 | width - 1, height - 1 | `screen` in draw mode 1 (5, half translucent, with option flag `0x10`, which the port keeps on); unless a surprise is in effect (object `+0xd4`), in font 3, the player's X and Y as `%04d` at -107 and -72, -70, `KILLED %d` at -60, `ENEMY %d` at -50, and the time as `%02d:%02d:%02d` at -40, all from x -107; `infos` frame 1 (its current frame while locked), `infosbas` |
+| Screen | 5 | width - 1, height - 1 | `screen` in draw mode 1 (5, half translucent, with option flag `0x10`, `translucent-panel`); unless a surprise is in effect (object `+0xd4`), in font 3, the player's X and Y as `%04d` at -107 and -72, -70, `KILLED %d` at -60, `ENEMY %d` at -50, and the time as `%02d:%02d:%02d` at -40, all from x -107; `infos` frame 1 (its current frame while locked), `infosbas` |
 | Text | 1 | 70, 20 | `SHIELD : %d / 100      ENERGY : %d / 100      AMMO : %d      CASH : %d $` in panel font 3 (session `+0x20a4` and `+0x20a8`), the percentages as whole numbers times 100 over the whole maximum |
 
 After the modes, in any mode, a surprise in effect prints each carried surprise's time left as `%d:%d` (minutes, then seconds of the minute) in panel font 3 at width - 100, height - 30.

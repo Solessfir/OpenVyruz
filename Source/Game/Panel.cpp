@@ -79,8 +79,9 @@ bool WeaponLightsShown(const FPanelValues& Values, FRandom& Misc)
 
 // "DANGER: SHIELD IS LOW" and the blinking warning start at 1 percent shield.
 constexpr float ShieldLowRatio = 0.01f;
-// The screen slot is drawn with draw mode 1, or 5 with option flag 0x10 ("Translucent Panel"), which the highest detail preset turns on and
-// the port keeps on: DrawTexturedPolygon gives mode 5 a fixed alpha of 0x80.
+// The screen slot is drawn with draw mode 1, or 5 with option flag 0x10 ("Translucent Panel"): DrawTexturedPolygon gives mode 5 a fixed
+// alpha of 0x80.
+constexpr uint32_t OpaqueScreenDrawMode = 1;
 constexpr uint32_t ScreenDrawMode = 5;
 constexpr float ScreenAlpha = float(0x80) / 255.f;
 
@@ -368,8 +369,12 @@ std::vector<FHudSprite> FPanel::DrawPage(const size_t Font, const std::string_vi
 
 void FPanel::PostWarnings(const FPanelValues& Values, FMessages& Messages) const
 {
-    // Both need option flag 8 ("HUD Green Info"), which the highest detail preset turns on; the port has no detail options and keeps it on.
-    // The lock warning shows in every mode but 0, the shield warning with the bars.
+    // Both need option flag 8 ("HUD Green Info"). The lock warning shows in every mode but 0, the shield warning with the bars.
+    if (!Details.bGreenInfo)
+    {
+        return;
+    }
+
     constexpr int32_t WarningX = 100;
     constexpr int32_t LockWarningY = 90;
     constexpr int32_t ShieldWarningY = 100;
@@ -413,9 +418,9 @@ std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span
     const float Bottom = float(ViewHeight - 1);
     constexpr uint32_t MillisecondsPerMinute = 60000;
     constexpr uint32_t MillisecondsPerSecond = 1000;
-    if (Mode >= TextMode)
+    if (Mode >= TextMode && Details.bTvBorders)
     {
-        // The TV borders (option flag 0x20, on at the highest detail preset): each bar stretched along its edge of the view.
+        // The TV borders (option flag 0x20): each bar stretched along its edge of the view.
         const auto FrameSize = [&](const size_t Slot)
         {
             const FSlot& Source = Slots[Slot];
@@ -528,8 +533,8 @@ std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span
     {
         // Screen, bottom right: position, kills, enemies left and the level time, unless a surprise is in effect.
         Gaf::FAnimationFrame Screen = Slots[ScreenSlot].Animation.Frames.empty() ? Gaf::FAnimationFrame{} : Slots[ScreenSlot].Animation.Frames.front();
-        Screen.DrawFlags = ScreenDrawMode;
-        Out.push_back({ .Sheet = Slots[ScreenSlot].Sheet, .Frame = Screen, .X = Right, .Y = Bottom, .Alpha = ScreenAlpha });
+        Screen.DrawFlags = Details.bTranslucentPanel ? ScreenDrawMode : OpaqueScreenDrawMode;
+        Out.push_back({ .Sheet = Slots[ScreenSlot].Sheet, .Frame = Screen, .X = Right, .Y = Bottom, .Alpha = Details.bTranslucentPanel ? ScreenAlpha : 1.f });
         if (!Values.bSurprise)
         {
             constexpr int32_t ScreenTextX = -0x6b;

@@ -45,6 +45,20 @@ The cursor starts on Restart Level when there is a default session and on Start 
 
 The Options menu (`MenuOptions`, `004229a0`) lists Video (`Details, Device, Video Mode, Gamma.`), Audio (`Music, Sound FX, Quality, Frequency, Mono/Stereo.`, or `Sound driver (DirectSound) is unavalaible.` without DirectSound), Control (`Input device, Key settings.`), User settings (`User name, Game difficulty level.`) and Language (`English.`), then Back, the default; each opens its own menu (`FUN_00422c10`, `FUN_00423e20`, `FUN_00424f30`, `FUN_00425b40`, `FUN_004259f0`).
 
+Video Details (`MenuVideoDetails`, `004235a0`) offers Max, which sets option flags (session `+0x27e0`) `0xbe` and clears `0x40`, Min, which clears `0xae` and sets `0x40` (Translucent Panel stays as it was), and Custom (`MenuVideoDetailsCustom`, `00423760`), which toggles each one:
+
+| Flag | Custom item | `vzconf.txt` keyword | Effect |
+|---|---|---|---|
+| `2` | Shadow | `shadow` | Object shadows |
+| `4` | Reactor FX | `reactor-fx` | The player's reactor glow |
+| `8` | HUD Green Info | `hud-green-info` | The weapon lists, the mines note and the panel's lock and shield warnings |
+| `0x10` | Translucent Panel | `translucent-panel` | The panel screen in draw mode 5 rather than 1 |
+| `0x20` | TV Borders | `tv-borders` | The borders around the view |
+| `0x40` | Ground/Smoke details (shown inverted) | `low-details`, or `high-details` inverted | Set, it hides `Is-detail` classes (class flag `0x100000`), the player's front light and the smoke particles |
+| `0x80` | Gamma FX | `gamma-fx` | Gamma flashes |
+
+`ConfigLoad` (`0042f570`) reads each keyword's value with `atoi` and the menus write them back to `vzconf.txt` (`ConfigSave`, `004303f0`). The port reads them the same way and starts from Max for any keyword the file leaves out; the archive's own `VZCONF.TXT` is the Max preset.
+
 The Extras menu (`MenuExtras`, `00427820`) lists Scores, Credits, Intro (`Select to view intro animation.`, `Install Indeo 5.11 or higher to see the intro.` or `Intro animation file is not present.`), Slide Show only while `vz-slide.rsc` is present (`SlidesPresent`, `00404a60`), and Demo (`Auto-playing game demo.`), then a gap without the slide show, and Back, the default. This executable is the Russian build: in English it still prints the Extras title, Scores, Intro and Audio in Russian (Windows-1251 strings at `0051db88`, `00513c8c`, `00513b64`, `00512828`).
 
 - Scores shows the score table (`SaveScores`, mode 0).
@@ -98,4 +112,4 @@ The texts print at the plot minus 150, 50 in world space in `v-bonus.gaf` font 6
 
 `Source/Game/Session` keeps the port's own session files, since the port does not model carried items as objects: `default.txt` and `s000.txt` onwards in `%APPDATA%\OpenVyruz\session\<session-name>` on Windows and `$XDG_DATA_HOME/OpenVyruz/session/<session-name>` (or `~/.local/share/...`) on Linux, where `<session-name>` comes from the archive's `VZCONF.TXT`, else `Player`. A file holds the level, the clock, energy and shield, the player (pose, inventory with ammo and keys, weapon slots) and, for a session saved during play, every object in the writer's order with its `.3DO` index or class, position, altitude, direction, wreck, energy, shield and door state. Loading replaces the level's objects with these, as loading the original's `.3DO` would; removed objects are left out except the ones carried keys came from. `--verify-game` checks that every level comes back from a session and that a saving plot saves once, for its cost, after 5.5 seconds.
 
-Not ported yet: the option menus behind Options (the port keeps the highest detail preset, the default keys, Normal difficulty and English), the score row's own brightening (the port draws its text twice, additively), the intro, the demo's pause, speed toggle, inventory and help actions, the exit explosions, the menu sounds, the "Licensed to" line, the session thumbnails, patrol points and other attribute blocks in sessions, and reading and writing the original's session folders (a todo: then both games would share one save folder).
+Not ported yet: the option menus behind Options (the port follows the detail flags from `vzconf.txt` but has no Gamma FX, and keeps the default keys, Normal difficulty and English), the score row's own brightening (the port draws its text twice, additively), the intro, the demo's pause, speed toggle, inventory and help actions, the exit explosions, the menu sounds, the "Licensed to" line, the session thumbnails, patrol points and other attribute blocks in sessions, and reading and writing the original's session folders (a todo: then both games would share one save folder).

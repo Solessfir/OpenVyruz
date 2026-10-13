@@ -72,6 +72,8 @@ struct FLevelObject
     bool bInGround = false;
     bool bZShadow = false;
     bool bDirectional = false;
+    // Is-detail (class flag 0x100000): ObjectDraw leaves the object out with low details.
+    bool bDetail = false;
     // Collected pickups and destroyed objects stay in the list so indices remain stable.
     bool bRemoved = false;
     // Object +0x128 bit 0x20: a Two-pieces object's first death left its lower half, which no longer acts and can be destroyed again.

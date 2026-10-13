@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -1681,6 +1682,7 @@ struct FSettings
     // use-mouse (keyword 0x124) makes the mouse the input device (session +0x165c = 3) and turns the absolute command on: the ship turns toward
     // the sight, the left button fires, the right one thrusts, Down backs off and Left and Right strafe.
     bool bMouse = false;
+    FVideoDetails Details;
 };
 
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a
@@ -1791,6 +1793,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             if (std::expected<FCombat, std::string> Weapons = CreateCombat(*Level, *PlayerObject, Archive, Bodies, Demo != nullptr))
             {
                 Combat = std::move(*Weapons);
+                Combat->Details = Settings.Details;
                 // The carried player object brings its weapons, loaded first and in the same order, and the game clock runs on.
                 if (Carried)
                 {
@@ -2516,7 +2519,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         const float PlayerAlpha = std::max(MinPlayerAlpha, float(PlayerFade) * FadeAlphaStep);
         // The player's layers from its shadow GAF (AnimInitializeGraphics at 00417b30, kind 0x18), one frame per pose and left out while it fades
         // (ObjectDraw at 00431ae0): the reactor glow under the body and over it while the reactor timer runs, grey as bright as the speed is a share
-        // of Thrust.Max, and the front light, off while the motor is blocked.
+        // of Thrust.Max, unless Reactor FX is off, and the front light, off while the motor is blocked or with low details.
         if (Player && PlayerFade >= FullFade)
         {
             const auto Shadow = Objects->SheetIndices.find(PlayerObject->ShadowGafPath);
@@ -2544,14 +2547,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 constexpr uint32_t ChannelMask = 0xff;
                 const size_t BodyAt = size_t(Body - Sprites.begin());
                 std::vector<FObjectSprite> After;
-                const bool bGlow = Player->ReactorMilliseconds != 0 && Player->Speed > 0.f && PlayerClass->ThrustMax > 0.f;
+                const bool bGlow = Settings.Details.bReactorFx && Player->ReactorMilliseconds != 0 && Player->Speed > 0.f && PlayerClass->ThrustMax > 0.f;
                 const uint32_t Grey = bGlow ? uint32_t(int64_t(double(Player->Speed) * FullGrey / double(PlayerClass->ThrustMax))) & ChannelMask : 0;
                 if (bGlow)
                 {
                     After.push_back(Layer(ReactorGlowAnimation, ESpriteBlend::Additive, Grey * GreyChannels));
                 }
 
-                if (!Inventory.Surprises.bBlockedMotor)
+                if (!Inventory.Surprises.bBlockedMotor && !Settings.Details.bLowDetails)
                 {
                     After.push_back(Layer(FrontLightAnimation, ESpriteBlend::Opaque, Base.Diffuse));
                 }
@@ -2568,6 +2571,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         {
             const Gaf::FAnimationFrame& Frame = Sprite.Frame;
             if (Frame.BitmapIndex == 0 || (Sprite.ObjectIndex != NoObjectIndex && Level->Objects[Sprite.ObjectIndex].bRemoved))
+            {
+                return;
+            }
+
+            // ObjectDraw draws shadows only with the Shadow option, and no part of an Is-detail object with low details.
+            const bool bDetailHidden = Settings.Details.bLowDetails && Sprite.ObjectIndex != NoObjectIndex && Level->Objects[Sprite.ObjectIndex].bDetail;
+            if ((Sprite.bShadow && !Settings.Details.bShadows) || bDetailHidden)
             {
                 return;
             }
@@ -2976,9 +2986,32 @@ int main(const int ArgCount, char** const Args)
     }
 
     // ConfigLoad (0042f570) reads vzconf.txt from the game folder, else the archive's VZCONF.TXT: session-name names the session folder and the
-    // player, and use-keyboard, use-joypad and use-mouse choose the input device, the last set one winning.
+    // player, use-keyboard, use-joypad and use-mouse choose the input device, the last set one winning, and the detail keywords set the Video
+    // Details options. A flag is set when its value reads as a non-zero number (atoi).
     FSettings Settings{ .PlayerName = "Player" };
     {
+        struct FDetailKey
+        {
+            std::string_view Name;
+            bool FVideoDetails::* Field = nullptr;
+            bool bInverted = false;
+        };
+        constexpr std::array DetailKeys{
+            FDetailKey{ .Name = "shadow", .Field = &FVideoDetails::bShadows },
+            FDetailKey{ .Name = "reactor-fx", .Field = &FVideoDetails::bReactorFx },
+            FDetailKey{ .Name = "hud-green-info", .Field = &FVideoDetails::bGreenInfo },
+            FDetailKey{ .Name = "translucent-panel", .Field = &FVideoDetails::bTranslucentPanel },
+            FDetailKey{ .Name = "tv-borders", .Field = &FVideoDetails::bTvBorders },
+            FDetailKey{ .Name = "low-details", .Field = &FVideoDetails::bLowDetails },
+            FDetailKey{ .Name = "high-details", .Field = &FVideoDetails::bLowDetails, .bInverted = true },
+        };
+        const auto IsSet = [](const std::string_view Value)
+        {
+            int Number = 0;
+            std::from_chars(Value.data(), Value.data() + Value.size(), Number);
+            return Number != 0;
+        };
+
         std::string Text(reinterpret_cast<const char*>(Config->data()), Config->size());
         std::error_code Error;
         for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(DataPath->parent_path(), Error))
@@ -3014,11 +3047,20 @@ int main(const int ArgCount, char** const Args)
             {
                 Settings.PlayerName = std::string(Value);
             }
-            else if ((Key == "use-mouse" || Key == "use-keyboard" || Key == "use-joypad") && Value == "1")
+            else if ((Key == "use-mouse" || Key == "use-keyboard" || Key == "use-joypad") && IsSet(Value))
             {
                 Settings.bMouse = Key == "use-mouse";
             }
+            else if (const auto Detail = std::ranges::find(DetailKeys, Key, &FDetailKey::Name); Detail != DetailKeys.end())
+            {
+                Settings.Details.*Detail->Field = IsSet(Value) != Detail->bInverted;
+            }
         }
+    }
+
+    if (Panel)
+    {
+        Panel->SetDetails(Settings.Details);
     }
 
     Settings.Folder = SessionDirectory(Settings.PlayerName);

@@ -582,9 +582,28 @@ struct FProjectile
     size_t Owner = 0;
 };
 
+// The Video Details options (session +0x27e0) that the port follows. ConfigLoad (0042f570) sets them from vzconf.txt's shadow, reactor-fx,
+// hud-green-info, translucent-panel, tv-borders and low-details (or high-details) keywords; the defaults are the Max preset (MenuVideoDetails at 004235a0).
+struct FVideoDetails
+{
+    // Flag 2: object shadows.
+    bool bShadows = true;
+    // Flag 4: the player's reactor glow.
+    bool bReactorFx = true;
+    // Flag 8: the weapon lists and the panel's warnings.
+    bool bGreenInfo = true;
+    // Flag 0x10: the panel's screen is drawn half translucent.
+    bool bTranslucentPanel = true;
+    // Flag 0x20: the TV borders around the view.
+    bool bTvBorders = true;
+    // Flag 0x40 (Ground/Smoke details off): hides Is-detail classes and the player's front light.
+    bool bLowDetails = false;
+};
+
 // The player's weapons (ADD Weapon blocks), the shots in flight and the game clock and random generator they use.
 struct FCombat
 {
+    FVideoDetails Details;
     std::vector<FWeaponClass> Weapons;
     std::vector<FAmmoClass> AmmoClasses;
     // The player's ADD Weapon entries, as indices into Weapons, and the one in hand.

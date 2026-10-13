@@ -3861,6 +3861,12 @@ void SelectPlayerWeapon(FCombat& Combat, const size_t Slot, const FPlayerInvento
         std::ranges::transform(Text, Text.begin(), [](const char Character) { return char(std::toupper(uint8_t(Character))); });
         return Text;
     };
+    // PlayerSelectWeapon lists the weapon only with HUD Green Info.
+    if (!Combat.Details.bGreenInfo)
+    {
+        return;
+    }
+
     const FWeaponClass& Weapon = Combat.Weapons[Combat.PlayerWeapon.Weapon];
     List(WeaponLines[0], std::format("WEAPON {}", Upper(Weapon.Name)));
     List(WeaponLines[1], std::format("FIRE RANGE {}", int32_t(Weapon.FireRange)));
@@ -3912,6 +3918,11 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
         constexpr int32_t NoteY = 0x6e;
         constexpr uint32_t NoteLifeMilliseconds = 2000;
         constexpr uint32_t PanelScreenFont = 3;
+        if (!Combat.Details.bGreenInfo)
+        {
+            return;
+        }
+
         if (Messages.Exists(NoteX, NoteY))
         {
             Messages.SetLife(NoteX, NoteY, NoteLifeMilliseconds);
