@@ -1131,6 +1131,273 @@ std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Render
     return Item && *Item < std::min(Sessions.size(), MaxSessions) ? Item : std::nullopt;
 }
 
+// A key or mouse button going down, as WaitForInput (00404910) and FUN_00401880 wait for one.
+class FInputPress
+{
+public:
+    explicit FInputPress(GLFWwindow* const Window) : Window(Window), Previous(Read()) {}
+
+    bool Poll()
+    {
+        const std::vector<bool> Now = Read();
+        bool bPressed = false;
+        for (size_t Index = 0; Index < Now.size(); ++Index)
+        {
+            bPressed = bPressed || (Now[Index] && !Previous[Index]);
+        }
+
+        Previous = Now;
+        return bPressed;
+    }
+
+private:
+    std::vector<bool> Read() const
+    {
+        std::vector<bool> Down;
+        for (int Key = GLFW_KEY_SPACE; Key <= GLFW_KEY_LAST; ++Key)
+        {
+            Down.push_back(glfwGetKey(Window, Key) == GLFW_PRESS);
+        }
+
+        Down.push_back(glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
+        Down.push_back(glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
+        return Down;
+    }
+
+    GLFWwindow* Window;
+    std::vector<bool> Previous;
+};
+
+// The credits (ShowCredits at 00402990 with the scroller at 00402400): credits.gaf, and credits-en.txt in v-menu.gaf font 4 rising from the bottom of the clip
+// 380, 0 to 639, 479 by half a pixel per step, until it has passed the top or a key or mouse button goes down.
+void ShowCredits(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art)
+{
+    constexpr int32_t ClipLeft = 380;
+    constexpr int32_t ClipRight = 639;
+    constexpr int32_t ClipBottom = 479;
+    constexpr size_t CreditsFont = 4;
+    // The scroller's speed argument, 500, times 0.001.
+    constexpr float RisePerStep = 0.5f;
+    const std::optional<FObjectGaf> Picture = LoadObjectGaf(Archive, "common\\data\\extra\\credits.gaf");
+    const std::optional<std::vector<uint8_t>> TextFile = Archive.Read("common\\data\\extra\\credits-en.txt");
+    if (!Picture || Picture->Animations.empty() || Picture->Animations.front().Frames.empty() || !TextFile)
+    {
+        return;
+    }
+
+    const std::string Text(TextFile->begin(), TextFile->end());
+    const FSpriteSheet PictureSheet = Renderer.CreateSpriteSheet(Picture->Bitmaps);
+    const FSpriteSheet FontSheet = Renderer.CreateSpriteSheet(Art.GetBitmaps(EHudSheet::VMenu));
+    const Gaf::FAnimationFrame& Frame = Picture->Animations.front().Frames.front();
+    const std::vector<FHudSprite> Lines = Art.DrawPage(CreditsFont, Text, ClipLeft, 0, ClipRight);
+    float TextHeight = 0.f;
+    for (const FHudSprite& Glyph : Lines)
+    {
+        const std::vector<Gaf::FFrame>& Bitmaps = Art.GetBitmaps(EHudSheet::VMenu);
+        if (Glyph.Frame.BitmapIndex >= 1 && Glyph.Frame.BitmapIndex <= Bitmaps.size())
+        {
+            TextHeight = std::max(TextHeight, Glyph.Y + float(Bitmaps[Glyph.Frame.BitmapIndex - 1].Height));
+        }
+    }
+
+    const uint32_t FramePeriod = DisplayFramePeriod();
+    FFrameClock Clock(FramePeriod);
+    FInputPress Input(Window);
+    float Top = float(ClipBottom);
+    while (!glfwWindowShouldClose(Window) && Top + TextHeight >= 0.f)
+    {
+        glfwPollEvents();
+        if (Input.Poll())
+        {
+            break;
+        }
+
+        for (uint32_t Remaining = Clock.Poll(ClockMilliseconds()); Remaining != 0;)
+        {
+            NextGameStep(Remaining, FramePeriod, false);
+            Top -= RisePerStep;
+        }
+
+        if (Renderer.BeginFrame())
+        {
+            if (Frame.BitmapIndex != 0)
+            {
+                Renderer.DrawSprite(PictureSheet, Frame.BitmapIndex - 1, float(Frame.OffsetX), float(Frame.OffsetY));
+            }
+
+            for (FHudSprite Glyph : Lines)
+            {
+                Glyph.Y += float(TruncateLow(Top));
+                DrawHudSprite(Renderer, FontSheet, Glyph);
+            }
+
+            Renderer.EndFrame();
+        }
+    }
+}
+
+// The slide show (ShowSlides at 00404aa0): vz-slide.rsc's slides\slide-001.tga to slide-031.tga, each centred for up to 4 seconds, round again while any showed,
+// until a key or mouse button goes down. The archive sits beside vz-data.rsc in any case.
+void ShowSlides(GLFWwindow* const Window, FRenderer& Renderer, const std::filesystem::path& DataFolder)
+{
+    constexpr int LastSlide = 0x1f;
+    constexpr uint32_t SlideMilliseconds = 4000;
+    std::optional<std::filesystem::path> SlidePath;
+    std::error_code Error;
+    for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(DataFolder, Error))
+    {
+        std::string Name = Entry.path().filename().string();
+        std::ranges::transform(Name, Name.begin(), [](const unsigned char Character) { return char(std::tolower(Character)); });
+        if (Name == "vz-slide.rsc")
+        {
+            SlidePath = Entry.path();
+        }
+    }
+
+    FResourceArchive Slides;
+    if (!SlidePath || !Slides.Open(*SlidePath))
+    {
+        std::fprintf(stderr, "Cannot start slide show.\n");
+        return;
+    }
+
+    FInputPress Input(Window);
+    for (bool bShown = true; bShown;)
+    {
+        bShown = false;
+        for (int Slide = 1; Slide <= LastSlide; ++Slide)
+        {
+            const std::optional<std::vector<uint8_t>> File = Slides.Read(std::format("slides\\slide-{:03}.tga", Slide));
+            const std::optional<Gaf::FFrame> Image = File ? LoadTga(*File) : std::nullopt;
+            if (!Image)
+            {
+                continue;
+            }
+
+            bShown = true;
+            Renderer.ReleaseSpriteSheets();
+            const FSpriteSheet Sheet = Renderer.CreateSpriteSheet({ *Image });
+            const float X = float((int32_t(ScreenWidth) - int32_t(Image->Width)) / 2);
+            const float Y = float((int32_t(ScreenHeight) - int32_t(Image->Height)) / 2);
+            const uint32_t Start = ClockMilliseconds();
+            while (ClockMilliseconds() - Start < SlideMilliseconds)
+            {
+                glfwPollEvents();
+                if (glfwWindowShouldClose(Window) || Input.Poll())
+                {
+                    Renderer.ReleaseSpriteSheets();
+                    return;
+                }
+
+                if (Renderer.BeginFrame())
+                {
+                    Renderer.DrawSprite(Sheet, 0, X, Y);
+                    Renderer.EndFrame();
+                }
+            }
+        }
+    }
+
+    Renderer.ReleaseSpriteSheets();
+}
+
+// MenuOptions at 004229a0, the options: Video, Audio, Control, User settings and Language, then Back, the default. ponytail: their own menus wait for the
+// settings they change; the port keeps the highest detail preset, the default keys, Normal difficulty and English.
+void RunOptionsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random)
+{
+    const FMenu Menu{
+        .Left = MenuLeft,
+        .Top = MenuTop,
+        .Right = int32_t(ScreenWidth),
+        .Bottom = int32_t(ScreenHeight),
+        .StepY = MenuStepY,
+        .Title = "Options",
+        .Items = {
+            { .Text = "Video", .Help = "Details, Device, Video Mode, Gamma." },
+            { .Text = "Audio", .Help = "Sound driver (DirectSound) is unavalaible." },
+            { .Text = "Control", .Help = "Input device, Key settings." },
+            { .Text = "User settings", .Help = "User name, Game difficulty level." },
+            { .Text = "Language", .Help = "English." },
+            { .Text = "Back" },
+        },
+        .DefaultItem = 5,
+    };
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (;;)
+    {
+        const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
+        if (!Item || *Item == *Menu.DefaultItem)
+        {
+            return;
+        }
+    }
+}
+
+// MenuExtras at 00427820, the extras: Scores, Credits, Intro, Slide Show while vz-slide.rsc is there, and Demo, then Back, the default. The original's
+// Russian build prints this menu's title and its Scores and Intro items in Russian even in English. ponytail: the scores table, the intro and
+// the demo playback are not ported.
+void RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random,
+    const std::filesystem::path& DataFolder)
+{
+    enum EItem : size_t
+    {
+        ScoresItem,
+        CreditsItem,
+        IntroItem,
+        SlidesItem,
+    };
+    std::error_code Error;
+    bool bSlides = false;
+    for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(DataFolder, Error))
+    {
+        std::string Name = Entry.path().filename().string();
+        std::ranges::transform(Name, Name.begin(), [](const unsigned char Character) { return char(std::tolower(Character)); });
+        bSlides = bSlides || Name == "vz-slide.rsc";
+    }
+
+    FMenu Menu{
+        .Left = MenuLeft,
+        .Top = MenuTop,
+        .Right = int32_t(ScreenWidth),
+        .Bottom = int32_t(ScreenHeight),
+        .StepY = MenuStepY,
+        .Title = "Extras",
+        .Items = { { .Text = "Scores" }, { .Text = "Credits" }, { .Text = "Intro", .Help = "Intro animation file is not present." } },
+    };
+    if (bSlides)
+    {
+        Menu.Items.push_back({ .Text = "Slide Show" });
+    }
+
+    Menu.Items.push_back({ .Text = "Demo", .Help = "Auto-playing game demo." });
+    if (!bSlides)
+    {
+        Menu.Items.emplace_back();
+    }
+
+    Menu.Items.push_back({ .Text = "Back" });
+    Menu.DefaultItem = Menu.Items.size() - 1;
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (;;)
+    {
+        const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
+        if (!Item || *Item == *Menu.DefaultItem)
+        {
+            return;
+        }
+
+        if (*Item == CreditsItem)
+        {
+            ShowCredits(Window, Renderer, Archive, Art);
+        }
+        else if (*Item == SlidesItem && bSlides)
+        {
+            ShowSlides(Window, Renderer, DataFolder);
+            Sheets = CreateMenuSheets(Renderer, Art);
+        }
+    }
+}
+
 enum class EMenuChoice : uint8_t
 {
     NewGame,
@@ -1141,8 +1408,8 @@ enum class EMenuChoice : uint8_t
 
 // MenuMain at 004271a0, the main menu. Options and Extras open nothing yet. RandomNext's draws here do not matter, since every level reseeds the
 // generator.
-EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FSession* const Session,
-    const std::filesystem::path& SessionFolder, FSession& Chosen)
+EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, const FSession* const Session,
+    const std::filesystem::path& SessionFolder, const std::filesystem::path& DataFolder, FSession& Chosen)
 {
     enum EItem : size_t
     {
@@ -1172,7 +1439,7 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMe
         .DefaultItem = ExitItem,
         .StartItem = Session ? RestartItem : NewGameItem,
     };
-    const FMenuSheets Sheets = CreateMenuSheets(Renderer, Art);
+    FMenuSheets Sheets = CreateMenuSheets(Renderer, Art);
     FRandom Random;
     std::optional<std::pair<int32_t, int32_t>> Cursor;
     for (;;)
@@ -1213,6 +1480,14 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMe
 
             Saved = ReadSavedSessions(SessionFolder);
             Menu.Items[LoadItem].Help = LoadHelp();
+        }
+        else if (*Item == OptionsItem)
+        {
+            RunOptionsMenu(Window, Renderer, Art, Sheets, Random);
+        }
+        else if (*Item == ExtrasItem)
+        {
+            RunExtrasMenu(Window, Renderer, Archive, Art, Sheets, Random, DataFolder);
         }
         else if (*Item == ExitItem)
         {
@@ -1279,6 +1554,11 @@ std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Render
         if (*Item == ResumeItem)
         {
             return std::nullopt;
+        }
+
+        if (*Item == OptionsItem)
+        {
+            RunOptionsMenu(Window, Renderer, Art, Sheets, Random);
         }
 
         if (*Item == RetryItem)
@@ -2403,7 +2683,7 @@ int main(const int ArgCount, char** const Args)
         if (bMenu)
         {
             FSession Chosen;
-            const EMenuChoice Choice = RunMainMenu(Window, Renderer, *MenuArt, Session ? &*Session : nullptr, Sessions.Folder, Chosen);
+            const EMenuChoice Choice = RunMainMenu(Window, Renderer, Archive, *MenuArt, Session ? &*Session : nullptr, Sessions.Folder, DataPath->parent_path(), Chosen);
             Renderer.ReleaseSpriteSheets();
             if (Choice == EMenuChoice::Quit)
             {

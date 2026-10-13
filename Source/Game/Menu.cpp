@@ -253,6 +253,13 @@ std::vector<FHudSprite> FMenuArt::Draw(const FMenu& Menu, FMenuState& State) con
     return Out;
 }
 
+std::vector<FHudSprite> FMenuArt::DrawPage(const size_t Font, const std::string_view Text, const int32_t Left, const int32_t Top, const int32_t Right) const
+{
+    std::vector<FHudSprite> Out;
+    DrawText(Out, Font, Left, Top, Text, Right);
+    return Out;
+}
+
 const std::vector<Gaf::FFrame>& FMenuArt::GetBitmaps(const EHudSheet Sheet) const
 {
     return Sheet == EHudSheet::VMenu ? VBitmaps : Bitmaps;

@@ -35,11 +35,22 @@ PgPoll's key codes index the key name table at `0x517a94`: 1 Escape, 14 Backspac
 | Restart Level, or a gap without a default session | `SessionDescribeDefault` (`00427ad0`): `%s   (%d:%d:%d)\nEnergy : %d\nShield : %d\nDifficulty : %s ...\n` with the level name, the clock and the player's energy and shield | "Retry level ?" (Yes please ! / No thanks., default No thanks.), then the default session |
 | Start New Game | | the first level |
 | Load Game | `%d saved session%s available.` or `No saved session.` | `SessionLoad` (`0042ba00`) mode 0, the saved sessions |
-| Options | `Video, Audio, Control, User settings, Language.` | `FUN_004229a0` |
-| Extras | `Scores, Credits, Intro, Slide Show, Demo.` | `FUN_00427820` |
+| Options | `Video, Audio, Control, User settings, Language.` | `MenuOptions` |
+| Extras | `Scores, Credits, Intro, Slide Show, Demo.` | `MenuExtras` |
 | Exit (default) | | "Exit Now ?" (Yes, bye. / No !, default Yes), with explosions over the menu (`MenuExplode` (`00421460`)) before leaving |
 
 The cursor starts on Restart Level when there is a default session and on Start New Game otherwise. The difficulty names are Easy, Normal, Hard and Insane (`DifficultyName` (`00403310`)); the default is Normal.
+
+## Options and Extras
+
+The Options menu (`MenuOptions`, `004229a0`) lists Video (`Details, Device, Video Mode, Gamma.`), Audio (`Music, Sound FX, Quality, Frequency, Mono/Stereo.`, or `Sound driver (DirectSound) is unavalaible.` without DirectSound), Control (`Input device, Key settings.`), User settings (`User name, Game difficulty level.`) and Language (`English.`), then Back, the default; each opens its own menu (`FUN_00422c10`, `FUN_00423e20`, `FUN_00424f30`, `FUN_00425b40`, `FUN_004259f0`).
+
+The Extras menu (`MenuExtras`, `00427820`) lists Scores, Credits, Intro (`Select to view intro animation.`, `Install Indeo 5.11 or higher to see the intro.` or `Intro animation file is not present.`), Slide Show only while `vz-slide.rsc` is present (`SlidesPresent`, `00404a60`), and Demo (`Auto-playing game demo.`), then a gap without the slide show, and Back, the default. This executable is the Russian build: in English it still prints the Extras title, Scores, Intro and Audio in Russian (Windows-1251 strings at `0051db88`, `00513c8c`, `00513b64`, `00512828`).
+
+- Scores shows the score table (`SaveScores`, mode 0).
+- Credits (`ShowCredits`, `00402990`) draws `credits.gaf` and scrolls `credits-en.txt` (`credits-fr.txt` in the other language) in v-menu font 4 with word wrap inside 380, 0 to 639, 479, from the clip's bottom up by 0.5 pixel per step (the speed argument 500 times 0.001), until the text has passed the top or a key or mouse button goes down.
+- Slide Show (`ShowSlides`, `00404aa0`) opens `vz-slide.rsc` and shows `slides\slide-001.tga` to `slide-031.tga`, each centred, for up to 4 seconds (`WaitForInput`); it starts over while any slide showed and ends on a key or mouse button.
+- Demo returns 10, and `VzMenuLoop` plays `demo.3dr`.
 
 ## Game menu
 
@@ -67,8 +78,8 @@ The texts print at the plot minus 150, 50 in world space in `v-bonus.gaf` font 6
 
 ## Port
 
-`Source/Game/Menu` draws and steps a menu; `Source/Main.cpp` runs the main menu, the game menu, the questions and the session menu. `--level` and `--start` skip the main menu at startup.
+`Source/Game/Menu` draws and steps a menu; `Source/Main.cpp` runs the main menu, the game menu, the questions, the session menu, Options, Extras, the credits and the slide show. The menus print English throughout. `--level` and `--start` skip the main menu at startup.
 
 `Source/Game/Session` keeps the port's own session files, since the port does not model carried items as objects: `default.txt` and `s000.txt` onwards in `%APPDATA%\OpenVyruz\session\<session-name>` on Windows and `$XDG_DATA_HOME/OpenVyruz/session/<session-name>` (or `~/.local/share/...`) on Linux, where `<session-name>` comes from the archive's `VZCONF.TXT`, else `Player`. A file holds the level, the clock, energy and shield, the player (pose, inventory with ammo and keys, weapon slots) and, for a session saved during play, every object in the writer's order with its `.3DO` index or class, position, altitude, direction, wreck, energy, shield and door state. Loading replaces the level's objects with these, as loading the original's `.3DO` would; removed objects are left out except the ones carried keys came from. `--verify-game` checks that every level comes back from a session and that a saving plot saves once, for its cost, after 5.5 seconds.
 
-Not ported yet: Options and Extras, the idle demo, the exit explosions, the menu sounds, the "Licensed to" line, the session thumbnails, patrol points and other attribute blocks in sessions, and reading the original's session folders.
+Not ported yet: the option menus behind Options (the port keeps the highest detail preset, the default keys, Normal difficulty and English), the scores, the intro, the demo (from Extras or the idle timeout), the exit explosions, the menu sounds, the "Licensed to" line, the session thumbnails, patrol points and other attribute blocks in sessions, and reading the original's session folders.
