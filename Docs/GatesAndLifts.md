@@ -56,6 +56,18 @@ A new animation starts at its third frame. Each update first returns while the t
 
 Touching a lift or gate without the key shows "Lift needs key", "Wait, lift will come" or "Gate needs key" (`EngineUpdateObjects`), and using one shows "Using Key" (`ShowUsingKeyMessage`, `00443500`).
 
+## Level changes
+
+`ObjectUpdateLevelExit` stores the lift's `3do-file` as the next level and sets the level-end flag. Without `Scenery` the level stays in the current zone. With it, the zone changes, which takes the fuller reload (session flags `0x400000` and `0x800000`). A starred name such as `*End of Tower 2*` ends a tower.
+
+`LoopLevels` (`004467d0`) runs `VzPlayLevel`, then keeps the player object if it is still alive. `LevelReload` (`00420430`) loads the next level from scratch through `VzLoadLevel`, so a level left and entered again starts over. Before the next `VzPlayLevel`, `LoopLevels` replaces the new level's player object with the kept one:
+
+- It moves to the new player's position.
+- Its velocity is cleared.
+- Everything else is kept: energy, shield, money, weapons, ammo, carried keys and codes, facing and thrust.
+
+The player arrives on the next level's lift. That lift is present, so it carries the player back once its delay runs out.
+
 ## Keys and codes
 
 `Key-N` and `Code` items have `Carry`. `ConsumeItem` (`00444660`) moves a carried item without an item action onto the player's list at object `+0x11c`, newest first. `ObjectCarriesKey` (`0043dcb0`) checks the newest item with the id. A code counts only when the parts carried with that id match the first part's `Code-part-count` and include part 1 (`ObjectFindCompleteCode`, `00439270`). `Destroy-key` makes `ObjectDestroyKeys` (`0043dd20`) remove every carried key or part with the id. Without `Key-always-needed` the door then forgets its id.
@@ -68,8 +80,11 @@ Touching a lift or gate without the key shows "Lift needs key", "Wait, lift will
 - Each closed gate is then opened by the player.
 - The player rides each usable lift with its key, waiting on it until it leaves.
 
+`RunLevel` in `Source/Main.cpp` plays one level and returns the next level's path, carrying the player object, state, inventory, selected weapon and game clock. `--verify-game` also loads the level each lift leads to.
+
 Not ported yet:
 
-- Level changes: the window only reports the lift's level.
+- The end-of-tower sequence for starred names.
+- Putting the carried player first in its grid cell when the activation phases are drawn.
 - The messages, which wait for the HUD.
 - Invisibility, the key cheat and code timeouts.

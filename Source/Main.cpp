@@ -657,164 +657,38 @@ uint32_t ClockMilliseconds()
     const auto Elapsed = std::chrono::steady_clock::now().time_since_epoch();
     return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(Elapsed).count());
 }
-}
 
-int main(const int ArgCount, char** const Args)
+// What LoopLevels (004467d0) keeps of the player object for the next level: everything but its position and velocity.
+struct FCarriedPlayer
 {
-    std::optional<std::filesystem::path> DataPath;
-    std::string LevelPath = "underground\\t1u1";
-    // Development aid: --start X,Y spawns the player at that world position.
-    std::optional<std::pair<float, float>> Start;
-    bool bVerifyGafs = false;
-    bool bVerifyLevels = false;
-    bool bVerifyGame = false;
-    // Development aid: --dump-gaf PATH lists an archive GAF's animations with their frame counts and durations.
-    std::optional<std::string> DumpGafPath;
-    // Holds the trigger down, for checking shots and explosions without a keyboard.
-    bool bAutoFire = false;
-    for (int Index = 1; Index < ArgCount; ++Index)
-    {
-        if (std::strcmp(Args[Index], "--verify-gaf") == 0)
-        {
-            bVerifyGafs = true;
-        }
-        else if (std::strcmp(Args[Index], "--verify-levels") == 0)
-        {
-            bVerifyLevels = true;
-        }
-        else if (std::strcmp(Args[Index], "--verify-game") == 0)
-        {
-            bVerifyGame = true;
-        }
-        else if (std::strcmp(Args[Index], "--auto-fire") == 0)
-        {
-            bAutoFire = true;
-        }
-        else if (std::strcmp(Args[Index], "--dump-gaf") == 0 && Index + 1 < ArgCount)
-        {
-            DumpGafPath = Args[++Index];
-        }
-        else if (std::strcmp(Args[Index], "--level") == 0 && Index + 1 < ArgCount)
-        {
-            LevelPath = Args[++Index];
-        }
-        else if (float X = 0.f, Y = 0.f; std::strcmp(Args[Index], "--start") == 0 && Index + 1 < ArgCount && std::sscanf(Args[Index + 1], "%f,%f", &X, &Y) == 2)
-        {
-            Start = { X, Y };
-            ++Index;
-        }
-        else
-        {
-            DataPath = Args[Index];
-        }
-    }
+    FLevelObject Object;
+    FPlayerState State;
+    FPlayerInventory Inventory;
+    FWeaponState Weapon;
+    uint32_t Clock = 1;
+};
 
-    if (!DataPath)
-    {
-        const auto Directory = ExecutableDirectory();
-        if (!Directory)
-        {
-            std::fprintf(stderr, "%s\n", Directory.error().c_str());
-            return 1;
-        }
-
-        DataPath = *Directory / "vz-data.rsc";
-    }
-    else
-    {
-        std::error_code Error;
-        if (std::filesystem::is_directory(*DataPath, Error))
-        {
-            *DataPath /= "vz-data.rsc";
-        }
-    }
-
-    FResourceArchive Archive;
-    if (!Archive.Open(*DataPath))
-    {
-        std::fprintf(stderr, "Cannot open %s\n", DataPath->string().c_str());
-        return 1;
-    }
-    const std::optional<std::vector<uint8_t>> Config = Archive.Read("VZCONF.TXT");
-    if (!Config || Config->empty() || (*Config)[0] != '#')
-    {
-        std::fprintf(stderr, "vz-data.rsc is unreadable: VZCONF.TXT missing or corrupt\n");
-        return 1;
-    }
-    std::printf("vz-data.rsc: %zu entries\n", Archive.GetEntryCount());
-    std::fflush(stdout);
-    if (bVerifyGafs)
-    {
-        return VerifyGafs(Archive);
-    }
-    if (DumpGafPath)
-    {
-        const std::optional<FObjectGaf> Gaf = LoadObjectGaf(Archive, *DumpGafPath);
-        if (!Gaf)
-        {
-            std::fprintf(stderr, "Cannot decode %s\n", DumpGafPath->c_str());
-            return 1;
-        }
-
-        for (size_t Index = 0; Index < Gaf->Animations.size(); ++Index)
-        {
-            const Gaf::FAnimation& Animation = Gaf->Animations[Index];
-            std::printf("%3zu %-12s %3zu frames, flags %#x, loop %u, durations", Index + 1, Animation.Name.c_str(), Animation.Frames.size(), Animation.Flags,
-                Animation.LoopStart);
-            for (const Gaf::FAnimationFrame& Frame : Animation.Frames)
-            {
-                std::printf(" %d", Frame.Duration);
-            }
-            std::printf("\n");
-        }
-        return 0;
-    }
-    if (bVerifyLevels)
-    {
-        return VerifyLevels(Archive);
-    }
-    if (bVerifyGame)
-    {
-        const bool bFrameLoop = VerifyFrameLoop();
-        const std::expected<void, std::string> Collision = VerifyTerrainCollision();
-        const std::expected<void, std::string> Movement = VerifyPlayerMovement();
-        const std::expected<void, std::string> Paths = VerifyPathSearch();
-        std::printf("Path search: %s\n", Paths ? "passed" : Paths.error().c_str());
-        const std::expected<std::string, std::string> Demo = VerifyDemoReplay(Archive);
-        std::printf("Demo replay: %s\n", Demo ? Demo->c_str() : Demo.error().c_str());
-        const std::expected<std::string, std::string> Combat = VerifyCombat(Archive);
-        std::printf("Combat: %s\n", Combat ? Combat->c_str() : Combat.error().c_str());
-        const std::expected<std::string, std::string> Patrols = VerifyPatrols(Archive);
-        std::printf("Patrols: %s\n", Patrols ? Patrols->c_str() : Patrols.error().c_str());
-        const std::expected<std::string, std::string> Doors = VerifyDoors(Archive);
-        std::printf("Gates and lifts: %s\n", Doors ? Doors->c_str() : Doors.error().c_str());
-        std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
-            Collision ? "passed" : Collision.error().c_str(), Movement ? "passed" : Movement.error().c_str());
-        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols && Doors ? 0 : 1;
-    }
-
+// One level of LoopLevels: runs until the window closes or the player takes a lift, and then returns the next level's path with the player
+// in Carried.
+std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive,
+    const std::string& LevelPath, const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried)
+{
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
     if (!Level)
     {
-        std::fprintf(stderr, "Cannot load level: %s\n", Level.error().c_str());
-        return 1;
+        return std::unexpected(std::format("Cannot load level: {}", Level.error()));
     }
 
-    if (!glfwInit())
+    const auto PlayerObject = std::ranges::find_if(Level->Objects, [](const FLevelObject& Object) { return Object.Behaviour == "Player"; });
+    // LoopLevels puts the carried player object where the new level's player starts.
+    if (Carried && PlayerObject != Level->Objects.end())
     {
-        std::fprintf(stderr, "glfwInit failed\n");
-        return 1;
+        const float X = PlayerObject->X;
+        const float Y = PlayerObject->Y;
+        *PlayerObject = Carried->Object;
+        PlayerObject->X = X;
+        PlayerObject->Y = Y;
     }
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow* const Window = glfwCreateWindow(static_cast<int>(ScreenWidth) * 2, static_cast<int>(ScreenHeight) * 2, "Vyruz", nullptr, nullptr);
-    if (!Window)
-    {
-        std::fprintf(stderr, "glfwCreateWindow failed\n");
-        return 1;
-    }
-
-    FRenderer Renderer;
-    Renderer.Init(Window);
 
     // Level view: MAP_ layers drawn bottom-up with the placed objects. The player drives with the original movement code; levels
     // without a player fall back to scrolling with the arrow keys.
@@ -822,17 +696,12 @@ int main(const int ArgCount, char** const Args)
     std::expected<FObjectSprites, std::string> Objects = CreateObjectSprites(Archive, Renderer, *Level);
     if (!Objects)
     {
-        std::fprintf(stderr, "%s\n", Objects.error().c_str());
-        Renderer.Shutdown();
-        glfwDestroyWindow(Window);
-        glfwTerminate();
-        return 1;
+        return std::unexpected(Objects.error());
     }
 
     constexpr double ScrollSpeed = 600.0;
     const float MapWidth = float(Level->GridWidth * BlockWidth);
     const float MapHeight = float(Level->GridHeight * BlockHeight);
-    const auto PlayerObject = std::ranges::find_if(Level->Objects, [](const FLevelObject& Object) { return Object.Behaviour == "Player"; });
     std::optional<FMovementClass> PlayerClass;
     std::optional<FPlayerState> Player;
     std::optional<FTerrainCollision> Terrain;
@@ -855,9 +724,8 @@ int main(const int ArgCount, char** const Args)
         Doors.emplace();
     }
 
-    // ponytail: level changes are not ported yet; the lift the player takes is only reported.
-    std::optional<std::string> LiftDestination;
-    FPlayerInventory Inventory = PlayerObject != Level->Objects.end() ? CreateInventory(*PlayerObject) : FPlayerInventory{};
+    std::optional<std::string> NextLevel;
+    FPlayerInventory Inventory = Carried ? Carried->Inventory : PlayerObject != Level->Objects.end() ? CreateInventory(*PlayerObject) : FPlayerInventory{};
     if (PlayerObject != Level->Objects.end())
     {
         std::expected<FMovementClass, std::string> Class = ReadMovementClass(*PlayerObject);
@@ -865,17 +733,37 @@ int main(const int ArgCount, char** const Args)
         if (Class && Collision)
         {
             PlayerClass = *Class;
-            if (Start)
+            if (Start && !Carried)
             {
                 PlayerObject->X = Start->first;
                 PlayerObject->Y = Start->second;
             }
 
             Player = SpawnPlayer(*PlayerObject, *Class);
+            // The carried player keeps its pose, speed and turn state; only its velocity is cleared.
+            if (Carried)
+            {
+                const FPlayerState Arrival = *Player;
+                *Player = Carried->State;
+                Player->Position = Player->PreviousPosition = Arrival.Position;
+                Player->Center = Arrival.Center;
+                Player->Velocity = {};
+            }
+
             Terrain = std::move(*Collision);
             if (std::expected<FCombat, std::string> Weapons = CreateCombat(*Level, *PlayerObject, Archive, Bodies))
             {
                 Combat = std::move(*Weapons);
+                // The carried player object brings its weapons, loaded first and in the same order, and the game clock runs on.
+                if (Carried)
+                {
+                    Combat->Clock = Carried->Clock;
+                    if (Carried->Weapon.Weapon < Combat->Weapons.size())
+                    {
+                        Combat->PlayerWeapon = Carried->Weapon;
+                    }
+                }
+
                 for (const FEffectClass& Effect : Combat->EffectClasses)
                 {
                     if (!FindOrLoadSheet(*Objects, Archive, Renderer, Effect.GafPath))
@@ -926,11 +814,18 @@ int main(const int ArgCount, char** const Args)
                 StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
                 StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &*Player);
                 const FPlayerTarget Rider{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
-                if (std::optional<std::string> Next = StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds); Next && !LiftDestination)
+                if (const FDoor* const Lift = StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds); Lift && !NextLevel)
                 {
-                    std::printf("Lift to %s\n", Next->c_str());
-                    std::fflush(stdout);
-                    LiftDestination = std::move(Next);
+                    // ponytail: the end of a tower (a starred 3do-file) has no sequence yet; the player stays.
+                    if (Lift->NextLevel.starts_with('*'))
+                    {
+                        std::printf("Reached %s\n", Lift->NextLevel.c_str());
+                        std::fflush(stdout);
+                    }
+                    else
+                    {
+                        NextLevel = NextLevelPath(LevelPath, *Lift);
+                    }
                 }
                 if (Combat)
                 {
@@ -1164,10 +1059,197 @@ int main(const int ArgCount, char** const Args)
             FpsWindowStart = Now;
             FpsFrames = 0;
         }
+
+        // The level ends after the frame in which the player took a lift.
+        if (NextLevel && Player && PlayerObject != Level->Objects.end())
+        {
+            Carried = FCarriedPlayer{
+                .Object = *PlayerObject,
+                .State = *Player,
+                .Inventory = Inventory,
+                .Weapon = Combat ? Combat->PlayerWeapon : FWeaponState{},
+                .Clock = Combat ? Combat->Clock : 1,
+            };
+            return NextLevel;
+        }
+    }
+
+    return std::optional<std::string>();
+}
+}
+
+int main(const int ArgCount, char** const Args)
+{
+    std::optional<std::filesystem::path> DataPath;
+    std::string LevelPath = "underground\\t1u1";
+    // Development aid: --start X,Y spawns the player at that world position.
+    std::optional<std::pair<float, float>> Start;
+    bool bVerifyGafs = false;
+    bool bVerifyLevels = false;
+    bool bVerifyGame = false;
+    // Development aid: --dump-gaf PATH lists an archive GAF's animations with their frame counts and durations.
+    std::optional<std::string> DumpGafPath;
+    // Holds the trigger down, for checking shots and explosions without a keyboard.
+    bool bAutoFire = false;
+    for (int Index = 1; Index < ArgCount; ++Index)
+    {
+        if (std::strcmp(Args[Index], "--verify-gaf") == 0)
+        {
+            bVerifyGafs = true;
+        }
+        else if (std::strcmp(Args[Index], "--verify-levels") == 0)
+        {
+            bVerifyLevels = true;
+        }
+        else if (std::strcmp(Args[Index], "--verify-game") == 0)
+        {
+            bVerifyGame = true;
+        }
+        else if (std::strcmp(Args[Index], "--auto-fire") == 0)
+        {
+            bAutoFire = true;
+        }
+        else if (std::strcmp(Args[Index], "--dump-gaf") == 0 && Index + 1 < ArgCount)
+        {
+            DumpGafPath = Args[++Index];
+        }
+        else if (std::strcmp(Args[Index], "--level") == 0 && Index + 1 < ArgCount)
+        {
+            LevelPath = Args[++Index];
+        }
+        else if (float X = 0.f, Y = 0.f; std::strcmp(Args[Index], "--start") == 0 && Index + 1 < ArgCount && std::sscanf(Args[Index + 1], "%f,%f", &X, &Y) == 2)
+        {
+            Start = { X, Y };
+            ++Index;
+        }
+        else
+        {
+            DataPath = Args[Index];
+        }
+    }
+
+    if (!DataPath)
+    {
+        const auto Directory = ExecutableDirectory();
+        if (!Directory)
+        {
+            std::fprintf(stderr, "%s\n", Directory.error().c_str());
+            return 1;
+        }
+
+        DataPath = *Directory / "vz-data.rsc";
+    }
+    else
+    {
+        std::error_code Error;
+        if (std::filesystem::is_directory(*DataPath, Error))
+        {
+            *DataPath /= "vz-data.rsc";
+        }
+    }
+
+    FResourceArchive Archive;
+    if (!Archive.Open(*DataPath))
+    {
+        std::fprintf(stderr, "Cannot open %s\n", DataPath->string().c_str());
+        return 1;
+    }
+    const std::optional<std::vector<uint8_t>> Config = Archive.Read("VZCONF.TXT");
+    if (!Config || Config->empty() || (*Config)[0] != '#')
+    {
+        std::fprintf(stderr, "vz-data.rsc is unreadable: VZCONF.TXT missing or corrupt\n");
+        return 1;
+    }
+    std::printf("vz-data.rsc: %zu entries\n", Archive.GetEntryCount());
+    std::fflush(stdout);
+    if (bVerifyGafs)
+    {
+        return VerifyGafs(Archive);
+    }
+    if (DumpGafPath)
+    {
+        const std::optional<FObjectGaf> Gaf = LoadObjectGaf(Archive, *DumpGafPath);
+        if (!Gaf)
+        {
+            std::fprintf(stderr, "Cannot decode %s\n", DumpGafPath->c_str());
+            return 1;
+        }
+
+        for (size_t Index = 0; Index < Gaf->Animations.size(); ++Index)
+        {
+            const Gaf::FAnimation& Animation = Gaf->Animations[Index];
+            std::printf("%3zu %-12s %3zu frames, flags %#x, loop %u, durations", Index + 1, Animation.Name.c_str(), Animation.Frames.size(), Animation.Flags,
+                Animation.LoopStart);
+            for (const Gaf::FAnimationFrame& Frame : Animation.Frames)
+            {
+                std::printf(" %d", Frame.Duration);
+            }
+            std::printf("\n");
+        }
+        return 0;
+    }
+    if (bVerifyLevels)
+    {
+        return VerifyLevels(Archive);
+    }
+    if (bVerifyGame)
+    {
+        const bool bFrameLoop = VerifyFrameLoop();
+        const std::expected<void, std::string> Collision = VerifyTerrainCollision();
+        const std::expected<void, std::string> Movement = VerifyPlayerMovement();
+        const std::expected<void, std::string> Paths = VerifyPathSearch();
+        std::printf("Path search: %s\n", Paths ? "passed" : Paths.error().c_str());
+        const std::expected<std::string, std::string> Demo = VerifyDemoReplay(Archive);
+        std::printf("Demo replay: %s\n", Demo ? Demo->c_str() : Demo.error().c_str());
+        const std::expected<std::string, std::string> Combat = VerifyCombat(Archive);
+        std::printf("Combat: %s\n", Combat ? Combat->c_str() : Combat.error().c_str());
+        const std::expected<std::string, std::string> Patrols = VerifyPatrols(Archive);
+        std::printf("Patrols: %s\n", Patrols ? Patrols->c_str() : Patrols.error().c_str());
+        const std::expected<std::string, std::string> Doors = VerifyDoors(Archive);
+        std::printf("Gates and lifts: %s\n", Doors ? Doors->c_str() : Doors.error().c_str());
+        std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
+            Collision ? "passed" : Collision.error().c_str(), Movement ? "passed" : Movement.error().c_str());
+        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols && Doors ? 0 : 1;
+    }
+
+    if (!glfwInit())
+    {
+        std::fprintf(stderr, "glfwInit failed\n");
+        return 1;
+    }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    GLFWwindow* const Window = glfwCreateWindow(static_cast<int>(ScreenWidth) * 2, static_cast<int>(ScreenHeight) * 2, "Vyruz", nullptr, nullptr);
+    if (!Window)
+    {
+        std::fprintf(stderr, "glfwCreateWindow failed\n");
+        return 1;
+    }
+
+    FRenderer Renderer;
+    Renderer.Init(Window);
+    std::optional<FCarriedPlayer> Carried;
+    int Result = 0;
+    for (std::string Path = LevelPath;;)
+    {
+        const std::expected<std::optional<std::string>, std::string> Next = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Carried);
+        Renderer.ReleaseSpriteSheets();
+        if (!Next)
+        {
+            std::fprintf(stderr, "%s\n", Next.error().c_str());
+            Result = 1;
+            break;
+        }
+
+        if (!*Next)
+        {
+            break;
+        }
+
+        Path = **Next;
     }
 
     Renderer.Shutdown();
     glfwDestroyWindow(Window);
     glfwTerminate();
-    return 0;
+    return Result;
 }

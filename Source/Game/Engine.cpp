@@ -1841,8 +1841,8 @@ void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
 }
 
 // ObjectUpdateLevelExit at 00442bf0. A lift leaves when nothing stands on it and comes back after its delay; the player rides it once fully
-// inside its box. A negative Reward is its fare. ponytail: the waiting and key messages wait for the HUD.
-std::optional<std::string> StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player,
+// inside its box, which returns true. A negative Reward is its fare. ponytail: the waiting and key messages wait for the HUD.
+bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player,
     const int32_t Step)
 {
     const FWorldCell Cell = CellOf(Body.State.Position);
@@ -1861,24 +1861,24 @@ std::optional<std::string> StepLift(FDoor& Door, FObjectBody& Body, const FLevel
 
             Door.Flags |= DoorOpen;
             Door.Timer = Step < Door.Timer ? Door.Timer - Step : 0;
-            return std::nullopt;
+            return false;
         }
 
         if ((Door.Flags & DoorStayClosed) != 0)
         {
-            return std::nullopt;
+            return false;
         }
 
         if (Step < Door.Timer)
         {
             Door.Timer -= Step;
-            return std::nullopt;
+            return false;
         }
 
         Door.Timer = Door.Delay;
         StartDoorAnimation(Door, OpenAnimation);
         Door.Flags |= DoorOpening;
-        return std::nullopt;
+        return false;
     }
 
     const bool bAccess = Door.Id == 0 || FindHolder(Level, BodyOf, Player, Cell, Door.Id) != EHolder::None;
@@ -1894,12 +1894,12 @@ std::optional<std::string> StepLift(FDoor& Door, FObjectBody& Body, const FLevel
     if (Step < Door.Timer)
     {
         Door.Timer -= Step;
-        return std::nullopt;
+        return false;
     }
 
     if (Door.UsageCount < 1)
     {
-        return std::nullopt;
+        return false;
     }
 
     if (!DoorBlocked(Level, BodyOf, Player, Body))
@@ -1912,28 +1912,28 @@ std::optional<std::string> StepLift(FDoor& Door, FObjectBody& Body, const FLevel
             StartDoorAnimation(Door, ClosedAnimation);
         }
 
-        return std::nullopt;
+        return false;
     }
 
     const FBox Lift = CircleBox(Body.State.Center, Body.Class.Radius);
     const FBox Rider = CircleBox(Player.State.Center, Player.Radius);
     if (!bAccess || Rider.MinX < Lift.MinX || Lift.MaxX < Rider.MaxX || Rider.MinY < Lift.MinY || Lift.MaxY < Rider.MaxY)
     {
-        return std::nullopt;
+        return false;
     }
 
     if (Body.Reward < 0.f)
     {
         if (Player.Inventory.Money < -Body.Reward)
         {
-            return std::nullopt;
+            return false;
         }
 
         Player.Inventory.Money += Body.Reward;
     }
 
     --Door.UsageCount;
-    return Door.NextLevel;
+    return true;
 }
 
 // AreaDamage at 0043cb20: every live object near the blast takes damage falling off linearly over Damage-zone collision units.
@@ -2474,6 +2474,7 @@ std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, 
             .Id = Number("Id"),
             .UsageCount = Number("Usage-count"),
             .NextLevel = std::string(Block->Find("3do-file")),
+            .Scenery = std::string(Block->Find("Scenery")),
             .Animations = { Gaf->second[size_t(Object.GafIndex - 1)], Gaf->second[size_t(Object.GafIndex)] },
         };
         // AnimInitializeGraphics shows the last frame of the animation for the activation state, and the timer starts full.
@@ -2489,12 +2490,12 @@ std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, 
     return Doors;
 }
 
-std::optional<std::string> StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std::span<FObjectBody> Bodies, const FPlayerTarget& Player,
+const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std::span<FObjectBody> Bodies, const FPlayerTarget& Player,
     const uint32_t StepMilliseconds)
 {
     const std::vector<FObjectBody*> BodyOf = BodiesByObject(Level, Bodies);
     const int32_t Step = int32_t(StepMilliseconds);
-    std::optional<std::string> Exit;
+    const FDoor* Exit = nullptr;
     for (FDoor& Door : Doors)
     {
         FObjectBody* const Body = BodyOf[Door.ObjectIndex];
@@ -2516,13 +2517,20 @@ std::optional<std::string> StepDoors(std::vector<FDoor>& Doors, const FLevel& Le
         {
             StepGate(Door, *Body, Level, BodyOf, Player, Step);
         }
-        else if (std::optional<std::string> Next = StepLift(Door, *Body, Level, BodyOf, Player, Step); Next && !Exit)
+        else if (StepLift(Door, *Body, Level, BodyOf, Player, Step) && !Exit)
         {
-            Exit = std::move(Next);
+            Exit = &Door;
         }
     }
 
     return Exit;
+}
+
+std::string NextLevelPath(const std::string_view CurrentPath, const FDoor& Lift)
+{
+    const size_t Separator = CurrentPath.find('\\');
+    const std::string_view Zone = Lift.Scenery.empty() ? CurrentPath.substr(0, Separator == std::string_view::npos ? 0 : Separator) : Lift.Scenery;
+    return ToLowerName(std::format("{}\\{}", Zone, Lift.NextLevel));
 }
 
 bool FViewCells::Contains(const FCollisionPoint World) const
@@ -3886,10 +3894,10 @@ std::expected<std::string, std::string> VerifyDoors(FResourceArchive& Archive)
             Player.Center = CollisionFromWorld(At);
             for (uint32_t Time = 0; Time < Duration; Time += StepMilliseconds)
             {
-                if (std::optional<std::string> Next = StepDoors(Doors, *Level, Bodies, { .State = Player, .Radius = PlayerClass->Radius, .Inventory = Inventory,
-                                                                                        .ObjectIndex = PlayerIndex }, StepMilliseconds))
+                if (const FDoor* const Lift = StepDoors(Doors, *Level, Bodies, { .State = Player, .Radius = PlayerClass->Radius, .Inventory = Inventory,
+                                                                                    .ObjectIndex = PlayerIndex }, StepMilliseconds))
                 {
-                    return Next;
+                    return std::optional(Lift->NextLevel);
                 }
             }
 
@@ -3948,9 +3956,15 @@ std::expected<std::string, std::string> VerifyDoors(FResourceArchive& Archive)
             std::vector<FDoor> Single = { *Lift };
             const FLevelObject& Object = Level->Objects[Door.ObjectIndex];
             FPlayerInventory Rider{ .Keys = { FCarriedKey{ .Id = Door.Id } } };
+            const std::string LevelPath = Name.substr(0, Name.size() - 4);
             if (const std::optional<std::string> Next = Run(Single, LiftBodies, { .X = Object.X, .Y = Object.Y }, Rider, RideMilliseconds); Next == Door.NextLevel)
             {
                 ++Ridden;
+                if (!Door.NextLevel.starts_with('*') && !LoadLevel(Archive, NextLevelPath(LevelPath, Door)))
+                {
+                    Failures.push_back(std::format("{} lift leads to missing {}", Name, NextLevelPath(LevelPath, Door)));
+                    --Ridden;
+                }
             }
             else
             {

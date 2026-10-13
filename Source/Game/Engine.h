@@ -396,8 +396,9 @@ struct FDoor
     // The key or code a holder must carry; zero lets anything through.
     int Id = 0;
     int UsageCount = 0;
-    // A lift's 3do-file: the level it leads to, or a starred marker such as *End*.
+    // A lift's 3do-file: the level it leads to, or a starred marker such as *End*; Scenery names the next level's zone when it changes.
     std::string NextLevel;
+    std::string Scenery;
     std::array<Gaf::FAnimation, 2> Animations;
     size_t Animation = 0;
     FAnimationPlayback Playback;
@@ -544,10 +545,12 @@ void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, 
 // Every gate and lift of the level, in their activation state (AnimInitializeGraphics at 00417b30): open ones are passable and show the
 // last frame of their first animation.
 std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, FResourceArchive& Archive, std::span<FObjectBody> Bodies);
-// One step of every gate (GateUpdate at 00443620) and lift (ObjectUpdateLevelExit at 00442bf0) after its animation advances. Returns the lift's
-// 3do-file once the player has taken a lift.
-std::optional<std::string> StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, std::span<FObjectBody> Bodies, const FPlayerTarget& Player,
+// One step of every gate (GateUpdate at 00443620) and lift (ObjectUpdateLevelExit at 00442bf0) after its animation advances. Returns the
+// lift the player has taken, if any.
+const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, std::span<FObjectBody> Bodies, const FPlayerTarget& Player,
     uint32_t StepMilliseconds);
+// ObjectUpdateLevelExit names the next level within the current zone, or within the lift's Scenery when the zone changes.
+std::string NextLevelPath(std::string_view CurrentPath, const FDoor& Lift);
 // Activates the level's objects, which draws each bob's phase and sets its first altitude, then loads the player's weapons, arms the level's
 // turrets and loads every FX class the level's ammo and explosions can spawn.
 std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, std::vector<FObjectBody>& Bodies);

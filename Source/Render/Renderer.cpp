@@ -822,7 +822,7 @@ void FRenderer::EndFrame()
     Check(PresentResult, "vkQueuePresentKHR");
 }
 
-void FRenderer::Shutdown()
+void FRenderer::ReleaseSpriteSheets()
 {
     vkDeviceWaitIdle(Device);
     for (const FTexture& Texture : Textures)
@@ -832,6 +832,12 @@ void FRenderer::Shutdown()
         vkFreeMemory(Device, Texture.Memory, nullptr);
     }
     Textures.clear();
+    Check(vkResetDescriptorPool(Device, DescriptorPool, 0), "vkResetDescriptorPool");
+}
+
+void FRenderer::Shutdown()
+{
+    ReleaseSpriteSheets();
     for (const VkPipeline Pipeline : SpritePipelines)
     {
         vkDestroyPipeline(Device, Pipeline, nullptr);

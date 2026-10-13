@@ -45,6 +45,8 @@ public:
     void Shutdown();
 
     FSpriteSheet CreateSpriteSheet(const std::vector<Gaf::FFrame>& Frames);
+    // Frees every sprite sheet, as a level change does; earlier sheets must not be drawn again.
+    void ReleaseSpriteSheets();
 
     // Returns false when nothing can be drawn this frame (minimized or swapchain being rebuilt).
     bool BeginFrame();
