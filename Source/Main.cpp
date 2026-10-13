@@ -2,6 +2,7 @@
 #include "Game/Engine.h"
 #include "Game/Level.h"
 #include "Game/Menu.h"
+#include "Game/Score.h"
 #include "Game/Session.h"
 #include "Game/Loop.h"
 #include "Game/Panel.h"
@@ -1312,6 +1313,44 @@ void ShowSlides(GLFWwindow* const Window, FRenderer& Renderer, const std::filesy
     Renderer.ReleaseSpriteSheets();
 }
 
+// The score table (ScoreShowTable at 00401c40 with ScoreDrawLoop at 00401670): score.gaf, then the table, until a key or mouse button goes down. Record, when given, joins
+// vz.sco first (SaveScores at 0043e470 with its second argument set), and its row is brightened.
+void ShowScores(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, const std::optional<FScoreRecord>& Record)
+{
+    const std::filesystem::path Path = UserDataDirectory() / "vz.sco";
+    FScoreTable Table = ReadScores(Path);
+    const size_t Rank = Record ? InsertScore(Table, *Record) : 0;
+    if (Rank != 0 && !WriteScores(Path, Table))
+    {
+        std::fprintf(stderr, "Cannot write %s\n", Path.string().c_str());
+    }
+
+    const std::optional<FObjectGaf> Picture = LoadObjectGaf(Archive, "common\\data\\extra\\score.gaf");
+    const FSpriteSheet PictureSheet = Picture ? Renderer.CreateSpriteSheet(Picture->Bitmaps) : FSpriteSheet{};
+    const FSpriteSheet FontSheet = Renderer.CreateSpriteSheet(Art.GetBitmaps(EHudSheet::VMenu));
+    const std::vector<FHudSprite> Sprites = DrawScores(Art, Table, Rank);
+    FInputPress Input(Window);
+    while (!glfwWindowShouldClose(Window) && !Input.Poll())
+    {
+        glfwPollEvents();
+        if (Renderer.BeginFrame())
+        {
+            if (Picture && !Picture->Animations.empty() && !Picture->Animations.front().Frames.empty() && Picture->Animations.front().Frames.front().BitmapIndex != 0)
+            {
+                const Gaf::FAnimationFrame& Frame = Picture->Animations.front().Frames.front();
+                Renderer.DrawSprite(PictureSheet, Frame.BitmapIndex - 1, float(Frame.OffsetX), float(Frame.OffsetY));
+            }
+
+            for (const FHudSprite& Sprite : Sprites)
+            {
+                DrawHudSprite(Renderer, FontSheet, Sprite);
+            }
+
+            Renderer.EndFrame();
+        }
+    }
+}
+
 // MenuOptions at 004229a0, the options: Video, Audio, Control, User settings and Language, then Back, the default. ponytail: their own menus wait for the
 // settings they change; the port keeps the highest detail preset, the default keys, Normal difficulty and English.
 void RunOptionsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random)
@@ -1398,7 +1437,11 @@ bool RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchi
             return Item == DemoItem;
         }
 
-        if (*Item == CreditsItem)
+        if (*Item == ScoresItem)
+        {
+            ShowScores(Window, Renderer, Archive, Art, std::nullopt);
+        }
+        else if (*Item == CreditsItem)
         {
             ShowCredits(Window, Renderer, Archive, Art);
         }
@@ -1833,6 +1876,20 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         Inventory.Money -= float(MapCashPerPass);
+    };
+    // The game's end records its score, from the level's LEVEL-ID [ tower.level ], unless it was the demo.
+    const auto ShowFinalScore = [&]
+    {
+        unsigned Tower = 0;
+        unsigned LevelNumber = 0;
+        if (!MenuArt || Demo || std::sscanf(Level->Id.c_str(), " %u.%u", &Tower, &LevelNumber) != 2)
+        {
+            return;
+        }
+
+        ShowScores(Window, Renderer, Archive, *MenuArt,
+            MakeScore(Tower, LevelNumber, Inventory.Kills, int32_t(Inventory.Earned), Inventory.ShotsHit, Inventory.ShotsMissed, Combat ? Combat->Clock : 0,
+                Sessions.PlayerName));
     };
     const std::vector<FSavingPlot> SavingPlots = FindSavingPlots(*Level);
     // SessionLoad (0042ba00) in mode 0 leaves a count running, so the plot a saved session starts on does not save again until the player
@@ -2310,6 +2367,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         if (DeathTimer && *DeathTimer <= 0)
         {
             ShowImage(Window, Renderer, Archive, "common\\data\\extra\\game-over.gaf");
+            ShowFinalScore();
             return FLevelEnd{ .Kind = ELevelEnd::Menu };
         }
 
@@ -2590,7 +2648,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         // EngineRunLevel ends the game after a starred lift: the registered game's two ending pages over theend.tga (FUN_00402890), then the
-        // score table and the menu. ponytail: the score table waits for the scores.
+        // score table and the menu.
         if (NextLevel && NextLevel->starts_with('*'))
         {
             constexpr int32_t FirstPageLeft = 0x46;
@@ -2600,6 +2658,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 ShowTextPage(Window, Renderer, Archive, *Panel, "common\\data\\extra\\theend.tga", "common\\data\\extra\\theend-en.txt", FirstPageLeft);
                 ShowTextPage(Window, Renderer, Archive, *Panel, "common\\data\\extra\\theend.tga", "common\\data\\extra\\theend-en-2.txt", SecondPageLeft);
             }
+
+            ShowFinalScore();
 
             return FLevelEnd{ .Kind = ELevelEnd::Menu };
         }
@@ -2760,9 +2820,11 @@ int main(const int ArgCount, char** const Args)
         std::printf("Gates and lifts: %s\n", Doors ? Doors->c_str() : Doors.error().c_str());
         const std::expected<std::string, std::string> SessionCheck = VerifySessions(Archive);
         std::printf("Sessions: %s\n", SessionCheck ? SessionCheck->c_str() : SessionCheck.error().c_str());
+        const bool bScores = VerifyScores();
+        std::printf("Scores: %s\n", bScores ? "passed" : "failed");
         std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
             Collision ? "passed" : Collision.error().c_str(), Movement ? "passed" : Movement.error().c_str());
-        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols && Doors && SessionCheck ? 0 : 1;
+        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols && Doors && SessionCheck && bScores ? 0 : 1;
     }
 
     if (!glfwInit())

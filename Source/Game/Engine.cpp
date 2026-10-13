@@ -1807,6 +1807,7 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
         if (Pickup.AddMoney != 0.f)
         {
             Inventory.Money += Pickup.AddMoney;
+            Inventory.Earned += Pickup.AddMoney;
             AddPickupMessage(Messages, Object, OffsetY, std::format("Money +{}", int32_t(Pickup.AddMoney)), MoneyColor);
             bUsed = true;
         }
@@ -4924,6 +4925,15 @@ void DropContents(FRandom& Random, const FLevelObject& Object, std::vector<FDrop
 }
 }
 
+namespace
+{
+// ObjectHuntsPlayer at 004371b0: a seeker or tracker hunting the player, or a generator of one.
+bool HuntsPlayer(const FObjectBody& Body)
+{
+    return Body.Turret || (Body.Actor && Body.Actor->Seeker) || (Body.Generator && Body.Generator->bProductHunts);
+}
+}
+
 void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
     const FPlayerTarget& Player, FMessages& Messages)
 {
@@ -4939,6 +4949,8 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             std::vector<bool> WasAlive;
             if (Shot.Owner == Player.ObjectIndex)
             {
+                const bool bHit = Target && (HuntsPlayer(*Target) || Level.Objects[Target->ObjectIndex].SubType == "item");
+                ++(bHit ? Player.Inventory.ShotsHit : Player.Inventory.ShotsMissed);
                 std::ranges::transform(Bodies, std::back_inserter(WasAlive), [](const FObjectBody& Body) { return 0.f < Body.Energy; });
             }
 
@@ -5086,8 +5098,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
     });
 
     // Session +0x2094 counts the hunters down as they die; the last one announces the empty level.
-    const auto IsHunter = [](const FObjectBody& Body) { return Body.Turret || (Body.Actor && Body.Actor->Seeker) || (Body.Generator && Body.Generator->bProductHunts); };
-    int Hunters = int(std::ranges::count_if(Bodies, [&](const FObjectBody& Body) { return IsHunter(Body) && !Level.Objects[Body.ObjectIndex].bRemoved; }));
+    int Hunters = int(std::ranges::count_if(Bodies, [&](const FObjectBody& Body) { return HuntsPlayer(Body) && !Level.Objects[Body.ObjectIndex].bRemoved; }));
     // The dropped objects join the level once the destroyed ones are gone, so no object reference outlives the list growing.
     std::vector<FDrop> Drops;
     std::erase_if(Bodies, [&](FObjectBody& Body)
@@ -5116,7 +5127,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             }
         }
 
-        if (!bFirstOfTwo && IsHunter(Body) && --Hunters == 0)
+        if (!bFirstOfTwo && HuntsPlayer(Body) && --Hunters == 0)
         {
             // The player's name at session +0x2754 starts as Jack. ponytail: the 100000 bonus is only printed here.
             constexpr int32_t LastKillX = 0x46;
@@ -5143,6 +5154,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         if (0.f < Body.Reward && PaysReward(Object.SubType))
         {
             Player.Inventory.Money += Body.Reward;
+            Player.Inventory.Earned += Body.Reward;
             // The reward rises from the wreck in font 2 and the object's name follows it in font 6.
             constexpr float RewardVelocity = -1.5f;
             constexpr float NameVelocity = -1.f;

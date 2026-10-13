@@ -253,6 +253,30 @@ std::vector<FHudSprite> FMenuArt::Draw(const FMenu& Menu, FMenuState& State) con
     return Out;
 }
 
+std::vector<FHudSprite> FMenuArt::DrawLine(const size_t Font, const std::string_view Text, const int32_t X, const int32_t Y, const Font::FColor& Color) const
+{
+    std::vector<FHudSprite> Out;
+    DrawText(Out, Font, X, Y, Text, std::nullopt, Color);
+    return Out;
+}
+
+int32_t FMenuArt::TextWidth(const size_t Font, const std::string_view Text) const
+{
+    int32_t Width = 0;
+    if (Font >= 1 && Font <= Fonts.size())
+    {
+        for (const Font::FPlacedGlyph& Glyph : Font::LayoutText(Fonts[Font - 1], Text, 0, 0, VBitmapWidths))
+        {
+            if (Glyph.BitmapIndex >= 1 && Glyph.BitmapIndex <= VBitmapWidths.size())
+            {
+                Width = std::max(Width, Glyph.X + int32_t(VBitmapWidths[Glyph.BitmapIndex - 1]));
+            }
+        }
+    }
+
+    return Width;
+}
+
 std::vector<FHudSprite> FMenuArt::DrawPage(const size_t Font, const std::string_view Text, const int32_t Left, const int32_t Top, const int32_t Right) const
 {
     std::vector<FHudSprite> Out;
@@ -266,10 +290,10 @@ const std::vector<Gaf::FFrame>& FMenuArt::GetBitmaps(const EHudSheet Sheet) cons
 }
 
 void FMenuArt::DrawText(std::vector<FHudSprite>& Out, const size_t Font, const int32_t X, const int32_t Y, const std::string_view Text,
-    const std::optional<int32_t> WrapRight) const
+    const std::optional<int32_t> WrapRight, const Font::FColor& Color) const
 {
     if (Font >= 1 && Font <= Fonts.size())
     {
-        AppendText(Out, EHudSheet::VMenu, Fonts[Font - 1], VBitmaps, VBitmapWidths, X, Y, Text, {}, WrapRight);
+        AppendText(Out, EHudSheet::VMenu, Fonts[Font - 1], VBitmaps, VBitmapWidths, X, Y, Text, Color, WrapRight);
     }
 }

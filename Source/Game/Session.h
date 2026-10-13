@@ -72,6 +72,8 @@ std::string FormatSession(const FSession& Session);
 // Session files are untrusted: nullopt for anything malformed.
 std::optional<FSession> ParseSession(std::string_view Text);
 
+// The port's folder for what the original keeps beside it: %APPDATA%\OpenVyruz on Windows, $XDG_DATA_HOME/OpenVyruz (or ~/.local/share) elsewhere.
+std::filesystem::path UserDataDirectory();
 // The player's session folder (session\<name> in the original's game folder), kept in the user's data folder.
 std::filesystem::path SessionDirectory(std::string_view PlayerName);
 bool WriteSessionFile(const std::filesystem::path& Path, const FSession& Session);

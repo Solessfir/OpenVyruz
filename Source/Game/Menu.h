@@ -95,11 +95,16 @@ public:
     std::vector<FHudSprite> Draw(const FMenu& Menu, FMenuState& State) const;
     // A text in a v-menu.gaf font with word wrap from Left to Right, its cursor at Left, Top, as the credits print it.
     std::vector<FHudSprite> DrawPage(size_t Font, std::string_view Text, int32_t Left, int32_t Top, int32_t Right) const;
+    // One line in a v-menu.gaf font from its cursor at X, Y, the font's colour combined with Color.
+    std::vector<FHudSprite> DrawLine(size_t Font, std::string_view Text, int32_t X, int32_t Y, const Font::FColor& Color) const;
+    // How far a line reaches from its cursor, to the right edge of its last bitmap.
+    int32_t TextWidth(size_t Font, std::string_view Text) const;
 
     const std::vector<Gaf::FFrame>& GetBitmaps(EHudSheet Sheet) const;
 
 private:
-    void DrawText(std::vector<FHudSprite>& Out, size_t Font, int32_t X, int32_t Y, std::string_view Text, std::optional<int32_t> WrapRight = std::nullopt) const;
+    void DrawText(std::vector<FHudSprite>& Out, size_t Font, int32_t X, int32_t Y, std::string_view Text, std::optional<int32_t> WrapRight = std::nullopt,
+        const Font::FColor& Color = {}) const;
 
     std::vector<Gaf::FFrame> Bitmaps;
     std::vector<Gaf::FFrame> VBitmaps;

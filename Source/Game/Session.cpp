@@ -15,7 +15,7 @@
 namespace
 {
 constexpr std::string_view Signature = "OpenVyruz-session";
-constexpr int FormatVersion = 1;
+constexpr int FormatVersion = 2;
 constexpr char Separator = '\t';
 // SessionWrite keeps the six sessions before the one it writes.
 constexpr int KeptSessions = 7;
@@ -211,6 +211,7 @@ std::vector<std::pair<int, std::filesystem::path>> NumberedSessions(const std::f
     std::ranges::sort(Result, std::ranges::greater{}, &std::pair<int, std::filesystem::path>::first);
     return Result;
 }
+}
 
 std::filesystem::path UserDataDirectory()
 {
@@ -236,7 +237,6 @@ std::filesystem::path UserDataDirectory()
     }
 #endif
     return std::filesystem::path(Application);
-}
 }
 
 std::vector<FSessionObject> CaptureObjects(const FLevel& Level, const std::span<const FObjectBody> Bodies, const std::span<const FDoor> Doors,
@@ -370,7 +370,8 @@ std::string FormatSession(const FSession& Session)
         const FPlayerState& State = Player->State;
         Line(Out, "player", Player->Clock, State.Direction, State.Pose, State.TargetPose, State.TurnTimer, State.Speed, State.SpeedMagnitude);
         const FPlayerInventory& Inventory = Player->Inventory;
-        Line(Out, "inventory", Inventory.Energy, Inventory.EnergyMax, Inventory.Shield, Inventory.ShieldMax, Inventory.Money, Inventory.Kills);
+        Line(Out, "inventory", Inventory.Energy, Inventory.EnergyMax, Inventory.Shield, Inventory.ShieldMax, Inventory.Money, Inventory.Kills, Inventory.Earned,
+            Inventory.ShotsHit, Inventory.ShotsMissed);
         for (const FAmmoStock& Ammo : Inventory.Ammo)
         {
             Line(Out, "ammo", Escape(Ammo.Name), Ammo.Count, Ammo.Max);
@@ -502,13 +503,19 @@ std::optional<FSession> ParseSession(const std::string_view Text)
             const std::optional<float> ShieldMax = Fields.Number<float>();
             const std::optional<float> Money = Fields.Number<float>();
             const std::optional<int> Kills = Fields.Number<int>();
-            bValid = Energy && EnergyMax && Shield && ShieldMax && Money && Kills;
+            const std::optional<float> Earned = Fields.Number<float>();
+            const std::optional<int> ShotsHit = Fields.Number<int>();
+            const std::optional<int> ShotsMissed = Fields.Number<int>();
+            bValid = Energy && EnergyMax && Shield && ShieldMax && Money && Kills && Earned && ShotsHit && ShotsMissed;
             Inventory.Energy = Energy.value_or(0.f);
             Inventory.EnergyMax = EnergyMax.value_or(0.f);
             Inventory.Shield = Shield.value_or(0.f);
             Inventory.ShieldMax = ShieldMax.value_or(0.f);
             Inventory.Money = Money.value_or(0.f);
             Inventory.Kills = Kills.value_or(0);
+            Inventory.Earned = Earned.value_or(0.f);
+            Inventory.ShotsHit = ShotsHit.value_or(0);
+            Inventory.ShotsMissed = ShotsMissed.value_or(0);
         }
         else if (Kind == "ammo" && Session.Player)
         {

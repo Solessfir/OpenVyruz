@@ -14,6 +14,7 @@ A weapon class carries a `TYPE Weapon` block (`weapon.3dc`); the player's `ADD W
 
 Session `+0x1028` holds the 1-based slot in hand, which starts at 1. `ObjectSetWeaponSlot` (`004375f0`) gives slot N the player's Nth `ADD Weapon` (object `+0x24c`) and clears that entry's last-shot time; a slot past them leaves the player unarmed. Each `ADD Weapon` keeps its own trigger flags and slope. `ObjectBindAmmo` (`00437540`) then binds the `ADD Ammo` stock of the weapon's ammo class (object `+0x248`), but only a stock that is not empty.
 
+- `AmmoHit` counts the player's shots that burst on a hunter or an item as hits and the others as misses, for the scores ([Menus.md](Menus.md#scores)).
 - `EngineReadActionKeys` (`0043b5c0`) reads `action-next-weapon` and `action-weapon-1` to `-9`, whose default keys (`InputSetDefaultKeys` at `0041d420`, from `DAT_00509298`) are Backspace and the digits.
 - `PlayerNextWeaponSlot` (`004376a0`) tries the slots after the one in hand, wrapping after 9, until one has a stock of at least 1, and stays when none has.
 - `PlayerSelectWeaponAction` (`0043bad0`) ignores the slot already in hand.

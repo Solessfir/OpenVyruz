@@ -454,6 +454,11 @@ struct FPlayerInventory
     std::vector<FCarriedKey> Keys;
     // Object +0x26c: the objects the player's shots finished off.
     int Kills = 0;
+    // Object +0x270, every cash the player has been paid, which spending leaves alone; the score's Money.
+    float Earned = 0.f;
+    // Session +0x26e0 and +0x26e4: AmmoHit counts each of the player's shots that struck a hunter or an item, and every other one.
+    int ShotsHit = 0;
+    int ShotsMissed = 0;
     FSurpriseState Surprises;
 };
 
