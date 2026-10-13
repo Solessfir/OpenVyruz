@@ -2153,8 +2153,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
     std::fflush(stdout);
 
-    // The class's acceleration, which the speed surprises change.
+    // The class's acceleration and turn timeout, which the speed surprises and the speed toggle change.
     const float ClassAcceleration = PlayerClass ? PlayerClass->AccelerationStep : 0.f;
+    const int ClassTurnTimeout = PlayerClass ? PlayerClass->TurnTimeout : 0;
+    bool bSpeedKeyDown = glfwGetKey(Window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS;
     FRandom NoMiscRandom;
     const auto PanelValues = [&]
     {
@@ -2469,6 +2471,29 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             if (bTabPressed && Panel && !Demo)
             {
                 Panel->CyclePanels(glfwGetKey(Window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS);
+            }
+
+            // action-toggle-hilo-speed (Page Down, DIK_NEXT in DAT_00509298), FUN_0043b830: at full acceleration or more the player drops to a third of the class's and turns 1.5 times slower ("low speed"); otherwise both return to the class's ("high speed").
+            const bool bSpeedPressed = glfwGetKey(Window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS && !bSpeedKeyDown;
+            bSpeedKeyDown = glfwGetKey(Window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS;
+            if (bSpeedPressed && Player && PlayerClass && !Demo)
+            {
+                constexpr float LowSpeedScale = 1.f / 3.f;
+                constexpr double LowSpeedTurnScale = 1.5f;
+                constexpr uint32_t SpeedVoiceDuration = 1000;
+                constexpr uint32_t SpeedVoiceHold = 2000;
+                if (PlayerClass->AccelerationStep >= ClassAcceleration)
+                {
+                    PlayerClass->AccelerationStep = ClassAcceleration * LowSpeedScale;
+                    PlayerClass->TurnTimeout = TruncateLow(double(PlayerClass->TurnTimeout) * LowSpeedTurnScale);
+                    QueueVoice(EVoice::LowSpeed, 0, SpeedVoiceDuration, SpeedVoiceHold);
+                }
+                else
+                {
+                    PlayerClass->AccelerationStep = ClassAcceleration;
+                    PlayerClass->TurnTimeout = ClassTurnTimeout;
+                    QueueVoice(EVoice::HighSpeed, 0, SpeedVoiceDuration, SpeedVoiceHold);
+                }
             }
 
             const bool bMapPressed = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS && !bMapKeyDown;
