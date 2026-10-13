@@ -13,6 +13,8 @@
 #include <cmath>
 #include <format>
 #include <limits>
+#include <numbers>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <set>
@@ -1486,6 +1488,116 @@ FWorldCell CellOf(const FCollisionPoint World)
     return { .X = int(uint32_t(int64_t(World.X)) / BlockWidth), .Y = int(uint32_t(int64_t(World.Y)) / BlockHeight) };
 }
 
+// __ftol truncates into 64 bits and its callers keep the low half; NaN and out-of-range values give the integer indefinite, whose low half is zero.
+constexpr int32_t TruncateLow(const double Value)
+{
+    constexpr double Limit = 9223372036854775808.0;
+    return Value > -Limit && Value < Limit ? int32_t(uint32_t(uint64_t(int64_t(Value)))) : 0;
+}
+static_assert(TruncateLow(-2.7) == -2);
+static_assert(TruncateLow(std::numeric_limits<double>::quiet_NaN()) == 0);
+static_assert(TruncateLow(4294967298.5) == 2);
+
+enum class EBobMode : int8_t
+{
+    // Wind back to the trough: a static object without Vertical-bounce-when-static.
+    Settle = -1,
+    Play = 0,
+    // Rise to the peak and hold there: a moving object with Vertical-bounce-when-moving.
+    Rise = 1,
+};
+
+// ObjectSelectBobMode at 00433f40; it would also play the bob of ammo and FX kinds, which no placed object has.
+std::optional<EBobMode> BobMode(const FObjectBob& Bob, const float Speed)
+{
+    if (Bob.Period == 0.f || Bob.Amplitude == 0.f)
+    {
+        return std::nullopt;
+    }
+
+    if (Speed == 0.f)
+    {
+        return Bob.bWhenStatic ? EBobMode::Play : EBobMode::Settle;
+    }
+
+    return Bob.bWhenMoving ? std::optional(EBobMode::Rise) : std::nullopt;
+}
+
+// ObjectPlayBob at 0043c090: the altitude the bob shows, or nullopt once a rising or settling bob has stopped. The stop test leaves out the phase.
+std::optional<int> PlayBob(FObjectBob& Bob, const EBobMode Mode, const int32_t StepMilliseconds)
+{
+    constexpr double QuarterTurn = std::numbers::pi_v<float> / 2.f;
+    const double Angle = double(Bob.Timer) / double(Bob.Period);
+    const int Altitude = TruncateLow(std::sin(Angle + double(Bob.Phase)) * double(Bob.Amplitude)) + Bob.Average;
+    if (Mode == EBobMode::Play || (Mode == EBobMode::Rise && Angle < QuarterTurn))
+    {
+        Bob.Timer += StepMilliseconds;
+        return Altitude;
+    }
+
+    if (Mode == EBobMode::Settle && Angle > -QuarterTurn)
+    {
+        Bob.Timer -= StepMilliseconds;
+        return Altitude;
+    }
+
+    return std::nullopt;
+}
+
+std::vector<FObjectBody*> BodiesByObject(const FLevel& Level, const std::span<FObjectBody> Bodies)
+{
+    std::vector<FObjectBody*> Result(Level.Objects.size(), nullptr);
+    for (FObjectBody& Body : Bodies)
+    {
+        Result[Body.ObjectIndex] = &Body;
+    }
+
+    return Result;
+}
+
+// EngineActivateObjects (0043c700) visits the grid from its last row and column back to the first, and each cell lists its newest object first.
+// ObjectActivate (0043c150) gives every object one draw for its bob phase and shows the bob's first altitude, even without a bob.
+// ponytail: objects that a generator places at load time are not created, so they draw nothing here.
+std::vector<FObjectBob> ActivateObjects(FLevel& Level, const std::span<FObjectBody> Bodies, FRandom& Random)
+{
+    std::vector<size_t> Order(Level.Objects.size());
+    std::iota(Order.begin(), Order.end(), size_t{ 0 });
+    std::ranges::sort(Order, std::ranges::greater{}, [&](const size_t Index)
+    {
+        const FWorldCell Cell = CellOf({ .X = Level.Objects[Index].X, .Y = Level.Objects[Index].Y });
+        return std::tuple(Cell.Y, Cell.X, Index);
+    });
+
+    const std::vector<FObjectBody*> BodyOf = BodiesByObject(Level, Bodies);
+    std::vector<FObjectBob> Bobs(Level.Objects.size());
+    for (const size_t Index : Order)
+    {
+        FLevelObject& Object = Level.Objects[Index];
+        const auto Number = [&Object](const std::string_view Field) { return ParseLevelFloat(Object.Properties.Find(Field)).value_or(0.f); };
+        const int Average = int(Number("Bounce-average-altitude"));
+        FObjectBob& Bob = Bobs[Index];
+        Bob = {
+            .Period = Number("Bounce-period"),
+            .Amplitude = Number("Bounce-amplitude"),
+            .Average = Average != 0 ? Average : int(Object.Altitude),
+            .bWhenStatic = Number("Vertical-bounce-when-static") != 0.f,
+            .bWhenMoving = Number("Vertical-bounce-when-moving") != 0.f,
+        };
+        constexpr int PhaseDivisorMax = 256;
+        constexpr float FullTurn = 2.f * std::numbers::pi_v<float>;
+        // A zero draw makes the phase infinite, so that object's bob stays at its average altitude.
+        const int Divisor = Random.Range(0, PhaseDivisorMax);
+        Bob.Phase = Divisor == 0 ? std::numeric_limits<float>::infinity() : float(double(FullTurn) / double(Divisor));
+        Object.Altitude = float(*PlayBob(Bob, EBobMode::Play, 0));
+        if (BodyOf[Index])
+        {
+            BodyOf[Index]->Altitude = Object.Altitude;
+        }
+    }
+
+    return Bobs;
+}
+
 // AreaDamage at 0043cb20: every live object near the blast takes damage falling off linearly over Damage-zone collision units.
 void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float Damage, const float Zone, std::vector<FObjectBody>& Bodies,
     const FPlayerTarget& Player)
@@ -1565,10 +1677,7 @@ constexpr std::string_view GroundImpactEffect = "bullet-ground-impact";
 // An exploding object's blast goes off this long after its Boom-fx appears, or at half its animation if that comes first.
 constexpr int32_t BlastDelayMilliseconds = 500;
 
-// UpdateAnimation at 0045e7e0: each frame is held for its duration in display periods; a one-shot animation ends after its last frame.
-// VzRun calls AnimationSetFixedPeriod (0045e4c0) with 14 ms at startup, so UpdateAnimation never uses the display period.
-constexpr int32_t AnimationPeriodMilliseconds = 14;
-
+// UpdateAnimation at 0045e7e0: each frame is held for its duration; a one-shot animation ends after its last frame.
 void AdvanceEffect(FEffect& Effect, const FEffectClass& Class, const uint32_t StepMilliseconds)
 {
     if (Effect.bFinished)
@@ -1937,10 +2046,16 @@ void TurnTurretTop(FTurret& Turret, const uint32_t StepMilliseconds)
 }
 }
 
-std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive,
-    std::vector<FObjectBody>& Bodies)
+bool FViewCells::Contains(const FCollisionPoint World) const
+{
+    const FWorldCell Cell = CellOf(World);
+    return Cell.X >= Left && Cell.X < Right && Cell.Y >= Top && Cell.Y < Bottom;
+}
+
+std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, std::vector<FObjectBody>& Bodies)
 {
     FCombat Combat;
+    Combat.Bobs = ActivateObjects(Level, Bodies, Combat.Random);
     for (const FLevelPropertyBlock& Child : Player.Properties.Children)
     {
         if (Child.Kind == "ADD" && Child.Name == "Weapon")
@@ -2048,6 +2163,30 @@ std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLev
     }
 
     return Combat;
+}
+
+void StepObjectBobs(FCombat& Combat, FLevel& Level, const std::span<FObjectBody> Bodies, const uint32_t StepMilliseconds, const FViewCells View)
+{
+    const std::vector<FObjectBody*> BodyOf = BodiesByObject(Level, Bodies);
+    for (size_t Index = 0; Index < Level.Objects.size() && Index < Combat.Bobs.size(); ++Index)
+    {
+        FLevelObject& Object = Level.Objects[Index];
+        FObjectBody* const Body = BodyOf[Index];
+        if (Object.bRemoved || !View.Contains(Body ? Body->State.Position : FCollisionPoint{ .X = Object.X, .Y = Object.Y }))
+        {
+            continue;
+        }
+
+        const std::optional<EBobMode> Mode = BobMode(Combat.Bobs[Index], Body ? Body->State.Speed : 0.f);
+        if (const std::optional<int> Altitude = Mode ? PlayBob(Combat.Bobs[Index], *Mode, int32_t(StepMilliseconds)) : std::nullopt)
+        {
+            Object.Altitude = float(*Altitude);
+            if (Body)
+            {
+                Body->Altitude = Object.Altitude;
+            }
+        }
+    }
 }
 
 void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, const size_t PlayerIndex,

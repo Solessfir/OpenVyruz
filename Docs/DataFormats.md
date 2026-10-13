@@ -118,7 +118,7 @@ tightly cropped directional frames to wobble when centered independently.
 `vyruz_gaf_extract.py --atlas ... --canvas 96x96` restores those crops to a
 common frame before atlas packing.
 
-`ANM_` slot 0 contains 32-byte animation records: frame count, flags, loop start, and five reserved words. Slot 2 concatenates their 28-byte visual frame records in animation order: 1-based GOB index (zero is invisible), signed X/Y hotspot offsets, draw flags, event flags, event value, and duration. `UpdateAnimation` (`0045e7e0`) negates the hotspot X for draw flag `0x100` and Y for `0x200`.
+`ANM_` slot 0 contains 32-byte animation records: frame count, flags, loop start, and five reserved words. `StartAnimation` (`0045e770`) copies the flags to the instance: `2` restarts at the loop start after the last frame, `0x20` plays back and forth, `0x40` runs backwards; without them the animation ends. Slot 2 concatenates their 28-byte visual frame records in animation order: 1-based GOB index (zero is invisible), signed X/Y hotspot offsets, draw flags, event flags, event value, and duration. `UpdateAnimation` (`0045e7e0`) negates the hotspot X for draw flag `0x100` and Y for `0x200`.
 
 `NAM_` slot 0 contains 8-byte groups (name count, target tag). Slot 2 contains 12-byte name records (stored string size, 1-based target index, reserved), and slot 3 contains NUL-terminated strings padded to their stored size. Name order is not animation order; resolve each name through its target index.
 

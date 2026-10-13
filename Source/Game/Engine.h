@@ -15,6 +15,35 @@ class FResourceArchive;
 struct FLevel;
 struct FLevelObject;
 
+// UpdateAnimation at 0045e7e0 holds each frame for its duration in ticks; VzRun fixes the tick at 14 ms through AnimationSetFixedPeriod
+// (0045e4c0), so the display period never applies.
+inline constexpr int32_t AnimationPeriodMilliseconds = 14;
+
+// The grid cells that the object passes of EngineRunLevel (EngineVisitViewObjects at 00433b30) visit around the view, as half-open ranges.
+struct FViewCells
+{
+    bool Contains(FCollisionPoint World) const;
+
+    int Left = 0;
+    int Top = 0;
+    int Right = 0;
+    int Bottom = 0;
+};
+
+// The vertical bob of an object (object +0x174 to +0x184), from its class's Bounce-period, Bounce-amplitude and Bounce-average-altitude.
+struct FObjectBob
+{
+    float Period = 0.f;
+    float Amplitude = 0.f;
+    // Radians, drawn once per object when the level starts.
+    float Phase = 0.f;
+    // Milliseconds of bob played; it winds back while a static object without Vertical-bounce-when-static settles.
+    int32_t Timer = 0;
+    int Average = 0;
+    bool bWhenStatic = false;
+    bool bWhenMoving = false;
+};
+
 // Input bits as RecordInput (004290e0) logs them and .3DR records store them.
 enum EPlayerInput : uint32_t
 {
@@ -241,7 +270,7 @@ struct FActor
     FPlayerCommand Command;
     // Object flag 2: pull the trigger in this step's weapon update.
     bool bTrigger = false;
-    // A heli's tilt counter (object +0x21c), which HeliSelectBodyPose (004334e0) moves toward its speed band at every draw.
+    // A heli's tilt counter (object +0x21c), which HeliSelectBodyPose (004334e0) moves toward its speed band in every object pass.
     int Tilt = 0;
 };
 
@@ -389,8 +418,9 @@ struct FCombat
     std::vector<FProjectile> Projectiles;
     std::vector<FEffectClass> EffectClasses;
     std::vector<FEffect> Effects;
-    // g_FramePeriodMs: animation frame durations count display periods.
     FRandom Random;
+    // Every level object's bob, by object index.
+    std::vector<FObjectBob> Bobs;
     // The game clock in milliseconds; never zero, since a zero last-shot time means no shot yet.
     uint32_t Clock = 1;
 };
@@ -443,9 +473,12 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
 void StepActors(FCombat* Combat, std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
     const FPlayerState* Player);
 void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
-// Loads the player's weapons, arms the level's turrets and loads every FX class the level's ammo and explosions can spawn.
-std::expected<FCombat, std::string> CreateCombat(const FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive,
-    std::vector<FObjectBody>& Bodies);
+// Activates the level's objects, which draws each bob's phase and sets its first altitude, then loads the player's weapons, arms the level's
+// turrets and loads every FX class the level's ammo and explosions can spawn.
+std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, std::vector<FObjectBody>& Bodies);
+// The bob part of the per-step update pass: every object in the view's cells bobs as ObjectSelectBobMode (00433f40) decides, which changes the altitude its
+// shots start from.
+void StepObjectBobs(FCombat& Combat, FLevel& Level, std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, FViewCells View);
 // One step of the player's weapon: the slope ramp, then a shot when the trigger is held and the weapon's delay has passed (WeaponFire at 00443bd0).
 // SpriteSize is the smaller side of the player's current frame, which picks the random muzzle distance.
 void StepPlayerWeapon(FCombat& Combat, bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, size_t PlayerIndex, float SpriteSize,

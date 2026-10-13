@@ -76,8 +76,6 @@ struct FLevelObject
     bool bRemoved = false;
     // A tank's 1-based top pose, the frame of its top animation; zero until its behaviour turns it.
     int TopPose = 0;
-    // A heli's tilt animation (0 to 3) from HeliSelectBodyPose; its frame is the body pose.
-    int Tilt = 0;
     std::string SubType;
     FLevelPropertyBlock Properties;
 };

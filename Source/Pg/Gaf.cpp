@@ -393,6 +393,7 @@ std::optional<std::vector<Gaf::FAnimation>> Gaf::LoadAnimations(const std::span<
         FAnimation& Animation = Animations[Index];
         Animation.Frames.reserve(Record.FrameCount);
         Animation.LoopStart = Record.LoopStart;
+        Animation.Flags = Record.Flags;
         for (uint32_t FrameIndex = 0; FrameIndex < Record.FrameCount; ++FrameIndex)
         {
             // UpdateAnimation at 0045e7e0 negates ANM offsets before DrawGobFrame applies the mirrored GOB crop.

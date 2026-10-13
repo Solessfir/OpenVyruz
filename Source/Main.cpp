@@ -19,6 +19,7 @@
 #include <format>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -95,7 +96,7 @@ size_t ObjectAnimationIndex(const FLevelObject& Object, const bool bShadow)
     const int PoseCount = ObjectPoseCount(Object, bShadow);
     const int Direction = Object.Direction < ObjectDirectionCount ? Object.Direction : 0;
     // HeliSelectBodyPose at 004334e0 picks a heli's animation by speed rather than facing; the facing selects the frame instead.
-    const int Offset = PoseCount > 1 && Object.SubType != "heli" ? Direction / (ObjectDirectionCount / PoseCount) : !bShadow && Object.SubType == "heli" ? Object.Tilt : 0;
+    const int Offset = PoseCount > 1 && Object.SubType != "heli" ? Direction / (ObjectDirectionCount / PoseCount) : 0;
     return size_t((bShadow ? Object.ShadowIndex : Object.GafIndex) - 1 + Offset);
 }
 
@@ -334,6 +335,222 @@ std::optional<size_t> FindOrLoadSheet(FObjectSprites& Sprites, FResourceArchive&
     return Sheet->second;
 }
 
+// An animation instance's frame and timer, as StartAnimation (0045e770) resets them and UpdateAnimation (0045e7e0) advances them.
+struct FAnimationPlayback
+{
+    // 1-based.
+    uint32_t Frame = 0;
+    int32_t Timer = 0;
+    bool bEnded = false;
+};
+
+// UpdateAnimation at 0045e7e0. Actor animations neither run backwards nor play back and forth, so only looping is handled.
+void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, const int32_t Milliseconds)
+{
+    constexpr uint32_t LoopFlag = 2;
+    if (Playback.bEnded)
+    {
+        return;
+    }
+
+    Playback.Timer -= Milliseconds;
+    const uint32_t FrameCount = uint32_t(Animation.Frames.size());
+    // A looping animation of zero-length frames would never leave this loop; one pass through it is enough.
+    for (uint32_t Advanced = 0; Playback.Timer <= 0 && Advanced <= FrameCount; ++Advanced)
+    {
+        ++Playback.Frame;
+        if (Playback.Frame > FrameCount)
+        {
+            Playback.Frame = (Animation.Flags & LoopFlag) != 0 ? Animation.LoopStart : 0;
+        }
+
+        if (Playback.Frame == 0 || Playback.Frame > FrameCount)
+        {
+            Playback = { .bEnded = true };
+            return;
+        }
+
+        Playback.Timer += Animation.Frames[Playback.Frame - 1].Duration * AnimationPeriodMilliseconds;
+    }
+}
+
+FAnimationPlayback StartAnimation(const Gaf::FAnimation& Animation)
+{
+    FAnimationPlayback Playback{ .bEnded = Animation.Frames.empty() };
+    UpdateAnimation(Playback, Animation, 0);
+    return Playback;
+}
+
+// ObjectDraw at 00431ae0 shows a chosen frame by stepping back to the one before it and replaying the time left, which lands on it.
+void ShowFrame(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, const uint32_t Frame)
+{
+    if (Frame == 0 || Frame > Animation.Frames.size())
+    {
+        Playback = { .bEnded = true };
+        return;
+    }
+
+    Playback.Frame = Frame - 1;
+    UpdateAnimation(Playback, Animation, Playback.Timer);
+}
+
+// An actor's part of ObjectDraw (00431ae0): the walk it plays and the frames it last chose. Animation indices are 0-based into the GAF.
+struct FActorAnimation
+{
+    // A walker's 24 or a spider's 4 walking animations, which only the object passes advance.
+    std::vector<FAnimationPlayback> Walks;
+    // Object +0x238: the pose a walker last walked in.
+    int PreviousPose = 0;
+    bool bInView = false;
+    size_t BodyAnimation = 0;
+    // 1-based; zero draws nothing.
+    uint32_t BodyFrame = 0;
+    size_t ShadowAnimation = 0;
+    uint32_t ShadowFrame = 0;
+};
+
+// Animation indices AnimInitializeGraphics (00417b30) starts at fixed positions rather than from the class's GAF-index.
+constexpr size_t CopRotAnimation = 24;
+constexpr size_t SpiderRotAnimation = 4;
+// A spider walks only at every sixth of its 24 poses: the four diagonals.
+constexpr int SpiderPosesPerWalk = 6;
+
+const std::vector<Gaf::FAnimation>* FindAnimations(const FObjectSprites& Sprites, const std::string& Path)
+{
+    const auto Sheet = Sprites.SheetIndices.find(Path);
+    return Sheet == Sprites.SheetIndices.end() ? nullptr : &Sprites.Animations[Sheet->second];
+}
+
+std::vector<std::optional<FActorAnimation>> CreateActorAnimations(const std::span<const FObjectBody> Bodies, const FLevel& Level, const FObjectSprites& Sprites)
+{
+    std::vector<std::optional<FActorAnimation>> Result(Level.Objects.size());
+    for (const FObjectBody& Body : Bodies)
+    {
+        const FLevelObject& Object = Level.Objects[Body.ObjectIndex];
+        const std::vector<Gaf::FAnimation>* const Animations = FindAnimations(Sprites, Object.GafPath);
+        if (!Body.Actor || !Animations || Object.GafIndex < 1)
+        {
+            continue;
+        }
+
+        FActorAnimation& Actor = Result[Body.ObjectIndex].emplace(FActorAnimation{ .PreviousPose = Body.State.Pose });
+        const size_t WalkCount = Object.SubType == "walker" ? size_t(ObjectDirectionCount) : Object.SubType == "spider" ? size_t(FourWayDirectionCount) : 0;
+        for (size_t Walk = 0; Walk < WalkCount && size_t(Object.GafIndex - 1) + Walk < Animations->size(); ++Walk)
+        {
+            Actor.Walks.push_back(StartAnimation((*Animations)[size_t(Object.GafIndex - 1) + Walk]));
+        }
+    }
+
+    return Result;
+}
+
+// The actor kinds of ObjectDraw (00431ae0), which runs for every object in the view's cells once per step in the update pass and again in the frame's
+// draw pass; both advance walks by the step. Cops, jeeps, tanks and helis show their pose as a frame of a fixed animation; jeep and tank
+// animations have a single looping frame, so playing them changes nothing.
+void AnimateActors(std::vector<std::optional<FActorAnimation>>& Actors, const std::span<FObjectBody> Bodies, const FLevel& Level, const FObjectSprites& Sprites,
+    const FViewCells View, const int32_t StepMilliseconds)
+{
+    for (std::optional<FActorAnimation>& Actor : Actors)
+    {
+        if (Actor.has_value())
+        {
+            Actor.value().bInView = false;
+        }
+    }
+
+    for (FObjectBody& Body : Bodies)
+    {
+        std::optional<FActorAnimation>& Actor = Actors[Body.ObjectIndex];
+        const FLevelObject& Object = Level.Objects[Body.ObjectIndex];
+        const std::vector<Gaf::FAnimation>* const Animations = FindAnimations(Sprites, Object.GafPath);
+        if (!Actor || !Body.Actor || !Animations || Object.bRemoved || Body.State.Pose < 1 || !View.Contains(Body.State.Position))
+        {
+            continue;
+        }
+
+        const int Pose = Body.State.Pose;
+        const size_t Base = size_t(Object.GafIndex - 1);
+        const bool bForward = Body.Actor->Command.Thrust == EPlayerThrust::Forward;
+        Actor->bInView = true;
+        Actor->ShadowAnimation = size_t(std::max(Object.ShadowIndex - 1, 0));
+        Actor->ShadowFrame = uint32_t(Pose);
+        Actor->BodyFrame = uint32_t(Pose);
+        if (Object.SubType == "cop")
+        {
+            Actor->BodyAnimation = CopRotAnimation;
+        }
+        else if (Object.SubType == "jeep" || Object.SubType == TankKind)
+        {
+            Actor->BodyAnimation = (Object.SubType == TankKind ? 0 : Base) + size_t(Pose - 1);
+            Actor->BodyFrame = 1;
+        }
+        else if (Object.SubType == "heli")
+        {
+            Actor->BodyAnimation = Base + size_t(SelectHeliTilt(*Body.Actor, Body.State.SpeedMagnitude));
+        }
+        else if (Object.SubType == "walker" && size_t(Pose) <= Actor->Walks.size())
+        {
+            // A new pose carries the walk on from the frame the previous pose's walk had reached.
+            const bool bTurned = Pose != Actor->PreviousPose;
+            FAnimationPlayback& Walk = Actor->Walks[size_t(Pose - 1)];
+            const Gaf::FAnimation& Animation = (*Animations)[Base + size_t(Pose - 1)];
+            if (bTurned)
+            {
+                const bool bHadWalk = Actor->PreviousPose >= 1 && size_t(Actor->PreviousPose) <= Actor->Walks.size();
+                const FAnimationPlayback Previous = bHadWalk ? Actor->Walks[size_t(Actor->PreviousPose - 1)] : Walk;
+                ShowFrame(Walk, Animation, Previous.bEnded ? 0 : Previous.Frame);
+                Actor->PreviousPose = Pose;
+            }
+
+            if (bForward || bTurned)
+            {
+                UpdateAnimation(Walk, Animation, StepMilliseconds);
+            }
+
+            Actor->BodyAnimation = Base + size_t(Pose - 1);
+            Actor->BodyFrame = Walk.bEnded ? 0 : Walk.Frame;
+            Actor->ShadowFrame = 1;
+        }
+        else if (Object.SubType == "spider" && size_t((Pose - 1) / SpiderPosesPerWalk) < Actor->Walks.size())
+        {
+            // Between diagonals, or standing on one, a spider shows its turning pose and its walk restarts.
+            const size_t Diagonal = size_t((Pose - 1) / SpiderPosesPerWalk);
+            FAnimationPlayback& Walk = Actor->Walks[Diagonal];
+            const Gaf::FAnimation& Animation = (*Animations)[Base + Diagonal];
+            Actor->ShadowAnimation += Diagonal;
+            Actor->ShadowFrame = 1;
+            if ((Pose - 1) % SpiderPosesPerWalk == 0 && bForward)
+            {
+                UpdateAnimation(Walk, Animation, StepMilliseconds);
+                Actor->BodyAnimation = Base + Diagonal;
+                Actor->BodyFrame = Walk.bEnded ? 0 : Walk.Frame;
+            }
+            else
+            {
+                ShowFrame(Walk, Animation, 1);
+                Actor->BodyAnimation = SpiderRotAnimation;
+            }
+        }
+    }
+}
+
+// EngineVisitViewObjects at 00433b30 visits from one column left of the view and two rows above it, 13 columns and 20 rows, clamped to the grid.
+FViewCells ViewCellsAround(const int CameraX, const int CameraY, const FLevel& Level)
+{
+    constexpr int ExtraColumns = 3;
+    constexpr int ExtraRows = 5;
+    constexpr int LeadingColumns = 1;
+    constexpr int LeadingRows = 2;
+    const int Left = std::max(CameraX / int(BlockWidth) - LeadingColumns, 0);
+    const int Top = std::max(CameraY / int(BlockHeight) - LeadingRows, 0);
+    return {
+        .Left = Left,
+        .Top = Top,
+        .Right = std::min(Left + int(ScreenWidth) / int(BlockWidth) + ExtraColumns, int(Level.GridWidth)),
+        .Bottom = std::min(Top + int(ScreenHeight) / int(BlockHeight) + ExtraRows, int(Level.GridHeight)),
+    };
+}
+
 ESpriteBlend FrameBlend(const Gaf::FAnimationFrame& Frame)
 {
     const uint32_t DrawMode = Frame.DrawFlags & AnimationBlendMask;
@@ -444,16 +661,21 @@ std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive&
     return Result;
 }
 
-void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level)
+void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std::vector<std::optional<FActorAnimation>>& Actors)
 {
     for (FObjectSprite& Sprite : Sprites.Sprites)
     {
         const FLevelObject& Object = Level.Objects[Sprite.ObjectIndex];
-        const Gaf::FAnimation& Animation = Sprites.Animations[Sprite.SheetIndex][ObjectAnimationIndex(Object, Sprite.bShadow)];
+        const std::vector<Gaf::FAnimation>& Animations = Sprites.Animations[Sprite.SheetIndex];
+        const Gaf::FAnimation& Animation = Animations[ObjectAnimationIndex(Object, Sprite.bShadow)];
         Sprite.Frame = Animation.Frames.empty() ? Gaf::FAnimationFrame{} : Animation.Frames.front();
-        if (!Sprite.bShadow && Object.SubType == "heli" && Animation.Frames.size() == ObjectDirectionCount)
+        // An actor is drawn only from the view's cells, with the frames its last object pass chose.
+        if (const std::optional<FActorAnimation>& Actor = Actors[Sprite.ObjectIndex]; Actor && !Sprite.bTop)
         {
-            Sprite.Frame = Animation.Frames[size_t(Object.Direction < ObjectDirectionCount ? Object.Direction : 0)];
+            const size_t Index = Sprite.bShadow ? Actor->ShadowAnimation : Actor->BodyAnimation;
+            const uint32_t Frame = Sprite.bShadow ? Actor->ShadowFrame : Actor->BodyFrame;
+            const bool bShown = Actor->bInView && Index < Animations.size() && Frame >= 1 && Frame <= Animations[Index].Frames.size();
+            Sprite.Frame = bShown ? Animations[Index].Frames[Frame - 1] : Gaf::FAnimationFrame{};
         }
 
         if (Sprite.bTop)
@@ -490,6 +712,8 @@ int main(const int ArgCount, char** const Args)
     bool bVerifyGafs = false;
     bool bVerifyLevels = false;
     bool bVerifyGame = false;
+    // Development aid: --dump-gaf PATH lists an archive GAF's animations with their frame counts and durations.
+    std::optional<std::string> DumpGafPath;
     // Holds the trigger down, for checking shots and explosions without a keyboard.
     bool bAutoFire = false;
     for (int Index = 1; Index < ArgCount; ++Index)
@@ -509,6 +733,10 @@ int main(const int ArgCount, char** const Args)
         else if (std::strcmp(Args[Index], "--auto-fire") == 0)
         {
             bAutoFire = true;
+        }
+        else if (std::strcmp(Args[Index], "--dump-gaf") == 0 && Index + 1 < ArgCount)
+        {
+            DumpGafPath = Args[++Index];
         }
         else if (std::strcmp(Args[Index], "--level") == 0 && Index + 1 < ArgCount)
         {
@@ -562,6 +790,28 @@ int main(const int ArgCount, char** const Args)
     if (bVerifyGafs)
     {
         return VerifyGafs(Archive);
+    }
+    if (DumpGafPath)
+    {
+        const std::optional<FObjectGaf> Gaf = LoadObjectGaf(Archive, *DumpGafPath);
+        if (!Gaf)
+        {
+            std::fprintf(stderr, "Cannot decode %s\n", DumpGafPath->c_str());
+            return 1;
+        }
+
+        for (size_t Index = 0; Index < Gaf->Animations.size(); ++Index)
+        {
+            const Gaf::FAnimation& Animation = Gaf->Animations[Index];
+            std::printf("%3zu %-12s %3zu frames, flags %#x, loop %u, durations", Index + 1, Animation.Name.c_str(), Animation.Frames.size(), Animation.Flags,
+                Animation.LoopStart);
+            for (const Gaf::FAnimationFrame& Frame : Animation.Frames)
+            {
+                std::printf(" %d", Frame.Duration);
+            }
+            std::printf("\n");
+        }
+        return 0;
     }
     if (bVerifyLevels)
     {
@@ -632,11 +882,14 @@ int main(const int ArgCount, char** const Args)
     const uint32_t RefreshMillihertz = DisplayMode && DisplayMode->refreshRate > 0 ? uint32_t(DisplayMode->refreshRate) * MillihertzPerHertz : 0;
     const uint32_t FramePeriod = FramePeriodMilliseconds(RefreshMillihertz);
     std::optional<FCombat> Combat;
+    // Session +0x101c: the last step, which the draw pass plays again.
+    uint32_t LastStepMilliseconds = 0;
     // The smaller side of the player's current frame, which AnimUpdateBounds makes the body's bounds.
     float PlayerSpriteSize = 0.f;
     std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
     const size_t PlayerIndex = size_t(PlayerObject - Level->Objects.begin());
     std::vector<FPickup> Pickups = CreatePickups(*Level);
+    std::vector<std::optional<FActorAnimation>> ActorAnimations = CreateActorAnimations(Bodies, *Level, *Objects);
     FPlayerInventory Inventory = PlayerObject != Level->Objects.end() ? CreateInventory(*PlayerObject) : FPlayerInventory{};
     if (PlayerObject != Level->Objects.end())
     {
@@ -728,6 +981,16 @@ int main(const int ArgCount, char** const Args)
                     std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
                     std::fflush(stdout);
                 }
+
+                // The update pass after each step uses the view the previous frame scrolled to.
+                const FViewCells View = ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level);
+                if (Combat)
+                {
+                    StepObjectBobs(*Combat, *Level, Bodies, StepMilliseconds, View);
+                }
+
+                AnimateActors(ActorAnimations, Bodies, *Level, *Objects, View, int32_t(StepMilliseconds));
+                LastStepMilliseconds = StepMilliseconds;
             }
             else
             {
@@ -739,7 +1002,7 @@ int main(const int ArgCount, char** const Args)
 
         if (Player)
         {
-            for (FObjectBody& Body : Bodies)
+            for (const FObjectBody& Body : Bodies)
             {
                 FLevelObject& Object = Level->Objects[Body.ObjectIndex];
                 Object.X = Body.State.Position.X;
@@ -753,11 +1016,6 @@ int main(const int ArgCount, char** const Args)
                 {
                     Object.Direction = Body.State.Direction;
                     Object.TopPose = Body.Actor->bTwoPieces ? Body.Actor->TopPose : 0;
-                    // The tilt counter moves once per drawn frame, as the original updates it while drawing.
-                    if (Object.SubType == "heli")
-                    {
-                        Object.Tilt = SelectHeliTilt(*Body.Actor, Body.State.SpeedMagnitude);
-                    }
                 }
             }
 
@@ -771,7 +1029,11 @@ int main(const int ArgCount, char** const Args)
             CameraY = std::clamp(int(SpriteCoordinate(Player->Position.Y)) - ViewHeight / 2, 0, std::max(0, int(Level->WorldExtentY) - ViewHeight));
         }
 
-        UpdateObjectSprites(*Objects, *Level);
+        CameraX = std::clamp(CameraX, 0.0, std::max(0.0, double(MapWidth - ScreenWidth)));
+        CameraY = std::clamp(CameraY, 0.0, std::max(0.0, double(MapHeight - ScreenHeight)));
+        AnimateActors(ActorAnimations, Bodies, *Level, *Objects, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level),
+            int32_t(LastStepMilliseconds));
+        UpdateObjectSprites(*Objects, *Level, ActorAnimations);
         if (Player)
         {
             // The player's 48 poses are the frames of the rot animation that follows its 24 direction animations; odd poses match them.
@@ -792,8 +1054,6 @@ int main(const int ArgCount, char** const Args)
                 }
             }
         }
-        CameraX = std::clamp(CameraX, 0.0, std::max(0.0, double(MapWidth - ScreenWidth)));
-        CameraY = std::clamp(CameraY, 0.0, std::max(0.0, double(MapHeight - ScreenHeight)));
 
         if (!Renderer.BeginFrame())
         {

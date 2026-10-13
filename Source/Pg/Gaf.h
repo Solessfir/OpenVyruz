@@ -50,6 +50,8 @@ struct FAnimation
     std::vector<FAnimationFrame> Frames;
     // 1-based frame a looping animation restarts from.
     uint32_t LoopStart = 0;
+    // StartAnimation at 0045e770 copies these to the animation instance: 2 loops, 0x20 plays back and forth, 0x40 runs backwards.
+    uint32_t Flags = 0;
 };
 
 // ANM_ visual frames and NAM_ names, in original animation-index order. Offsets already account for frame mirroring.

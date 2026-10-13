@@ -4,7 +4,7 @@ Traced from `Vyruz.exe` 1.31.01 and ported in `Source/Game/Engine.cpp`. Names ar
 
 ## Random generator
 
-`RandomNext` (`00454080`) keeps a 32-bit state and a counter. It returns `counter * state` (low 32 bits), increments the counter and rotates the state left by the product's low five bits. `RandomRange` (`004540c0`) maps the product to `low + product * (high - low + 1) / 2^32` and `RandomBelow` (`00454130`) to `product * n / 2^32`, both truncated. `VzLoadLevel` reseeds it with state `0xFEABCEFE` and counter `0xABCDEFDA` (`RandomSeed`, `00454030`), so every level starts from the same sequence.
+`RandomNext` (`00454080`) keeps a 32-bit state and a counter. It returns `counter * state` (low 32 bits), increments the counter and rotates the state left by the product's low five bits. `RandomRange` (`004540c0`) maps the product to `low + product * (high - low + 1) / 2^32` and `RandomBelow` (`00454130`) to `product * n / 2^32`, both truncated. `VzLoadLevel` reseeds it with state `0xFEABCEFE` and counter `0xABCDEFDA` (`RandomSeed`, `00454030`), so every level starts from the same sequence, after the level start draws described in [MainLoop.md](MainLoop.md#level-start).
 
 ## Weapons and firing
 
