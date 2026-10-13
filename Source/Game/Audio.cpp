@@ -262,6 +262,11 @@ void FAudio::PlayMenuFlash()
     Mixer.Play(Load("electric.wav"), false, MenuPriority, Sound::FMixer::AllChannels, std::nullopt, -Sound::MaxPan);
 }
 
+void FAudio::PlayFade()
+{
+    Mixer.Play(Load("fade.wav"), false, MenuPriority, Sound::FMixer::AllChannels, std::nullopt, 0);
+}
+
 void FAudio::PlayFinaleFlash()
 {
     Mixer.Play(Load("electric.wav"), false, MenuPriority, Sound::FMixer::AllChannels, std::nullopt, 0);

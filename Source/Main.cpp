@@ -2227,6 +2227,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     constexpr int32_t FinaleFlashMilliseconds = 0xfa;
     bool bFinaleStarted = false;
     bool bShowNetworkFailure = false;
+    // FUN_0041e5a0 after the game menu closes on a running level: five steps from black, 50 ms apart with Gamma FX and 25 ms with scanlines otherwise, while the game stands still.
+    constexpr int MenuFadeSteps = 5;
+    int MenuFadeStep = MenuFadeSteps;
+    uint32_t MenuFadeTime = 0;
     int32_t FinaleTimer = 0;
     int32_t FinaleFlashTimer = 0;
     bool bFinaleFlash = false;
@@ -2527,6 +2531,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     return FLevelEnd{ .Kind = *End };
                 }
 
+                // MenuGame fades the menu out with fade.wav, then the level in. ponytail: the menu's own fade to black is left out; it closes at once.
+                MenuFadeStep = 0;
+                MenuFadeTime = ClockMilliseconds();
+                if (GameAudio)
+                {
+                    GameAudio->PlayFade();
+                }
+
                 bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
                 Clock = FFrameClock(FramePeriod);
                 Clock.Poll(ClockMilliseconds());
@@ -2608,7 +2620,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
-        if (bPaused || !PageText.empty())
+        if (bPaused || !PageText.empty() || MenuFadeStep < MenuFadeSteps)
         {
             RemainingMilliseconds = 0;
         }
@@ -3583,6 +3595,43 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         // EngineRunLevel with Gamma FX, each frame unless a lift is taking the player: the gamma ramp takes the offsets (FUN_0045ffc0), a positive one lifting a channel toward white by offset / 256 of the way and a negative one scaling it by (offset + 255) / 256.
         // While the player lives each offset then steps one toward zero; the dead player's red stays.
+        if (MenuFadeStep < MenuFadeSteps)
+        {
+            // Each step darkens by a quarter less: the gamma offset (step - 4) * 255 / 4, or without Gamma FX the rows at or past the step in every four turned black.
+            constexpr int FadeQuarters = 4;
+            if (Settings.Details.bGammaFx)
+            {
+                Inventory.Surprises.Gamma.fill((MenuFadeStep - FadeQuarters) * 0xff / FadeQuarters);
+            }
+            else
+            {
+                if (!WhiteSheet)
+                {
+                    constexpr uint16_t White = 0x7fff;
+                    WhiteSheet = Renderer.CreateSpriteSheet({ Gaf::FFrame{ .Width = 1, .Height = 1, .Pixels = { White } } });
+                }
+
+                constexpr uint32_t Black = 0;
+                for (int Row = 0; Row < int(ScreenHeight); ++Row)
+                {
+                    if (Row % FadeQuarters >= MenuFadeStep)
+                    {
+                        Renderer.DrawSprite(*WhiteSheet, 0, 0.f, float(Row), false, false, ESpriteBlend::Opaque, float(ScreenWidth), 1.f, UINT32_MAX, Black);
+                    }
+                }
+            }
+
+            // FUN_00469780 waits 50 ms between steps with Gamma FX and 25 without.
+            constexpr uint32_t GammaFadeStepMilliseconds = 50;
+            constexpr uint32_t LineFadeStepMilliseconds = 25;
+            const uint32_t FadeStepMilliseconds = Settings.Details.bGammaFx ? GammaFadeStepMilliseconds : LineFadeStepMilliseconds;
+            if (ClockMilliseconds() - MenuFadeTime >= FadeStepMilliseconds)
+            {
+                MenuFadeTime = ClockMilliseconds();
+                ++MenuFadeStep;
+            }
+        }
+
         // During the finale the gamma ramp goes white for each flash and stays at the base otherwise; for the last 2.5 seconds FUN_00446060 fades it from white to black along ln(e - t (e - 1) / 2500).
         if (Settings.Details.bGammaFx && FinaleTimer > 0)
         {
@@ -3660,6 +3709,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             if (bShowNetworkFailure && Panel)
             {
                 ShowNetworkFailure(Window, Renderer, *Panel);
+            }
+
+            if (GameAudio)
+            {
+                GameAudio->PlayFade();
             }
 
             constexpr int32_t FirstPageLeft = 0x46;

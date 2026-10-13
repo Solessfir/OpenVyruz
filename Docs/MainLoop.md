@@ -75,6 +75,10 @@ With Gamma FX (option flag `0x80`) and a gamma ramp, `EngineRunLevel` hands the 
 
 The port draws the offsets as a full-screen pass over the finished frame: a screen blend for positive offsets and an inverse-source darkening for negative ones. Its swapchain is UNORM, so the blend works on display values as the ramp did. It does not read the user's gamma setting.
 
+`FUN_0041e5a0` fades in five steps. With Gamma FX the offset of all three channels is `(step - 4) * 255 / 4`, 50 ms apart (`FUN_00469780`); without, it blacks out the rows at or past the step in every four, 25 ms apart. Fading out runs the steps from 4 down to 0, fading in from 0 up to 4, and a fade with its sound flag plays `fade.wav` (`LoadFadeSound`, `0041e560`) at priority `0xbf`. `MenuGame` uses it when the game menu closes: it fades the menu's backdrop out with the sound unless the game is ending, then fades the level back in, with the game standing still. `EnginePause` uses it only when `pause.gaf` cannot be loaded, and `EngineGameOver` only sets the user's gamma back. The game's end plays `fade.wav` before the ending pages. The port fades the level in after the menu, with the sound, and closes the menu itself at once.
+
+The finale after `Final-PC` falls has its own flashes and fade ([Combat.md](Combat.md#the-finale)).
+
 ## Object passes
 
 `EngineVisitViewObjects` (`00433b30`) visits the objects of the grid cells around the view: from one column left of it and two rows above it, 13 columns and 20 rows, clamped to the grid. Objects elsewhere are neither updated nor drawn. It runs twice:
