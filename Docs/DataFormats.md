@@ -182,7 +182,17 @@ Slot 2 has each font's glyph table in turn: a 24-byte record per character code 
 - Font 2: fixed width, 9-pixel advance, without draw settings.
 - Font 3: proportional, glyph width plus 2.
 
-See [Hud.md](Hud.md#fonts) for how text is laid out.
+All three draw in mode 1 and white. `Common\Data\Extra\v-bonus.gaf` has six fonts for the floating messages; fonts 1, 3 and 4 have a 7-pixel advance, 2 an 18-pixel one and 5 and 6 a 16-pixel one:
+
+| Font | Flags | Mode | Diffuse | Specular |
+|---|---|---|---|---|
+| 1 | proportional, shadow | 7 | `0x01a4e0` | `0x000127` |
+| 2 | proportional | 1 | `0xffffff` | none |
+| 3, 4 | proportional | 7 | `0xdca300` | `0x270100` |
+| 5 | proportional | 7 | `0xffff00` | none |
+| 6 | proportional | 7 | `0xffffff` | none |
+
+The colour is a pgbmp colour: an alpha, a diffuse RGB and a specular RGB. See [Hud.md](Hud.md#fonts) for how text is laid out.
 
 ## .3DG - Level Tile Bitmap Sheet
 

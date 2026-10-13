@@ -33,22 +33,49 @@ Every part is placed from a screen corner (session `+0xf84` and `+0xf88`), so th
 
 ## Fonts
 
-`FNT_` entries hold bitmap fonts whose glyphs are the GAF's GOB bitmaps. See [DataFormats.md](DataFormats.md#fnt_---fonts). `FUN_0044c3c0` selects font N (1-based), `FUN_0044db70` sets the cursor and `FUN_0044b0e0` prints a formatted string.
+`FNT_` entries hold bitmap fonts whose glyphs are the GAF's GOB bitmaps. See [DataFormats.md](DataFormats.md#fnt_---fonts). `PgFontSelect` (`0044c3c0`) selects font N (1-based) of a GAF and takes its draw mode and colour, `PgFontSetCursor` (`0044db70`) sets the cursor and `PgFontPrintf` (`0044b0e0`) prints a formatted string through `PgFontPrint` (`0044bd70`).
 
 - A tilde prints as a percent sign. A space advances by the font's advance.
+- A line break goes back to the starting column and down by the line height, plus the line gap for a proportional font. Word wrap at the clip edge would start the line at the clip's left instead, but `FUN_0043be00` turns it off when a level starts.
+- `PgFontSetColor` (`0044cc30`) combines a colour into the font's with `ColorCombine` (`0044f310`): each diffuse channel becomes `c - (256 - m) * c / 256`, the speculars add with saturation and the alphas multiply. A draw mode set before `PgFontSelect` is overwritten by the font's.
 - Each glyph's bitmap is placed so that its trimmed top-left lands at the cursor plus the glyph's offset. Its overlay bitmap follows.
 - A proportional font (flag 1) advances by the bitmap width plus the character spacing; others by the fixed advance.
 - Flag 4 draws a shadow pass first, in the shadow draw mode and colour, shifted by the shadow offset. None of the panel's three fonts uses it.
 
+## Messages
+
+`g_Messages` (`005237d0`) is the list of floating messages. `MessageAddText` (`004312e0`) adds a text with its position, velocity, life, a placement mode, a world flag, a typewriter flag, a font and a colour; `MessageCreate` (`004311a0`) can first remove every message at the same whole-pixel position (mode 1) or give up when there is one (mode 2). A new message takes the slot that `g_MessageFreeSlot` (`0050d734`) last recorded, else it is appended.
+
+`MessagesUpdate` (`004315f0`) runs twice per frame: with its draw flag clear after each step's game update, and with it set after the objects and before the panel. It visits the slots from the last to the first, and each empty slot it sees becomes the free slot. For each message, in both passes:
+
+- A message whose life is not above the step is removed. Only the update pass takes the step off the life.
+- The position moves by `velocity / (14 / step)` (session `+0x2744`). World messages are drawn at the position minus the scroll; the others at the position.
+- A typewriter message shows its first N characters, and N grows by one each time the 50 ms typing timer runs out.
+
+The texts and where they come from:
+
+| Text | Position | Velocity, life | Font | Colour |
+|---|---|---|---|---|
+| `Energy +%d`, `Money +%d`, `Shield +%d`, `%s +%d` (ammo name) | item - 32, item + 0, each later line 20 higher; world, typed | 0, -1; 2 s | bonus 6 | `0x80ff20`, `0xffc040`, `0xff4020`, white |
+| `Key #%d !`, `Code #%d : part %d !`, `Code #%d complete !` | view centre - 100 | 2 s | bonus 6 | `0x00ff00` |
+| `Using Key #%d !`, `Using Code #%d !` (Destroy-key took the player's key) | view centre - 100 | 2 s | bonus 6 | white |
+| `Wait, lift will come.`; `Lift needs key #%d !` or `Lift needs full code !` 50 further left | lift - 150, lift - 32; world | 2 s | bonus 6 | white |
+| `Gate needs key #%d !`, `Gate needs full code #%d !` | gate - 200, gate - 32; world | 2 s | bonus 6 | white |
+| `%d $` (reward), then the object's name at -32, -32 | wreck; world, typed | 0, -1.5 and 0, -1; 2 s | bonus 2, then 6 | `0xf0ff10`, white |
+| `You are so professional %s !` and two more lines, when the last hunter dies | 70, height / 2 - 102 | 10 s | bonus 6 | white |
+| `DANGER : SHIELD IS LOW` (draw pass of the panel, option flag 8) | 100, 100; typed, its life renewed to 500 ms while shown | 500 ms | panel 3 | white |
+
+Every one replaces a message at its position. The lift and gate texts come from the player's contact with the closed door in `EngineUpdateObjects`; "Cannot take lift while invisible !" and "Cannot open gates while invisible !" replace them while the player is invisible.
+
 ## Port
 
-`Source/Pg/Font` loads and lays out fonts. `Source/Game/Panel` keeps the slots and returns the sprites to draw. The window draws them after the objects at the 640x480 corners.
+`Source/Pg/Font` loads and lays out fonts. `Source/Game/Panel` keeps the slots and returns the sprites to draw. `Source/Game/Message` keeps the floating messages, which the panel prints. The window draws them after the objects at the 640x480 corners; the sprite shader multiplies by the diffuse colour and adds the specular one.
 
 Not ported yet:
 
 - The weapon icon.
 - The weapon light flicker and the acceleration light.
-- The locked and low-shield messages, and floating messages in general (`FUN_004315f0`).
+- The locked warning, the invisibility texts, the fast kill bonus, and the bitmap, animation, fading and blinking message types.
 - The big radar and its money drain.
 - The border bars.
 - The other panel modes, and the key that switches them.

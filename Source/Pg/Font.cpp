@@ -3,6 +3,8 @@
 #include "Pg/Binary.h"
 #include "Pg/Gaf.h"
 
+#include <algorithm>
+
 namespace
 {
 // FNT_ slot 0: one record per font. GafParseSlot0 (0047b830) keeps the first word as the glyph count and copies the rest into the runtime
@@ -69,6 +71,12 @@ std::optional<std::vector<Font::FFont>> Font::LoadFonts(const std::span<const ui
             .Advance = Record.Advance,
             .LineHeight = Record.LineHeight,
         };
+        if ((Record.Flags & FontDrawSettings) != 0)
+        {
+            Font.DrawMode = Record.DrawMode;
+            Font.Color = { .Alpha = Record.Color[0], .Diffuse = Record.Color[1], .Specular = Record.Color[2] };
+        }
+
         for (uint32_t Index = 0; Index < Record.GlyphCount; ++Index, GlyphOffset += sizeof(FGlyphRecord))
         {
             const std::optional<FGlyphRecord> Glyph = ReadStruct<FGlyphRecord>((*Slots)[GlyphSlot], GlyphOffset);
@@ -89,6 +97,29 @@ std::optional<std::vector<Font::FFont>> Font::LoadFonts(const std::span<const ui
     return Fonts;
 }
 
+Font::FColor Font::FColor::Combine(const FColor& Other) const
+{
+    constexpr uint32_t ChannelMax = 0xff;
+    constexpr int ChannelBits = 8;
+    constexpr int ChannelCount = 3;
+    FColor Result;
+    Result.Diffuse = 0;
+    Result.Specular = 0;
+    for (int Channel = 0; Channel < ChannelCount; ++Channel)
+    {
+        const int Shift = Channel * ChannelBits;
+        const uint32_t Base = (Diffuse >> Shift) & ChannelMax;
+        // ColorModulate (0044e040) darkens by the complement of the other colour: c - (255 - m + 1) * c / 256.
+        const uint32_t Inverse = ChannelMax - ((Other.Diffuse >> Shift) & ChannelMax);
+        Result.Diffuse |= (Base - (((Inverse + 1) * Base) >> ChannelBits)) << Shift;
+        // ColorAddSaturate (0044dfe0) adds with saturation.
+        Result.Specular |= std::min(ChannelMax, ((Specular >> Shift) & ChannelMax) + ((Other.Specular >> Shift) & ChannelMax)) << Shift;
+    }
+
+    Result.Alpha = std::min(ChannelMax, Alpha * Other.Alpha / ChannelMax);
+    return Result;
+}
+
 std::vector<Font::FPlacedGlyph> Font::LayoutText(const FFont& Font, const std::string_view Text, const int32_t X, const int32_t Y,
     const std::span<const uint32_t> BitmapWidths)
 {
@@ -96,10 +127,26 @@ std::vector<Font::FPlacedGlyph> Font::LayoutText(const FFont& Font, const std::s
     constexpr char Space = ' ';
     // The format strings write a literal percent sign as a tilde.
     constexpr char PercentStandIn = '~';
+    constexpr char NewLine = '\n';
+    constexpr char CarriageReturn = '\r';
     std::vector<FPlacedGlyph> Placed;
     int32_t Cursor = X;
+    int32_t Line = Y;
     for (char Character : Text)
     {
+        // The level start turns word wrap off (FUN_0043be00 calls PgFontSetWordWrap), so a new line goes back to the starting column.
+        if (Character == NewLine)
+        {
+            Cursor = X;
+            Line += Font.LineHeight + ((Font.Flags & FontProportional) != 0 ? Font.LineGap : 0);
+            continue;
+        }
+
+        if (Character == CarriageReturn)
+        {
+            continue;
+        }
+
         if (uint8_t(Character) < uint8_t(FirstPrintable))
         {
             break;
@@ -114,10 +161,10 @@ std::vector<Font::FPlacedGlyph> Font::LayoutText(const FFont& Font, const std::s
             continue;
         }
 
-        Placed.push_back({ .BitmapIndex = Glyph->Base.BitmapIndex, .X = Cursor + Glyph->Base.OffsetX, .Y = Y + Glyph->Base.OffsetY });
+        Placed.push_back({ .BitmapIndex = Glyph->Base.BitmapIndex, .X = Cursor + Glyph->Base.OffsetX, .Y = Line + Glyph->Base.OffsetY });
         if (Glyph->Overlay.BitmapIndex != 0)
         {
-            Placed.push_back({ .BitmapIndex = Glyph->Overlay.BitmapIndex, .X = Cursor + Glyph->Overlay.OffsetX, .Y = Y + Glyph->Overlay.OffsetY });
+            Placed.push_back({ .BitmapIndex = Glyph->Overlay.BitmapIndex, .X = Cursor + Glyph->Overlay.OffsetX, .Y = Line + Glyph->Overlay.OffsetY });
         }
 
         const uint32_t Width = Glyph->Base.BitmapIndex <= BitmapWidths.size() ? BitmapWidths[Glyph->Base.BitmapIndex - 1] : 0;

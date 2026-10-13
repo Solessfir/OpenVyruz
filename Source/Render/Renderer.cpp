@@ -31,7 +31,24 @@ struct FSpritePush
     float Rect[4];
     float UvRect[4];
     float ScreenSize[2];
+    float Padding[2];
+    // D3D's default texture stage modulates by the diffuse colour; a specular colour is added when present.
+    float Diffuse[4];
+    float Specular[4];
 };
+
+// Unpacks a D3DCOLOR's red, green and blue bytes.
+void UnpackColor(const uint32_t Color, float (&Out)[4])
+{
+    constexpr float ChannelMax = 255.f;
+    constexpr int RedShift = 16;
+    constexpr int GreenShift = 8;
+    constexpr uint32_t ChannelMask = 0xff;
+    Out[0] = float((Color >> RedShift) & ChannelMask) / ChannelMax;
+    Out[1] = float((Color >> GreenShift) & ChannelMask) / ChannelMax;
+    Out[2] = float(Color & ChannelMask) / ChannelMax;
+    Out[3] = 1.f;
+}
 
 // Expands 5-bit channels to 8 bits the same way most D3D drivers did: replicate the top bits into the low bits.
 constexpr uint32_t Rgb555ToRgba8(const uint16_t Pixel)
@@ -243,7 +260,7 @@ void FRenderer::CreateDevice()
     };
     Check(vkCreateDescriptorPool(Device, &DescriptorPoolInfo, nullptr, &DescriptorPool), "vkCreateDescriptorPool");
 
-    const VkPushConstantRange PushRange{ VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(FSpritePush) };
+    const VkPushConstantRange PushRange{ VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FSpritePush) };
     const VkPipelineLayoutCreateInfo PipelineLayoutInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = 1,
@@ -745,7 +762,7 @@ bool FRenderer::BeginFrame()
 }
 
 void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInSheet, const float X, const float Y, const bool bMirrorX, const bool bMirrorY,
-    const ESpriteBlend Blend, const float ScaleX, const float ScaleY, const uint32_t VisibleColumns)
+    const ESpriteBlend Blend, const float ScaleX, const float ScaleY, const uint32_t VisibleColumns, const uint32_t Diffuse, const uint32_t Specular)
 {
     if (Sheet.Texture >= Textures.size() || FrameIndexInSheet >= Sheet.Frames.size())
     {
@@ -771,14 +788,16 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
         return;
     }
 
-    const FSpritePush Push{
+    FSpritePush Push{
         .Rect = { Left, Top, Width, Height },
         .UvRect = { bMirrorX ? U1 : Frame.U0, bMirrorY ? Frame.V1 : Frame.V0, bMirrorX ? Frame.U0 : U1, bMirrorY ? Frame.V0 : Frame.V1 },
         .ScreenSize = { ScreenWidth, ScreenHeight },
     };
+    UnpackColor(Diffuse, Push.Diffuse);
+    UnpackColor(Specular, Push.Specular);
     vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, SpritePipelines[static_cast<size_t>(Blend)]);
     vkCmdBindDescriptorSets(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, PipelineLayout, 0, 1, &Textures[Sheet.Texture].DescriptorSet, 0, nullptr);
-    vkCmdPushConstants(Cmd, PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Push), &Push);
+    vkCmdPushConstants(Cmd, PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &Push);
     vkCmdDraw(Cmd, 4, 1, 0, 0);
 }
 

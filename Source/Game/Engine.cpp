@@ -759,8 +759,8 @@ FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class
     return Player;
 }
 
-void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
-    const FLevel& Level, const std::span<FObjectBody> Bodies, const FObjectBody* const Self)
+const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, const uint32_t StepMilliseconds,
+    const FTerrainCollision& Terrain, const FLevel& Level, const std::span<FObjectBody> Bodies, const FObjectBody* const Self)
 {
     // Actors turn their body in their behaviour update instead (SeekerTurnBody at 0042cfa0).
     if (!Self || !Self->Actor)
@@ -772,7 +772,7 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
     {
         Player.PreviousPosition = Player.Position;
         DecaySpeed(Player, Class);
-        return;
+        return nullptr;
     }
 
     const float TimeScale = float(ReferenceStepMilliseconds / double(StepMilliseconds));
@@ -781,7 +781,7 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
     {
         Player.PreviousPosition = Player.Position;
         Player.Velocity = {};
-        return;
+        return nullptr;
     }
 
     const FCollisionPoint Target{ .X = float(double(Delta.X) + double(Player.Center.X)), .Y = float(double(Delta.Y) + double(Player.Center.Y)) };
@@ -839,7 +839,7 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
     {
         Player.Velocity = Class.bDropsVelocity ? FCollisionPoint{} : FCollisionPoint{ .X = float(double(TimeScale) * Delta.X), .Y = float(double(TimeScale) * Delta.Y) };
         Player.Center = Candidate;
-        return;
+        return nullptr;
     }
 
     // ObjectRestorePosition at 004449f0 undoes the move before the bounce is resolved.
@@ -850,6 +850,8 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
         // Moving away from the contact commits the collision centre; the world position catches up on the next step.
         Player.Center = Candidate;
     }
+
+    return HitBody;
 }
 
 std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
@@ -1176,6 +1178,8 @@ std::expected<void, std::string> VerifyPlayerMovement()
 
 std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archive)
 {
+    // The check ignores the floating messages it raises.
+    FMessages Messages;
     // One .3DR record per game step: the step's start time, its input bits, and the player's position and direction before the step.
     struct FDemoRecord
     {
@@ -1293,7 +1297,7 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
         const float Error = std::hypot(Player.Position.X - Next.X, Player.Position.Y - Next.Y);
         // Pickups along the recorded path, collected from the recorded position.
         FPlayerState Recorded{ .Center = CollisionFromWorld({ .X = Next.X, .Y = Next.Y }) };
-        Collected += CollectPickups(Recorded, *Class, Inventory, Pickups, PickupLevel);
+        Collected += CollectPickups(Recorded, *Class, Inventory, Pickups, PickupLevel, Messages);
         Exact += Error <= ExactTolerance;
         Close += Error <= CloseTolerance;
 
@@ -1395,10 +1399,63 @@ FPlayerInventory CreateInventory(const FLevelObject& Player)
     return Inventory;
 }
 
-size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level)
+namespace
+{
+bool CarriesKey(const std::vector<FCarriedKey>& Keys, int Id);
+
+// The view size at session +0xf84 and +0xf88, from which the screen messages are placed.
+constexpr int32_t MessageViewWidth = 640;
+constexpr int32_t MessageViewHeight = 480;
+
+// The floating texts of the item pickup branch: world messages that rise from the item and type themselves out.
+void AddPickupMessage(FMessages& Messages, const FLevelObject& Item, const int32_t OffsetY, std::string Text, const uint32_t Diffuse)
+{
+    constexpr int32_t TextX = -0x20;
+    constexpr float RiseVelocity = -1.f;
+    constexpr uint32_t LifeMilliseconds = 2000;
+    constexpr uint32_t Font = 6;
+    Messages.Add({
+        .Text = std::move(Text),
+        .X = float(TruncateLow(Item.X) + TextX),
+        .Y = float(TruncateLow(Item.Y) + OffsetY),
+        .VelocityY = RiseVelocity,
+        .LifeMilliseconds = LifeMilliseconds,
+        .bWorld = true,
+        .bTypewriter = true,
+        .Font = Font,
+        .Color = { .Diffuse = Diffuse },
+    }, EMessagePlacement::Replace);
+}
+
+// The screen messages of keys and gates, centred 100 pixels up and left of the view's middle.
+void AddCentreMessage(FMessages& Messages, std::string Text, const uint32_t Diffuse)
+{
+    constexpr int32_t CentreOffset = -100;
+    constexpr uint32_t LifeMilliseconds = 2000;
+    constexpr uint32_t Font = 6;
+    Messages.Add({
+        .Text = std::move(Text),
+        .X = float((MessageViewWidth >> 1) + CentreOffset),
+        .Y = float((MessageViewHeight >> 1) + CentreOffset),
+        .LifeMilliseconds = LifeMilliseconds,
+        .Font = Font,
+        .Color = { .Diffuse = Diffuse },
+    }, EMessagePlacement::Replace);
+}
+}
+
+size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level,
+    FMessages& Messages)
 {
     // Energy is only topped up below 95% of its maximum; shield below its maximum; money always.
     constexpr float EnergyRefillLimit = 0.95f;
+    constexpr uint32_t EnergyColor = 0x80ff20;
+    constexpr uint32_t MoneyColor = 0xffc040;
+    constexpr uint32_t ShieldColor = 0xff4020;
+    constexpr uint32_t KeyColor = 0x00ff00;
+    constexpr uint32_t PlainColor = 0xffffff;
+    // Each further text of the same item sits 20 pixels higher.
+    constexpr int32_t LineStep = -0x14;
     size_t Collected = 0;
     for (FPickup& Pickup : Pickups)
     {
@@ -1409,21 +1466,26 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
         }
 
         bool bUsed = false;
+        int32_t OffsetY = 0;
         if (Pickup.AddEnergy != 0.f && Inventory.Energy < Inventory.EnergyMax * EnergyRefillLimit)
         {
             Inventory.Energy = std::min(Inventory.EnergyMax, Inventory.Energy + Pickup.AddEnergy);
+            AddPickupMessage(Messages, Object, OffsetY, std::format("Energy +{}", int32_t(Pickup.AddEnergy)), EnergyColor);
             bUsed = true;
         }
 
         if (Pickup.AddMoney != 0.f)
         {
             Inventory.Money += Pickup.AddMoney;
+            AddPickupMessage(Messages, Object, OffsetY, std::format("Money +{}", int32_t(Pickup.AddMoney)), MoneyColor);
             bUsed = true;
         }
 
         if (Pickup.AddShield != 0.f && Inventory.Shield < Inventory.ShieldMax)
         {
+            OffsetY = bUsed ? LineStep : OffsetY;
             Inventory.Shield = std::min(Inventory.ShieldMax, Inventory.Shield + Pickup.AddShield);
+            AddPickupMessage(Messages, Object, OffsetY, std::format("Shield +{}", int32_t(Pickup.AddShield)), ShieldColor);
             bUsed = true;
         }
 
@@ -1434,6 +1496,8 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
             if (Stock != Inventory.Ammo.end() && Stock->Count < Stock->Max)
             {
                 Stock->Count = std::min(Stock->Max, Stock->Count + Pickup.AddAmmo);
+                OffsetY += bUsed ? LineStep : 0;
+                AddPickupMessage(Messages, Object, OffsetY, std::format("{} +{}", Pickup.AmmoType, int32_t(Pickup.AddAmmo)), PlainColor);
                 bUsed = true;
             }
         }
@@ -1441,7 +1505,16 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
         // ConsumeItem at 00444660 carries an item without an action, which is what keys and code parts are.
         if (Pickup.Key)
         {
-            Inventory.Keys.push_back(*Pickup.Key);
+            const FCarriedKey& Key = *Pickup.Key;
+            Inventory.Keys.push_back(Key);
+            if (Key.Id != 0)
+            {
+                const std::string Text = !Key.bCode                ? std::format("Key #{} !", Key.Id)
+                                         : CarriesKey(Inventory.Keys, Key.Id) ? std::format("Code #{} complete !", Key.Id)
+                                                                              : std::format("Code #{} : part {} !", Key.Id, Key.PartId);
+                AddCentreMessage(Messages, Text, KeyColor);
+            }
+
             bUsed = true;
         }
 
@@ -1499,12 +1572,6 @@ FWorldCell CellOf(const FCollisionPoint World)
     return { .X = int(uint32_t(int64_t(World.X)) / BlockWidth), .Y = int(uint32_t(int64_t(World.Y)) / BlockHeight) };
 }
 
-// __ftol truncates into 64 bits and its callers keep the low half; NaN and out-of-range values give the integer indefinite, whose low half is zero.
-constexpr int32_t TruncateLow(const double Value)
-{
-    constexpr double Limit = 9223372036854775808.0;
-    return Value > -Limit && Value < Limit ? int32_t(uint32_t(uint64_t(int64_t(Value)))) : 0;
-}
 static_assert(TruncateLow(-2.7) == -2);
 static_assert(TruncateLow(std::numeric_limits<double>::quiet_NaN()) == 0);
 static_assert(TruncateLow(4294967298.5) == 2);
@@ -1741,13 +1808,14 @@ bool DoorBlocked(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, c
     return false;
 }
 
-// The key part of the gate and lift updates: Destroy-key takes every carried key or code part with the id (ObjectDestroyKeys at 0043dd20), and without
-// Key-always-needed the door forgets its id. ponytail: the "Using key" message waits for the HUD.
-void UseKey(FDoor& Door, FPlayerInventory& Inventory)
+// The key part of the gate and lift updates: Destroy-key takes every key or code part with the id from the holder (ObjectDestroyKeys at 0043dd20),
+// which DoorAnnounceKeyUse (00443500) announces when it is the player, and without Key-always-needed the door forgets its id.
+void UseKey(FDoor& Door, FPlayerInventory& Inventory, const EHolder Holder, FMessages& Messages)
 {
-    if ((Door.Flags & DoorDestroyKey) != 0)
+    constexpr uint32_t PlainColor = 0xffffff;
+    if ((Door.Flags & DoorDestroyKey) != 0 && Holder == EHolder::Player && std::erase_if(Inventory.Keys, [&](const FCarriedKey& Key) { return Key.Id == Door.Id; }) != 0)
     {
-        std::erase_if(Inventory.Keys, [&](const FCarriedKey& Key) { return Key.Id == Door.Id; });
+        AddCentreMessage(Messages, std::format("{} #{} !", (Door.Flags & DoorNeedsCode) != 0 ? "Using Code" : "Using Key", Door.Id), PlainColor);
     }
 
     if ((Door.Flags & DoorKeyAlwaysNeeded) == 0)
@@ -1769,7 +1837,8 @@ constexpr size_t OpenAnimation = 0;
 constexpr size_t ClosedAnimation = 1;
 
 // GateUpdate at 00443620.
-void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const int32_t Step)
+void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const int32_t Step,
+    FMessages& Messages)
 {
     const FWorldCell Cell = CellOf(Body.State.Position);
     if ((Door.Flags & DoorOpen) == 0)
@@ -1789,7 +1858,7 @@ void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
             Door.Flags &= ~DoorStayClosed;
             if (Holder != EHolder::None && Door.Id != 0)
             {
-                UseKey(Door, Player.Inventory);
+                UseKey(Door, Player.Inventory, Holder, Messages);
             }
         }
         else
@@ -1820,11 +1889,11 @@ void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
         return;
     }
 
-    if (FindHolder(Level, BodyOf, Player, Cell, Door.Id) != EHolder::None)
+    if (const EHolder Holder = FindHolder(Level, BodyOf, Player, Cell, Door.Id); Holder != EHolder::None)
     {
         if (Door.Id != 0)
         {
-            UseKey(Door, Player.Inventory);
+            UseKey(Door, Player.Inventory, Holder, Messages);
         }
 
         return;
@@ -1842,21 +1911,22 @@ void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
 }
 
 // ObjectUpdateLevelExit at 00442bf0. A lift leaves when nothing stands on it and comes back after its delay; the player rides it once fully
-// inside its box, which returns true. A negative Reward is its fare. ponytail: the waiting and key messages wait for the HUD.
+// inside its box, which returns true. A negative Reward is its fare.
 bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player,
-    const int32_t Step)
+    const int32_t Step, FMessages& Messages)
 {
     const FWorldCell Cell = CellOf(Body.State.Position);
     if ((Door.Flags & DoorOpen) == 0)
     {
         if ((Door.Flags & DoorOpening) != 0)
         {
-            if (Door.Id == 0 || FindHolder(Level, BodyOf, Player, Cell, Door.Id) != EHolder::None)
+            const EHolder Holder = Door.Id == 0 ? EHolder::None : FindHolder(Level, BodyOf, Player, Cell, Door.Id);
+            if (Door.Id == 0 || Holder != EHolder::None)
             {
                 Body.bPassable = true;
                 if (Door.Id != 0)
                 {
-                    UseKey(Door, Player.Inventory);
+                    UseKey(Door, Player.Inventory, Holder, Messages);
                 }
             }
 
@@ -1882,13 +1952,14 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
         return false;
     }
 
-    const bool bAccess = Door.Id == 0 || FindHolder(Level, BodyOf, Player, Cell, Door.Id) != EHolder::None;
+    const EHolder Holder = Door.Id == 0 ? EHolder::None : FindHolder(Level, BodyOf, Player, Cell, Door.Id);
+    const bool bAccess = Door.Id == 0 || Holder != EHolder::None;
     if (bAccess)
     {
         Body.bPassable = true;
         if (Door.Id != 0)
         {
-            UseKey(Door, Player.Inventory);
+            UseKey(Door, Player.Inventory, Holder, Messages);
         }
     }
 
@@ -2492,7 +2563,7 @@ std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, 
 }
 
 const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std::span<FObjectBody> Bodies, const FPlayerTarget& Player,
-    const uint32_t StepMilliseconds)
+    const uint32_t StepMilliseconds, FMessages& Messages)
 {
     const std::vector<FObjectBody*> BodyOf = BodiesByObject(Level, Bodies);
     const int32_t Step = int32_t(StepMilliseconds);
@@ -2516,15 +2587,56 @@ const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std
 
         if (!Door.bLift)
         {
-            StepGate(Door, *Body, Level, BodyOf, Player, Step);
+            StepGate(Door, *Body, Level, BodyOf, Player, Step, Messages);
         }
-        else if (StepLift(Door, *Body, Level, BodyOf, Player, Step) && !Exit)
+        else if (StepLift(Door, *Body, Level, BodyOf, Player, Step, Messages) && !Exit)
         {
             Exit = &Door;
         }
     }
 
     return Exit;
+}
+
+void ReportDoorContact(const std::span<const FDoor> Doors, const FObjectBody& Body, const FPlayerInventory& Inventory, FMessages& Messages)
+{
+    // ponytail: "Cannot take lift while invisible !" and "Cannot open gates while invisible !" wait for invisibility.
+    constexpr int32_t TextX = -0x96;
+    constexpr int32_t TextY = -0x20;
+    constexpr int32_t KeyTextX = -0x32;
+    constexpr uint32_t LifeMilliseconds = 2000;
+    constexpr uint32_t Font = 6;
+    const auto Door = std::ranges::find(Doors, Body.ObjectIndex, &FDoor::ObjectIndex);
+    if (Door == Doors.end() || Body.bPassable)
+    {
+        return;
+    }
+
+    const bool bNeedsKey = Door->Id != 0 && !CarriesKey(Inventory.Keys, Door->Id);
+    const bool bCode = (Door->Flags & DoorNeedsCode) != 0;
+    std::string Text;
+    if (Door->bLift)
+    {
+        Text = !bNeedsKey ? "Wait, lift will come." : bCode ? "Lift needs full code !" : std::format("Lift needs key #{} !", Door->Id);
+    }
+    else if (bNeedsKey)
+    {
+        // The gate also plays a sound for 5 seconds.
+        Text = std::format("Gate needs {} #{} !", bCode ? "full code" : "key", Door->Id);
+    }
+    else
+    {
+        return;
+    }
+
+    Messages.Add({
+        .Text = std::move(Text),
+        .X = float(TruncateLow(Body.State.Position.X) + TextX + (bNeedsKey ? KeyTextX : 0)),
+        .Y = float(TruncateLow(Body.State.Position.Y) + TextY),
+        .LifeMilliseconds = LifeMilliseconds,
+        .bWorld = true,
+        .Font = Font,
+    }, EMessagePlacement::Replace);
 }
 
 std::string NextLevelPath(const std::string_view CurrentPath, const FDoor& Lift)
@@ -3597,7 +3709,7 @@ void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrai
 }
 
 void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
-    const FPlayerTarget& Player)
+    const FPlayerTarget& Player, FMessages& Messages)
 {
     const float TimeScale = float(ReferenceStepMilliseconds / double(StepMilliseconds));
     constexpr FPlayerCommand Straight{ .Thrust = EPlayerThrust::Forward };
@@ -3753,6 +3865,9 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         return Effect.bFinished;
     });
 
+    // Session +0x2094 counts the hunters down as they die; the last one announces the empty level.
+    const auto IsHunter = [](const FObjectBody& Body) { return Body.Turret || (Body.Actor && Body.Actor->Seeker); };
+    int Hunters = int(std::ranges::count_if(Bodies, [&](const FObjectBody& Body) { return IsHunter(Body) && !Level.Objects[Body.ObjectIndex].bRemoved; }));
     std::erase_if(Bodies, [&](const FObjectBody& Body)
     {
         // Objects die in their next update once damage has taken their energy to zero.
@@ -3763,6 +3878,23 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
         FLevelObject& Object = Level.Objects[Body.ObjectIndex];
         Object.bRemoved = true;
+        if (IsHunter(Body) && --Hunters == 0)
+        {
+            // The player's name at session +0x2754 starts as Jack. ponytail: the 100000 bonus is only printed here.
+            constexpr int32_t LastKillX = 0x46;
+            constexpr int32_t LastKillY = (MessageViewHeight >> 1) - 0x66;
+            constexpr uint32_t LastKillLifeMilliseconds = 10000;
+            constexpr int RealKillerBonus = 100000;
+            constexpr uint32_t Font = 6;
+            Messages.Add({
+                .Text = std::format("You are so professional Jack !\nNo more enemy in this level !\n  Real Killer Bonus : +{} $", RealKillerBonus),
+                .X = float(LastKillX),
+                .Y = float(LastKillY),
+                .LifeMilliseconds = LastKillLifeMilliseconds,
+                .Font = Font,
+            }, EMessagePlacement::Replace);
+        }
+
         // ObjectDestroy (00437d40) hands each TYPE Explosion block to a new Boom-fx object at the same spot.
         // ponytail: two-piece wrecks that stay behind and surprise drops are not ported.
         for (const FExplosionBlock& Explosion : Body.Explosions)
@@ -3773,6 +3905,38 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         if (0.f < Body.Reward && PaysReward(Object.SubType))
         {
             Player.Inventory.Money += Body.Reward;
+            // The reward rises from the wreck in font 2 and the object's name follows it in font 6.
+            constexpr float RewardVelocity = -1.5f;
+            constexpr float NameVelocity = -1.f;
+            constexpr int32_t NameOffset = -0x20;
+            constexpr uint32_t LifeMilliseconds = 2000;
+            constexpr uint32_t RewardFont = 2;
+            constexpr uint32_t NameFont = 6;
+            constexpr uint32_t RewardColor = 0xf0ff10;
+            const int32_t X = TruncateLow(Body.State.Position.X);
+            const int32_t Y = TruncateLow(Body.State.Position.Y);
+            Messages.Add({
+                .Text = std::format("{} $", int32_t(Body.Reward)),
+                .X = float(X),
+                .Y = float(Y),
+                .VelocityY = RewardVelocity,
+                .LifeMilliseconds = LifeMilliseconds,
+                .bWorld = true,
+                .bTypewriter = true,
+                .Font = RewardFont,
+                .Color = { .Diffuse = RewardColor },
+            }, EMessagePlacement::Replace);
+            const std::string_view Name = Object.Properties.Find("Name");
+            Messages.Add({
+                .Text = std::string(Name.empty() ? std::string_view(Object.ClassName) : Name),
+                .X = float(X + NameOffset),
+                .Y = float(Y + NameOffset),
+                .VelocityY = NameVelocity,
+                .LifeMilliseconds = LifeMilliseconds,
+                .bWorld = true,
+                .bTypewriter = true,
+                .Font = NameFont,
+            }, EMessagePlacement::Replace);
         }
 
         return true;
@@ -3869,6 +4033,8 @@ std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive)
 
 std::expected<std::string, std::string> VerifyDoors(FResourceArchive& Archive)
 {
+    // The check ignores the floating messages it raises.
+    FMessages Messages;
     constexpr uint32_t StepMilliseconds = 14;
     constexpr uint32_t SettleMilliseconds = 12000;
     constexpr uint32_t RideMilliseconds = 30000;
@@ -3908,7 +4074,7 @@ std::expected<std::string, std::string> VerifyDoors(FResourceArchive& Archive)
             for (uint32_t Time = 0; Time < Duration; Time += StepMilliseconds)
             {
                 if (const FDoor* const Lift = StepDoors(Doors, *Level, Bodies, { .State = Player, .Radius = PlayerClass->Radius, .Inventory = Inventory,
-                                                                                    .ObjectIndex = PlayerIndex }, StepMilliseconds))
+                                                                                    .ObjectIndex = PlayerIndex }, StepMilliseconds, Messages))
                 {
                     return std::optional(Lift->NextLevel);
                 }
@@ -4007,6 +4173,8 @@ int CountEnemies(const FLevel& Level, const std::span<const FObjectBody> Bodies)
 
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
 {
+    // The check ignores the floating messages it raises.
+    FMessages Messages;
     // Every level's player spins on the spot for a few seconds with the trigger held, while the turrets that see it shoot back; each level must
     // load its weapons and the player must fire.
     constexpr uint32_t StepMilliseconds = 14;
@@ -4099,7 +4267,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Player);
             TurretShots += Combat->Projectiles.size() - TurretBefore;
             const size_t EffectsBefore = Combat->Effects.size();
-            StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex });
+            StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
             Effects += Combat->Effects.size() > EffectsBefore ? Combat->Effects.size() - EffectsBefore : 0;
         }
 
@@ -4150,7 +4318,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
                 const size_t TurretBefore = Combat->Projectiles.size();
                 StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Player);
                 DuelShots += Combat->Projectiles.size() - TurretBefore;
-                StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex });
+                StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
             }
 
             ++Duels;
@@ -4194,7 +4362,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
                 const size_t Before = Combat->Projectiles.size();
                 StepActors(&*Combat, Bodies, StepMilliseconds, *Terrain, *Level, &Player);
                 CopShots += Combat->Projectiles.size() - Before;
-                StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex });
+                StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
             }
 
             ++CopDuels;

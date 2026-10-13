@@ -2,6 +2,7 @@
 
 #include "Game/Collision.h"
 #include "Game/Engine.h"
+#include "Game/Message.h"
 #include "Pg/Font.h"
 #include "Pg/Gaf.h"
 
@@ -15,12 +16,14 @@
 class FResourceArchive;
 struct FLevel;
 
-// The GAFs the panel draws from: Common\Data\Panel\panel.gaf, its v-panel.gaf companion, and solid colours for the radar dots.
+// The GAFs the panel draws from: Common\Data\Panel\panel.gaf, its v-panel.gaf companion, solid colours for the radar dots, and
+// Common\Data\Extra\v-bonus.gaf, whose fonts print the floating messages.
 enum class EHudSheet : uint8_t
 {
     Panel,
     VPanel,
     Colors,
+    Bonus,
 };
 
 // Radar dot colours, as the indices PanelDrawRadar at 00436080 plots.
@@ -41,6 +44,9 @@ struct FHudSprite
     float Y = 0.f;
     // A bar shows only this many columns of its bitmap from the left.
     uint32_t VisibleColumns = UINT32_MAX;
+    // 0xRRGGBB colours that modulate the bitmap and are added to it.
+    uint32_t Diffuse = 0xffffff;
+    uint32_t Specular = 0;
 };
 
 // What the panel shows of the player and the level.
@@ -78,8 +84,12 @@ public:
     void Step(const FPanelValues& Values, int32_t StepMilliseconds);
     // The draw pass, back to front.
     std::vector<FHudSprite> Draw(const FPanelValues& Values, std::span<const FRadarDot> Radar, int ViewWidth, int ViewHeight) const;
+    // The draw pass also keeps the low shield warning up.
+    static void PostWarnings(const FPanelValues& Values, FMessages& Messages);
+    // A message's visible text in its font, as MessagesUpdate prints it.
+    void DrawMessage(std::vector<FHudSprite>& Out, const FMessage& Message, int32_t X, int32_t Y, std::string_view Text) const;
 
-    const std::vector<Gaf::FFrame>& GetBitmaps(EHudSheet Sheet) const { return Sheet == EHudSheet::VPanel ? VBitmaps : Bitmaps; }
+    const std::vector<Gaf::FFrame>& GetBitmaps(EHudSheet Sheet) const;
 
     static constexpr size_t SlotCount = 26;
 
@@ -92,12 +102,15 @@ private:
     };
 
     void DrawSlot(std::vector<FHudSprite>& Out, size_t Slot, float X, float Y, uint32_t Frame, uint32_t VisibleColumns = UINT32_MAX) const;
-    void DrawText(std::vector<FHudSprite>& Out, size_t Font, int32_t X, int32_t Y, const std::string& Text) const;
+    void DrawText(std::vector<FHudSprite>& Out, EHudSheet Sheet, size_t Font, int32_t X, int32_t Y, std::string_view Text, const Font::FColor& Color = {}) const;
 
     std::vector<Gaf::FFrame> Bitmaps;
     std::vector<Gaf::FFrame> VBitmaps;
+    std::vector<Gaf::FFrame> BonusBitmaps;
     std::vector<uint32_t> BitmapWidths;
+    std::vector<uint32_t> BonusBitmapWidths;
     std::vector<Font::FFont> Fonts;
+    std::vector<Font::FFont> BonusFonts;
     std::array<FSlot, SlotCount> Slots;
 };
 

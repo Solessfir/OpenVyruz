@@ -4,6 +4,9 @@ struct PushConstants
     float4 Rect;   // x, y, width, height in screen pixels
     float4 UvRect; // u0, v0, u1, v1
     float2 ScreenSize;
+    float2 Padding;
+    float4 Diffuse;
+    float4 Specular;
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> Push;
@@ -36,5 +39,5 @@ float4 fragmentMain(VertexOutput Input) : SV_Target
     {
         discard;
     }
-    return Color;
+    return float4(Color.rgb * Push.Diffuse.rgb + Push.Specular.rgb, Color.a);
 }

@@ -4,6 +4,7 @@
 #include "Game/Loop.h"
 #include "Game/Panel.h"
 #include "Pg/File.h"
+#include "Pg/Font.h"
 #include "Pg/Gaf.h"
 #include "Pg/ResourceArchive.h"
 #include "Render/Renderer.h"
@@ -743,6 +744,8 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
     // yellow key or code, blue lift, green for the player) until the palette FUN_00467a10 indexes is traced.
     const FSpriteSheet PanelSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Panel)) : FSpriteSheet{};
     const FSpriteSheet VPanelSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::VPanel)) : FSpriteSheet{};
+    const FSpriteSheet BonusSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Bonus)) : FSpriteSheet{};
+    FMessages Messages;
     constexpr std::array<uint16_t, 4> RadarColors = { 0x7c00, 0x03e0, 0x7fe0, 0x001f };
     std::vector<Gaf::FFrame> RadarPixels;
     for (const uint16_t Color : RadarColors)
@@ -886,11 +889,15 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
             {
                 const FPlayerCommand Command = PlayerCommandFromKeys(Pressed(GLFW_KEY_UP), Pressed(GLFW_KEY_DOWN), Pressed(GLFW_KEY_LEFT), Pressed(GLFW_KEY_RIGHT),
                     Pressed(GLFW_KEY_A), Pressed(GLFW_KEY_D));
-                StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies);
+                if (const FObjectBody* const Struck = StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies))
+                {
+                    ReportDoorContact(*Doors, *Struck, Inventory, Messages);
+                }
+
                 StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
                 StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &*Player);
                 const FPlayerTarget Rider{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
-                if (const FDoor* const Lift = StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds); Lift && !NextLevel)
+                if (const FDoor* const Lift = StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds, Messages); Lift && !NextLevel)
                 {
                     // ponytail: the end of a tower (a starred 3do-file) has no sequence yet; the player stays.
                     if (Lift->NextLevel.starts_with('*'))
@@ -913,7 +920,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                     StepPlayerWeapon(*Combat, bFire, *Player, *PlayerObject, PlayerIndex, PlayerSpriteSize, Inventory);
                     StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, *Player);
                     StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies,
-                        { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex });
+                        { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
                     if (Inventory.Money != MoneyBefore || Inventory.Energy != EnergyBefore || Inventory.Shield != ShieldBefore)
                     {
                         // ponytail: no HUD or death sequence yet; the totals go to the console.
@@ -921,11 +928,14 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                         std::fflush(stdout);
                     }
                 }
-                if (CollectPickups(*Player, *PlayerClass, Inventory, Pickups, *Level) != 0)
+                if (CollectPickups(*Player, *PlayerClass, Inventory, Pickups, *Level, Messages) != 0)
                 {
                     std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
                     std::fflush(stdout);
                 }
+
+                // The update pass of MessagesUpdate (004315f0) follows the game update.
+                Messages.Update(int32_t(StepMilliseconds), 0, 0, nullptr);
 
                 // The update pass after each step uses the view the previous frame scrolled to.
                 const FViewCells View = ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level);
@@ -1130,19 +1140,40 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
             FlushSprites(FinalThreshold, Layer);
         }
 
-        if (Panel && Player)
+        const auto DrawHud = [&](const std::span<const FHudSprite> HudSprites)
         {
-            const std::vector<FRadarDot> Radar = FindRadarDots(*Level, Bodies, Player->Position, PlayerIndex, int(ScreenHeight));
-            for (const FHudSprite& Hud : Panel->Draw(PanelValues(), Radar, int(ScreenWidth), int(ScreenHeight)))
+            for (const FHudSprite& Hud : HudSprites)
             {
-                const FSpriteSheet& Sheet = Hud.Sheet == EHudSheet::Panel ? PanelSheet : Hud.Sheet == EHudSheet::VPanel ? VPanelSheet : ColorSheet;
+                const FSpriteSheet& Sheet = Hud.Sheet == EHudSheet::Panel    ? PanelSheet
+                                            : Hud.Sheet == EHudSheet::VPanel ? VPanelSheet
+                                            : Hud.Sheet == EHudSheet::Bonus  ? BonusSheet
+                                                                             : ColorSheet;
                 const Gaf::FAnimationFrame& Frame = Hud.Frame;
                 if (Frame.BitmapIndex != 0)
                 {
                     Renderer.DrawSprite(Sheet, Frame.BitmapIndex - 1, Hud.X + float(Frame.OffsetX), Hud.Y + float(Frame.OffsetY), Frame.bMirrorX, Frame.bMirrorY,
-                        FrameBlend(Frame), 1.f, 1.f, Hud.VisibleColumns);
+                        FrameBlend(Frame), 1.f, 1.f, Hud.VisibleColumns, Hud.Diffuse, Hud.Specular);
                 }
             }
+        };
+
+        // The messages' draw pass comes after the objects and before the panel, with the last step.
+        if (Panel)
+        {
+            std::vector<FHudSprite> MessageSprites;
+            const FMessages::FDraw DrawMessage = [&](const FMessage& Message, const int32_t X, const int32_t Y, const std::string_view Text)
+            {
+                Panel->DrawMessage(MessageSprites, Message, X, Y, Text);
+            };
+            Messages.Update(int32_t(LastStepMilliseconds), OriginX, OriginY, &DrawMessage);
+            DrawHud(MessageSprites);
+        }
+
+        if (Panel && Player)
+        {
+            const std::vector<FRadarDot> Radar = FindRadarDots(*Level, Bodies, Player->Position, PlayerIndex, int(ScreenHeight));
+            DrawHud(Panel->Draw(PanelValues(), Radar, int(ScreenWidth), int(ScreenHeight)));
+            FPanel::PostWarnings(PanelValues(), Messages);
         }
 
         Renderer.EndFrame();
@@ -1281,6 +1312,15 @@ int main(const int ArgCount, char** const Args)
                 std::printf(" %d", Frame.Duration);
             }
             std::printf("\n");
+        }
+
+        const std::optional<std::vector<uint8_t>> File = Archive.Read(*DumpGafPath);
+        const std::optional<std::vector<Font::FFont>> Fonts = File ? Font::LoadFonts(*File) : std::nullopt;
+        for (size_t Index = 0; Fonts && Index < Fonts->size(); ++Index)
+        {
+            const Font::FFont& Font = (*Fonts)[Index];
+            std::printf("font %zu: flags %#x, advance %d, line %d, mode %u, alpha %#x, diffuse %#08x, specular %#08x\n", Index + 1, Font.Flags, Font.Advance,
+                Font.LineHeight, Font.DrawMode, Font.Color.Alpha, Font.Color.Diffuse, Font.Color.Specular);
         }
         return 0;
     }

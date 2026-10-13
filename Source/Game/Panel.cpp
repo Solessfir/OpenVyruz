@@ -11,6 +11,8 @@ namespace
 // PanelLoad at 00434d40 loads these with VzLoadGaf; a zone's own Data\Panel would come first, but only Common has one.
 constexpr std::string_view PanelPath = "common\\data\\panel\\panel.gaf";
 constexpr std::string_view VPanelPath = "common\\data\\panel\\v-panel.gaf";
+// MessageLoadFonts at 00430d80 loads the message fonts; Data\Extra\v-bonus.gaf falls back to Common's, the only one there is.
+constexpr std::string_view BonusPath = "common\\data\\extra\\v-bonus.gaf";
 
 // 0-based slot indices into FPanel::Slots; slot N plays animation N + 1 of its GAF.
 constexpr size_t EnergyWarningSlot = 0;
@@ -31,7 +33,7 @@ constexpr size_t SpeedSideSlot = 18;
 // The border pieces and black_square come from v-panel.gaf.
 constexpr std::array<size_t, 6> VPanelSlots = { ScreenSlot, 6, 7, 8, 9, 21 };
 
-// 1-based font indices of FUN_0044c3c0.
+// 1-based font indices of PgFontSelect (0044c3c0).
 constexpr size_t ScoreFont = 1;
 constexpr size_t SpeedFont = 2;
 constexpr size_t ScreenFont = 3;
@@ -40,6 +42,28 @@ constexpr size_t ScreenFont = 3;
 constexpr float ShieldLowRatio = 0.01f;
 // The screen slot is drawn with draw mode 1 unless option flag 0x10 picks 5.
 constexpr uint32_t ScreenDrawMode = 1;
+
+bool ShieldLow(const FPanelValues& Values)
+{
+    return Values.ShieldMax != 0.f && Values.Shield / Values.ShieldMax <= ShieldLowRatio;
+}
+
+std::optional<std::vector<Font::FFont>> LoadGafFonts(FResourceArchive& Archive, const std::string_view Path)
+{
+    const std::optional<std::vector<uint8_t>> File = Archive.Read(Path);
+    return File ? Font::LoadFonts(*File) : std::nullopt;
+}
+
+std::vector<uint32_t> BitmapWidthsOf(const std::vector<Gaf::FFrame>& Bitmaps)
+{
+    std::vector<uint32_t> Widths;
+    for (const Gaf::FFrame& Bitmap : Bitmaps)
+    {
+        Widths.push_back(Bitmap.Width);
+    }
+
+    return Widths;
+}
 constexpr uint32_t FirstFrame = 1;
 constexpr uint32_t CurrentFrame = 0;
 
@@ -67,27 +91,29 @@ std::expected<FPanel, std::string> FPanel::Load(FResourceArchive& Archive)
 {
     auto Panel = LoadGaf(Archive, PanelPath);
     auto VPanel = Panel ? LoadGaf(Archive, VPanelPath) : std::unexpected(Panel.error());
-    if (!VPanel)
+    auto Bonus = VPanel ? LoadGaf(Archive, BonusPath) : std::unexpected(VPanel.error());
+    if (!Bonus)
     {
-        return std::unexpected(VPanel.error());
+        return std::unexpected(Bonus.error());
     }
 
-    const std::optional<std::vector<uint8_t>> File = Archive.Read(PanelPath);
-    std::optional<std::vector<Font::FFont>> Fonts = File ? Font::LoadFonts(*File) : std::nullopt;
+    std::optional<std::vector<Font::FFont>> Fonts = LoadGafFonts(Archive, PanelPath);
+    std::optional<std::vector<Font::FFont>> BonusFonts = LoadGafFonts(Archive, BonusPath);
     constexpr size_t FontCount = 3;
-    if (!Fonts || Fonts->size() < FontCount)
+    constexpr size_t BonusFontCount = 6;
+    if (!Fonts || Fonts->size() < FontCount || !BonusFonts || BonusFonts->size() < BonusFontCount)
     {
-        return std::unexpected(std::format("{} has no panel fonts", PanelPath));
+        return std::unexpected(std::format("{} or {} lacks its fonts", PanelPath, BonusPath));
     }
 
     FPanel Result;
     Result.Bitmaps = std::move(Panel->first);
     Result.VBitmaps = std::move(VPanel->first);
+    Result.BonusBitmaps = std::move(Bonus->first);
     Result.Fonts = std::move(*Fonts);
-    for (const Gaf::FFrame& Bitmap : Result.Bitmaps)
-    {
-        Result.BitmapWidths.push_back(Bitmap.Width);
-    }
+    Result.BonusFonts = std::move(*BonusFonts);
+    Result.BitmapWidths = BitmapWidthsOf(Result.Bitmaps);
+    Result.BonusBitmapWidths = BitmapWidthsOf(Result.BonusBitmaps);
 
     for (size_t Slot = 0; Slot < SlotCount; ++Slot)
     {
@@ -111,7 +137,7 @@ void FPanel::Step(const FPanelValues& Values, const int32_t StepMilliseconds)
     // ponytail: the weapon lights do not flicker with the panel's own random stream while firing, the boost light stays off, and the infos
     // light waits for the turret lock; the slots that only blink in those cases stay still.
     UpdateAnimation(Slots[ScoreSlot].Playback, Slots[ScoreSlot].Animation, StepMilliseconds);
-    if (Values.ShieldMax != 0.f && Values.Shield / Values.ShieldMax <= ShieldLowRatio)
+    if (ShieldLow(Values))
     {
         UpdateAnimation(Slots[EnergyWarningSlot].Playback, Slots[EnergyWarningSlot].Animation, StepMilliseconds);
     }
@@ -132,24 +158,77 @@ void FPanel::DrawSlot(std::vector<FHudSprite>& Out, const size_t Slot, const flo
     Out.push_back({ .Sheet = Source.Sheet, .Frame = Source.Animation.Frames[Shown - 1], .X = X, .Y = Y, .VisibleColumns = VisibleColumns });
 }
 
-void FPanel::DrawText(std::vector<FHudSprite>& Out, const size_t Font, const int32_t X, const int32_t Y, const std::string& Text) const
+const std::vector<Gaf::FFrame>& FPanel::GetBitmaps(const EHudSheet Sheet) const
 {
-    for (const Font::FPlacedGlyph& Glyph : Font::LayoutText(Fonts[Font - 1], Text, X, Y, BitmapWidths))
+    return Sheet == EHudSheet::VPanel ? VBitmaps : Sheet == EHudSheet::Bonus ? BonusBitmaps : Bitmaps;
+}
+
+// Selecting a font (PgFontSelect at 0044c3c0) takes its draw mode and colour, and PgFontSetColor (0044cc30) combines the caller's colour into that.
+void FPanel::DrawText(std::vector<FHudSprite>& Out, const EHudSheet Sheet, const size_t Font, const int32_t X, const int32_t Y, const std::string_view Text,
+    const Font::FColor& Color) const
+{
+    const bool bBonus = Sheet == EHudSheet::Bonus;
+    const std::vector<Font::FFont>& SheetFonts = bBonus ? BonusFonts : Fonts;
+    const std::vector<Gaf::FFrame>& SheetBitmaps = GetBitmaps(Sheet);
+    if (Font == 0 || Font > SheetFonts.size())
     {
-        if (Glyph.BitmapIndex == 0 || Glyph.BitmapIndex > Bitmaps.size())
+        return;
+    }
+
+    const Font::FFont& Selected = SheetFonts[Font - 1];
+    const Font::FColor Combined = Selected.Color.Combine(Color);
+    for (const Font::FPlacedGlyph& Glyph : Font::LayoutText(Selected, Text, X, Y, bBonus ? BonusBitmapWidths : BitmapWidths))
+    {
+        if (Glyph.BitmapIndex == 0 || Glyph.BitmapIndex > SheetBitmaps.size())
         {
             continue;
         }
 
         // The sprite draw adds the bitmap's trim, which the glyph position already includes.
-        const Gaf::FFrame& Bitmap = Bitmaps[Glyph.BitmapIndex - 1];
+        const Gaf::FFrame& Bitmap = SheetBitmaps[Glyph.BitmapIndex - 1];
         Out.push_back({
-            .Sheet = EHudSheet::Panel,
-            .Frame = { .BitmapIndex = Glyph.BitmapIndex, .OffsetX = -Bitmap.TrimX, .OffsetY = -Bitmap.TrimY, .DrawFlags = ScreenDrawMode },
+            .Sheet = Sheet,
+            .Frame = { .BitmapIndex = Glyph.BitmapIndex, .OffsetX = -Bitmap.TrimX, .OffsetY = -Bitmap.TrimY, .DrawFlags = Selected.DrawMode },
             .X = float(Glyph.X),
             .Y = float(Glyph.Y),
+            .Diffuse = Combined.Diffuse,
+            .Specular = Combined.Specular,
         });
     }
+}
+
+void FPanel::DrawMessage(std::vector<FHudSprite>& Out, const FMessage& Message, const int32_t X, const int32_t Y, const std::string_view Text) const
+{
+    DrawText(Out, Message.Gaf == EMessageGaf::Bonus ? EHudSheet::Bonus : EHudSheet::Panel, Message.Font, X, Y, Text, Message.Color);
+}
+
+void FPanel::PostWarnings(const FPanelValues& Values, FMessages& Messages)
+{
+    // ponytail: "WARNING : YOU ARE LOCKED" at 100, 90 waits for the turret lock. Both need option flag 8 ("HUD Green Info"), which the
+    // highest detail preset turns on; the port has no detail options and keeps it on.
+    constexpr int32_t ShieldWarningX = 100;
+    constexpr int32_t ShieldWarningY = 100;
+    constexpr uint32_t WarningLifeMilliseconds = 500;
+    if (!ShieldLow(Values))
+    {
+        return;
+    }
+
+    if (Messages.Exists(ShieldWarningX, ShieldWarningY))
+    {
+        Messages.SetLife(ShieldWarningX, ShieldWarningY, WarningLifeMilliseconds);
+        return;
+    }
+
+    Messages.Add({
+        .Text = "DANGER : SHIELD IS LOW",
+        .X = float(ShieldWarningX),
+        .Y = float(ShieldWarningY),
+        .LifeMilliseconds = WarningLifeMilliseconds,
+        .bTypewriter = true,
+        .Gaf = EMessageGaf::Panel,
+        .Font = ScreenFont,
+    }, EMessagePlacement::Replace);
 }
 
 std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span<const FRadarDot> Radar, const int ViewWidth, const int ViewHeight) const
@@ -166,12 +245,12 @@ std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span
     DrawSlot(Out, ScoreSlot, Left, Top, FirstFrame);
     DrawSlot(Out, ScoreSlot, Left, Top, CurrentFrame);
     DrawSlot(Out, ScoreBaseSlot, Left, Top, FirstFrame);
-    DrawText(Out, ScoreFont, ScoreTextX, ScoreTextY, std::format("{:08} $", int32_t(Values.Money)));
+    DrawText(Out, EHudSheet::Panel, ScoreFont, ScoreTextX, ScoreTextY, std::format("{:08} $", int32_t(Values.Money)));
 
     // Shield and energy bars, top centre; each bitmap is clipped to its ratio (pgbmp FUN_0044ed60 with an inclusive right edge).
     const float Centre = float(ViewWidth >> 1);
     DrawSlot(Out, EnergyWarningSlot, Centre, Top, FirstFrame);
-    if (Values.ShieldMax != 0.f && Values.Shield / Values.ShieldMax <= ShieldLowRatio)
+    if (ShieldLow(Values))
     {
         DrawSlot(Out, EnergyWarningSlot, Centre, Top, CurrentFrame);
     }
@@ -192,7 +271,7 @@ std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span
     DrawSlot(Out, WeaponBaseSlot, Right, Top, FirstFrame);
     DrawSlot(Out, WeaponIdleSlot, Right, Top, CurrentFrame);
     DrawSlot(Out, WeaponLightsSlot, Right, Top, CurrentFrame);
-    DrawText(Out, ScoreFont, int32_t(Right) + AmmoTextX, AmmoTextY, std::format("{:08}", int32_t(Values.Ammo)));
+    DrawText(Out, EHudSheet::Panel, ScoreFont, int32_t(Right) + AmmoTextX, AmmoTextY, std::format("{:08}", int32_t(Values.Ammo)));
 
     // Speedometer and radar, bottom left.
     DrawSlot(Out, SpeedSlot, Left, Bottom, CurrentFrame);
@@ -211,7 +290,7 @@ std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span
     constexpr int32_t SpeedTextX = 0x69;
     constexpr int32_t SpeedTextY = -4;
     const float Speed = !(Values.Speed < SpeedLimit) ? ClampedSpeed : Values.Speed <= -SpeedLimit ? -ClampedSpeed : Values.Speed;
-    DrawText(Out, SpeedFont, SpeedTextX, int32_t(Bottom) + SpeedTextY, std::format("{:03}", int32_t(double(Speed) * SpeedScale) % SpeedModulo));
+    DrawText(Out, EHudSheet::Panel, SpeedFont, SpeedTextX, int32_t(Bottom) + SpeedTextY, std::format("{:03}", int32_t(double(Speed) * SpeedScale) % SpeedModulo));
 
     // Screen, bottom right: position, kills, enemies left and the level time.
     Gaf::FAnimationFrame Screen = Slots[ScreenSlot].Animation.Frames.empty() ? Gaf::FAnimationFrame{} : Slots[ScreenSlot].Animation.Frames.front();
@@ -228,14 +307,14 @@ std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span
     constexpr uint32_t MillisecondsPerSecond = 1000;
     const int32_t ScreenX = int32_t(Right);
     const int32_t ScreenY = int32_t(Bottom);
-    DrawText(Out, ScreenFont, ScreenX + ScreenTextX, ScreenY + PositionY, std::format("{:04}", int32_t(Values.Position.X)));
-    DrawText(Out, ScreenFont, ScreenX + ScreenTextSecondX, ScreenY + PositionY, std::format("{:04}", int32_t(Values.Position.Y)));
-    DrawText(Out, ScreenFont, ScreenX + ScreenTextX, ScreenY + KilledY, std::format("KILLED {}", Values.Kills));
-    DrawText(Out, ScreenFont, ScreenX + ScreenTextX, ScreenY + EnemyY, std::format("ENEMY {}", Values.Enemies));
+    DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + PositionY, std::format("{:04}", int32_t(Values.Position.X)));
+    DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextSecondX, ScreenY + PositionY, std::format("{:04}", int32_t(Values.Position.Y)));
+    DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + KilledY, std::format("KILLED {}", Values.Kills));
+    DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + EnemyY, std::format("ENEMY {}", Values.Enemies));
     const uint32_t Hours = Values.TimeMilliseconds / MillisecondsPerHour;
     const uint32_t Minutes = (Values.TimeMilliseconds - Hours * MillisecondsPerHour) / MillisecondsPerMinute;
     const uint32_t Seconds = (Values.TimeMilliseconds - Hours * MillisecondsPerHour - Minutes * MillisecondsPerMinute) / MillisecondsPerSecond;
-    DrawText(Out, ScreenFont, ScreenX + ScreenTextX, ScreenY + TimeY, std::format("{:02}:{:02}:{:02}", Hours, Minutes, Seconds));
+    DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + TimeY, std::format("{:02}:{:02}:{:02}", Hours, Minutes, Seconds));
     DrawSlot(Out, InfosSlot, Right, Bottom, FirstFrame);
     DrawSlot(Out, InfosBaseSlot, Right, Bottom, FirstFrame);
     return Out;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Game/Collision.h"
+#include "Game/Message.h"
 #include "Game/Path.h"
 #include "Pg/Gaf.h"
 #include "Pg/Random.h"
@@ -19,6 +20,13 @@ struct FLevelObject;
 // UpdateAnimation at 0045e7e0 holds each frame for its duration in ticks; VzRun fixes the tick at 14 ms through AnimationSetFixedPeriod
 // (0045e4c0), so the display period never applies.
 inline constexpr int32_t AnimationPeriodMilliseconds = 14;
+
+// __ftol truncates into 64 bits and its callers keep the low half; NaN and out-of-range values give the integer indefinite, whose low half is zero.
+constexpr int32_t TruncateLow(const double Value)
+{
+    constexpr double Limit = 9223372036854775808.0;
+    return Value > -Limit && Value < Limit ? int32_t(uint32_t(uint64_t(int64_t(Value)))) : 0;
+}
 
 // An animation instance's frame and timer, as StartAnimation (0045e770) resets them and UpdateAnimation (0045e7e0) advances them.
 struct FAnimationPlayback
@@ -535,9 +543,11 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level);
 std::vector<FPickup> CreatePickups(const FLevel& Level);
 FPlayerInventory CreateInventory(const FLevelObject& Player);
 // Collects every pickup the player's circle touches; returns how many were taken and marks them removed in the level.
-size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level);
-// One game step of the player's part of EngineUpdateObjects (004406e0). Bodies are the other collidable objects; Self skips one of them.
-void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
+size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level,
+    FMessages& Messages);
+// One game step of the player's part of EngineUpdateObjects (004406e0). Bodies are the other collidable objects; Self skips one of them. Returns
+// the body the move ran into, if any.
+const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
     const FLevel& Level, std::span<FObjectBody> Bodies = {}, const FObjectBody* Self = nullptr);
 // Moves pushed bodies for one step, in object order.
 // Actors look for the player, patrol, chase and shoot, then move like the player with the resulting command. Without combat they only patrol.
@@ -550,7 +560,9 @@ std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, 
 // One step of every gate (GateUpdate at 00443620) and lift (ObjectUpdateLevelExit at 00442bf0) after its animation advances. Returns the
 // lift the player has taken, if any.
 const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, std::span<FObjectBody> Bodies, const FPlayerTarget& Player,
-    uint32_t StepMilliseconds);
+    uint32_t StepMilliseconds, FMessages& Messages);
+// The player's contact with a closed lift or gate tells it what the door is waiting for.
+void ReportDoorContact(std::span<const FDoor> Doors, const FObjectBody& Body, const FPlayerInventory& Inventory, FMessages& Messages);
 // ObjectUpdateLevelExit names the next level within the current zone, or within the lift's Scenery when the zone changes.
 std::string NextLevelPath(std::string_view CurrentPath, const FDoor& Lift);
 // Activates the level's objects, which draws each bob's phase and sets its first altitude, then loads the player's weapons, arms the level's
@@ -569,7 +581,7 @@ void StepTurrets(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainColli
 // Moves every shot, detonating it against terrain, bodies or the ground, then runs the effects and their blasts; destroyed bodies are removed,
 // spawn their Boom-fx and pay their Reward.
 void StepProjectiles(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
-    const FPlayerTarget& Player);
+    const FPlayerTarget& Player, FMessages& Messages);
 std::expected<void, std::string> VerifyPlayerMovement();
 // Loads every level's weapons and fires them for a few seconds of game time.
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive);

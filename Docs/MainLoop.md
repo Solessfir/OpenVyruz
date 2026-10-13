@@ -27,7 +27,7 @@ The `.3DG` is loaded later by `LevelLoad3dg` (`0041eae0`) through the generic `G
 There is no fixed tick. Each frame:
 
 1. `PgPoll(0x1fbff)` runs the platform pollers (input, joystick, sound) and returns the milliseconds since the previous frame (`PgVideoElapsedMs`, `timeGetTime` based).
-2. The elapsed time is consumed in sub-steps of `min(remaining, g_FramePeriodMs)`. The step length is stored at session `+0x101c` and drives all movement; session `+0x2744` gets `int(14.0 / step)`.
+2. The elapsed time is consumed in sub-steps of `min(remaining, g_FramePeriodMs)`. The step length is stored at session `+0x101c` and drives all movement; session `+0x2744` gets the float `14.0 / step`.
 3. Each sub-step: debug/cheat keys, demo record/playback, pause menu, then the game update `FUN_004406e0` (returns -1 restart, 0 level end, 1 continue), messages, scroll and object updates.
 4. After the sub-steps, once per frame: camera and scroll position (clamped to the map), screen shake, map/scroll draw (`FUN_00469820`), objects (`FUN_00433b30`), HUD and overlays, cursor, flip.
 
