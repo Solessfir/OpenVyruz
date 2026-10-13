@@ -51,6 +51,13 @@ Invisibility sets object flag 8 and leaves a passable copy of the player where i
 - `ObjectDraw` fades the player out by 0.02 of full alpha a frame (object `+0x170`, which counts from 49 down) to a quarter, and back in afterwards.
 - `FUN_00445380` counts session `+0x26a0` down from 16 seconds; in the last second the drone flies straight back to its body without speed, and the end puts it there.
 
+## Screen effects
+
+- **Darken** loads `Data\Object\FX\darkzone.gaf` and sets session `+0x20d0` bit `0x20`. `EngineRunLevel` then draws the level only inside a 376x309 window around the player (8 pixels left and 16 up of centring it, inset by 2), leaves the rest black, and stretches the GAF's frame, a 128x103 quarter in draw mode 8 (inverse source colour, white toward the corner), over the window's four quarters, mirrored outward, which leaves an oval of light. The player and the `Is-light` objects are drawn again over the dark. With Gamma FX it also sets the gamma ramp to session `+0x27d4`, which the port leaves out.
+- **Extasy** sets object flag `0x1000000`, which `ReadPlayerInput` (`00438540`) reads as full forward thrust whatever the keys say.
+- **Screen shake**: a trap draws `RandomRange(-16, 16)` and Destroy-around `RandomRange(-32, 32)` twice into session `+0x2200` and `+0x2204`. Each frame `EngineRunLevel` moves each one step toward zero, flips its sign, and adds it to the view offset after the clamp to the level.
+- **Gamma flashes**: see [MainLoop.md](MainLoop.md#gamma-flashes).
+
 ## Port
 
-`Source/Game/Engine` keeps the carried surprises in the player's inventory. Not ported yet: the screen effects (darkness, extasy, gamma flashes, screen shake), the attached FX of Touch-and-destroy, Invulnerability and Banana, Time-warp's trails, what Touch-and-destroy, Triple-fire and Circular-fire do, the shield-up step, and the `Reactivate-after` of surprise generators.
+`Source/Game/Engine` keeps the carried surprises in the player's inventory. Not ported yet: Darken's gamma ramp, the attached FX of Touch-and-destroy, Invulnerability and Banana, Time-warp's trails, what Touch-and-destroy, Triple-fire and Circular-fire do, the shield-up step, and the `Reactivate-after` of surprise generators.

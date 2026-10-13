@@ -75,6 +75,6 @@ Next: the intro and cutscenes, and the settings behind Options (difficulty from 
 
 Todo: sessions in the original's format (`session\<session-name>\default` and `s%03d` in the game folder: `last.txt`, the `<zone>-<level>.3do` snapshot with carried objects written before their carrier, and the `.tga` thumbnail), read and written, so the port and the original share one save folder. See [Docs/Menus.md](Docs/Menus.md#sessions).
 
-Gameplay gaps (census of all 25 levels, none blocks progress since no gate or lift depends on kills): generator objects placed at load time; the surprise screen effects; surprise drops from destroyed objects.
+Gameplay gaps (census of all 25 levels, none blocks progress since no gate or lift depends on kills): generator objects placed at load time; surprise drops from destroyed objects.
 
 Todo: the rest of Gamma FX: the fades at level start and end (`EngineRunLevel`, `FUN_0041e5a0`), at game over (`EngineGameOver`) and in `FUN_00445dd0`, with their curves, durations and colours. The flashes and the death's red are done ([Docs/MainLoop.md](Docs/MainLoop.md#gamma-flashes)).

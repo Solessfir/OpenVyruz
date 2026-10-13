@@ -2281,6 +2281,77 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // Object +0x170, which 3do::CreateObject starts at 50; ObjectDraw counts it up to 49 for a visible object and draws it opaque from there.
     constexpr int FullFade = 49;
     int PlayerFade = FullFade + 1;
+    // Is-light objects (class +0x1c bit 0x80000000) stay lit through Darken.
+    std::vector<bool> LightObjects(Level->Objects.size());
+    for (size_t Index = 0; Index < Level->Objects.size(); ++Index)
+    {
+        LightObjects[Index] = ParseLevelFloat(Level->Objects[Index].Properties.Find("Is-light")).value_or(0.f) != 0.f;
+    }
+
+    std::optional<FObjectGaf> DarkZone;
+    std::optional<FSpriteSheet> DarkSheet;
+    const auto DrawDarkness = [&](const FPlayerState& Viewer, const int OriginX, const int OriginY)
+    {
+        constexpr int DarkWidth = 0x178;
+        constexpr int DarkHeight = 0x135;
+        // The window starts 8 pixels left and 16 up of centring on the player, inset by 2 on each side.
+        constexpr int DarkShiftX = 8;
+        constexpr int DarkShiftY = 16;
+        constexpr int DarkInset = 2;
+        const int Left = int(SpriteCoordinate(Viewer.Position.X)) - OriginX - DarkWidth / 2 - DarkShiftX + DarkInset;
+        const int Top = int(SpriteCoordinate(Viewer.Position.Y)) - OriginY - DarkHeight / 2 - DarkShiftY + DarkInset;
+        const int Right = Left + DarkWidth - 2 * DarkInset;
+        const int Bottom = Top + DarkHeight - 2 * DarkInset;
+        if (!WhiteSheet)
+        {
+            constexpr uint16_t White = 0x7fff;
+            WhiteSheet = Renderer.CreateSpriteSheet({ Gaf::FFrame{ .Width = 1, .Height = 1, .Pixels = { White } } });
+        }
+
+        constexpr uint32_t Black = 0;
+        const auto Fill = [&](const int X0, const int Y0, const int X1, const int Y1)
+        {
+            if (X1 > X0 && Y1 > Y0)
+            {
+                Renderer.DrawSprite(*WhiteSheet, 0, float(X0), float(Y0), false, false, ESpriteBlend::Opaque, float(X1 - X0), float(Y1 - Y0), UINT32_MAX, Black);
+            }
+        };
+        const int Width = int(ScreenWidth);
+        const int Height = int(ScreenHeight);
+        Fill(0, 0, Width, std::max(Top, 0));
+        Fill(0, std::min(Bottom, Height), Width, Height);
+        Fill(0, std::max(Top, 0), std::max(Left, 0), std::min(Bottom, Height));
+        Fill(std::min(Right, Width), std::max(Top, 0), Width, std::min(Bottom, Height));
+
+        if (!DarkZone)
+        {
+            DarkZone = LoadObjectGaf(Archive, "common\\data\\object\\fx\\darkzone.gaf");
+            if (DarkZone)
+            {
+                DarkSheet = Renderer.CreateSpriteSheet(DarkZone->Bitmaps);
+            }
+        }
+
+        if (!DarkZone || !DarkSheet || DarkZone->Animations.empty() || DarkZone->Animations.front().Frames.empty() || DarkZone->Animations.front().Frames.front().BitmapIndex == 0)
+        {
+            return;
+        }
+
+        const Gaf::FAnimationFrame& Frame = DarkZone->Animations.front().Frames.front();
+        const Gaf::FFrame& Bitmap = DarkZone->Bitmaps[Frame.BitmapIndex - 1];
+        const float QuarterWidth = float(DarkWidth / 2);
+        const float QuarterHeight = float(DarkHeight / 2);
+        const float ScaleX = QuarterWidth / float(Bitmap.Width);
+        const float ScaleY = QuarterHeight / float(Bitmap.Height);
+        for (int Quarter = 0; Quarter < 4; ++Quarter)
+        {
+            const bool bRight = (Quarter & 1) != 0;
+            const bool bLower = (Quarter & 2) != 0;
+            // A mirrored sprite extends back from its anchor, so a mirrored quarter is anchored at its far edge.
+            Renderer.DrawSprite(*DarkSheet, Frame.BitmapIndex - 1, float(Left) + (bRight ? 2.f * QuarterWidth : 0.f), float(Top) + (bLower ? 2.f * QuarterHeight : 0.f),
+                bRight, bLower, FrameBlend(Frame), ScaleX, ScaleY);
+        }
+    };
     // The same counter for the other objects, by object index; invisible enemies fade to nothing, and ObjectActivate (0043c150) starts them there.
     std::vector<int> ObjectFades(Level->Objects.size(), FullFade + 1);
     for (const FObjectBody& Body : Bodies)
@@ -2541,14 +2612,17 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         bTurnRight = Turn == EPlayerTurn::Right && !bSideRight;
                     }
 
-                    const bool bForward = Pressed(GLFW_KEY_UP) || (Settings.bMouse && glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
+                    // Extasy (object flag 0x1000000) holds the thrust full forward whatever the keys say.
+                    const bool bForward = Surprises.Active == ESurprise::Extasy || Pressed(GLFW_KEY_UP) ||
+                        (Settings.bMouse && glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
                     bThrustInput = bForward;
                     const bool bLeft = Surprises.bReversed ? bTurnRight : bTurnLeft;
                     const bool bRight = Surprises.bReversed ? bTurnLeft : bTurnRight;
                     const bool bStrafeLeft = Surprises.bReversed ? bSideRight : bSideLeft;
                     const bool bStrafeRight = Surprises.bReversed ? bSideLeft : bSideRight;
                     FPlayerCommand Command = Surprises.bBlockedMotor ? FPlayerCommand{}
-                                                                      : PlayerCommandFromKeys(bForward, Pressed(GLFW_KEY_DOWN), bLeft, bRight, bStrafeLeft, bStrafeRight);
+                                                                      : PlayerCommandFromKeys(bForward, Pressed(GLFW_KEY_DOWN) && Surprises.Active != ESurprise::Extasy, bLeft, bRight,
+                                                                          bStrafeLeft, bStrafeRight);
                     // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its velocity in collision units, and drives with the replayed input.
                     if (Demo && DemoCursor >= 1)
                     {
@@ -2771,6 +2845,18 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         CameraX = std::clamp(CameraX, 0.0, std::max(0.0, double(MapWidth - ScreenWidth)));
         CameraY = std::clamp(CameraY, 0.0, std::max(0.0, double(MapHeight - ScreenHeight)));
+        // EngineRunLevel moves a trap's or Destroy-around's screen shake (session +0x2200 and +0x2204) one step toward still and flips its side every frame, and adds it to the view after the clamp.
+        const auto StepShake = [](int& Offset)
+        {
+            if (Offset != 0)
+            {
+                Offset = -(Offset < 0 ? Offset + 1 : Offset - 1);
+            }
+
+            return double(Offset);
+        };
+        CameraX -= StepShake(Inventory.Surprises.ShakeX);
+        CameraY -= StepShake(Inventory.Surprises.ShakeY);
         AnimateActors(ActorAnimations, Bodies, *Level, *Objects, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level),
             int32_t(LastStepMilliseconds));
         StepPlacedAnimations(PlacedAnimations, *Objects, *Level, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level), int32_t(LastStepMilliseconds), true);
@@ -3132,6 +3218,20 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         for (const int64_t Layer : { ShadowDepthLayer, MiddleDepthLayer, BodyDepthLayer })
         {
             FlushSprites(FinalThreshold, Layer);
+        }
+
+        // Darken (SurpriseStart at 0041c390, session +0x20d0 bit 0x20): EngineRunLevel draws the level only in a 376x309 window around the player, black elsewhere, and stretches darkzone.gaf over the window's four quarters, mirrored outward.
+        // Then it draws the player and the Is-light objects again over the dark.
+        if (Player && Inventory.Surprises.Active == ESurprise::Darken)
+        {
+            DrawDarkness(*Player, OriginX, OriginY);
+            for (const FObjectSprite& Sprite : Sprites)
+            {
+                if (!Sprite.bShadow && (Sprite.ObjectIndex == PlayerIndex || (Sprite.ObjectIndex < LightObjects.size() && LightObjects[Sprite.ObjectIndex])))
+                {
+                    DrawObject(Sprite);
+                }
+            }
         }
 
         const auto DrawHud = [&](const std::span<const FHudSprite> HudSprites)
