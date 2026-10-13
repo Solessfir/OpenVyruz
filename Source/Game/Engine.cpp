@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cmath>
 #include <format>
+#include <iterator>
 #include <limits>
 #include <numbers>
 #include <numeric>
@@ -3606,6 +3607,13 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         // Target is the object struck, bPlayer the player struck; bSurface marks a wall or other terrain contact.
         const auto Detonate = [&](FObjectBody* const Target, const bool bPlayer, const bool bSurface)
         {
+            // AreaDamage and AmmoHit add every object a player's shot finishes off to the player's kills.
+            std::vector<bool> WasAlive;
+            if (Shot.Owner == Player.ObjectIndex)
+            {
+                std::ranges::transform(Bodies, std::back_inserter(WasAlive), [](const FObjectBody& Body) { return 0.f < Body.Energy; });
+            }
+
             // AmmoHit at 0043d7d0 blasts around the shot's last committed centre, then AmmoImpact (0043d350) shoves and damages what it struck.
             AreaDamage(Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies, Player);
             if (Target)
@@ -3622,6 +3630,11 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             if (bPlayer)
             {
                 ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield, Ammo.Damage);
+            }
+
+            for (size_t Index = 0; Index < WasAlive.size(); ++Index)
+            {
+                Player.Inventory.Kills += WasAlive[Index] && Bodies[Index].Energy <= 0.f ? 1 : 0;
             }
 
             // AmmoImpact puts the Hit-fx at the contact point; a shot that sank to the ground leaves a ground impact instead.
@@ -3981,6 +3994,15 @@ std::expected<std::string, std::string> VerifyDoors(FResourceArchive& Archive)
     }
 
     return Summary;
+}
+
+int CountEnemies(const FLevel& Level, const std::span<const FObjectBody> Bodies)
+{
+    return int(std::ranges::count_if(Bodies, [&](const FObjectBody& Body)
+    {
+        const bool bHunter = Body.Turret || (Body.Actor && Body.Actor->Seeker);
+        return bHunter && 0.f < Body.Energy && !Level.Objects[Body.ObjectIndex].bRemoved;
+    }));
 }
 
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)

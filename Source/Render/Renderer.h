@@ -51,8 +51,9 @@ public:
     // Returns false when nothing can be drawn this frame (minimized or swapchain being rebuilt).
     bool BeginFrame();
     // X/Y is the top-left of the untrimmed sprite cell in screen pixels.
+    // VisibleColumns keeps only that many columns of the bitmap from its left edge, as a clipped panel bar.
     void DrawSprite(const FSpriteSheet& Sheet, size_t FrameIndex, float X, float Y, bool bMirrorX = false, bool bMirrorY = false,
-        ESpriteBlend Blend = ESpriteBlend::Opaque, float ScaleX = 1.f, float ScaleY = 1.f);
+        ESpriteBlend Blend = ESpriteBlend::Opaque, float ScaleX = 1.f, float ScaleY = 1.f, uint32_t VisibleColumns = UINT32_MAX);
     void EndFrame();
 
 private:

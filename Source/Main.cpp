@@ -2,6 +2,7 @@
 #include "Game/Engine.h"
 #include "Game/Level.h"
 #include "Game/Loop.h"
+#include "Game/Panel.h"
 #include "Pg/File.h"
 #include "Pg/Gaf.h"
 #include "Pg/ResourceArchive.h"
@@ -11,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -683,7 +685,7 @@ struct FCarriedPlayer
 // in Carried.
 std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive,
     const std::string& LevelPath, const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried,
-    const std::span<const std::string> DebugLevels)
+    const std::span<const std::string> DebugLevels, FPanel* const Panel)
 {
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
     if (!Level)
@@ -737,6 +739,18 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
     }
 
     std::optional<std::string> NextLevel;
+    // The panel's sheets, and one single-pixel frame per radar dot colour. ponytail: the dot colours follow the radar legend (red enemy,
+    // yellow key or code, blue lift, green for the player) until the palette FUN_00467a10 indexes is traced.
+    const FSpriteSheet PanelSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Panel)) : FSpriteSheet{};
+    const FSpriteSheet VPanelSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::VPanel)) : FSpriteSheet{};
+    constexpr std::array<uint16_t, 4> RadarColors = { 0x7c00, 0x03e0, 0x7fe0, 0x001f };
+    std::vector<Gaf::FFrame> RadarPixels;
+    for (const uint16_t Color : RadarColors)
+    {
+        RadarPixels.push_back({ .Width = 1, .Height = 1, .ColorKey = uint16_t(~Color & 0x7fff), .Pixels = { Color } });
+    }
+
+    const FSpriteSheet ColorSheet = Renderer.CreateSpriteSheet(RadarPixels);
     FPlayerInventory Inventory = Carried ? Carried->Inventory : PlayerObject != Level->Objects.end() ? CreateInventory(*PlayerObject) : FPlayerInventory{};
     if (PlayerObject != Level->Objects.end())
     {
@@ -799,6 +813,41 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
     double CameraY = PlayerObject != Level->Objects.end() ? PlayerObject->Y - ScreenHeight * 0.5 : 0.0;
     std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
     std::fflush(stdout);
+
+    const auto PanelValues = [&]
+    {
+        FPanelValues Values{
+            .Shield = Inventory.Shield,
+            .ShieldMax = Inventory.ShieldMax,
+            .Energy = Inventory.Energy,
+            .EnergyMax = Inventory.EnergyMax,
+            .Money = Inventory.Money,
+            .Kills = Inventory.Kills,
+            .Enemies = CountEnemies(*Level, Bodies),
+        };
+        if (Player)
+        {
+            Values.Speed = Player->SpeedMagnitude;
+            Values.Position = Player->Position;
+        }
+
+        if (Combat)
+        {
+            Values.TimeMilliseconds = Combat->Clock;
+            // The weapon in hand's ammo stock (object +0x248).
+            if (Combat->PlayerWeapon.Weapon < Combat->Weapons.size())
+            {
+                const std::string& AmmoName = Combat->Weapons[Combat->PlayerWeapon.Weapon].Ammo;
+                const auto Stock = std::ranges::find_if(Inventory.Ammo, [&](const FAmmoStock& Ammo)
+                {
+                    return std::ranges::equal(Ammo.Name, AmmoName, [](const char A, const char B) { return std::tolower(uint8_t(A)) == std::tolower(uint8_t(B)); });
+                });
+                Values.Ammo = Stock == Inventory.Ammo.end() ? 0.f : Stock->Count;
+            }
+        }
+
+        return Values;
+    };
 
     FFrameClock Clock(FramePeriod);
     Clock.Poll(ClockMilliseconds());
@@ -886,6 +935,11 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                 }
 
                 AnimateActors(ActorAnimations, Bodies, *Level, *Objects, View, int32_t(StepMilliseconds));
+                // The panel's update pass follows the objects' (FUN_00435000 with its draw flag clear).
+                if (Panel)
+                {
+                    Panel->Step(PanelValues(), int32_t(StepMilliseconds));
+                }
                 LastStepMilliseconds = StepMilliseconds;
             }
             else
@@ -1076,6 +1130,21 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
             FlushSprites(FinalThreshold, Layer);
         }
 
+        if (Panel && Player)
+        {
+            const std::vector<FRadarDot> Radar = FindRadarDots(*Level, Bodies, Player->Position, PlayerIndex, int(ScreenHeight));
+            for (const FHudSprite& Hud : Panel->Draw(PanelValues(), Radar, int(ScreenWidth), int(ScreenHeight)))
+            {
+                const FSpriteSheet& Sheet = Hud.Sheet == EHudSheet::Panel ? PanelSheet : Hud.Sheet == EHudSheet::VPanel ? VPanelSheet : ColorSheet;
+                const Gaf::FAnimationFrame& Frame = Hud.Frame;
+                if (Frame.BitmapIndex != 0)
+                {
+                    Renderer.DrawSprite(Sheet, Frame.BitmapIndex - 1, Hud.X + float(Frame.OffsetX), Hud.Y + float(Frame.OffsetY), Frame.bMirrorX, Frame.bMirrorY,
+                        FrameBlend(Frame), 1.f, 1.f, Hud.VisibleColumns);
+                }
+            }
+        }
+
         Renderer.EndFrame();
         ++FpsFrames;
         constexpr uint32_t FpsWindowMilliseconds = MillisecondsPerSecond;
@@ -1254,6 +1323,11 @@ int main(const int ArgCount, char** const Args)
 
     FRenderer Renderer;
     Renderer.Init(Window);
+    std::expected<FPanel, std::string> Panel = FPanel::Load(Archive);
+    if (!Panel)
+    {
+        std::fprintf(stderr, "No panel: %s\n", Panel.error().c_str());
+    }
     std::optional<FCarriedPlayer> Carried;
     // Every level in the archive by file name, so each tower's floors follow each other, for the debug next-level key.
     std::vector<std::string> DebugLevels;
@@ -1275,7 +1349,7 @@ int main(const int ArgCount, char** const Args)
     int Result = 0;
     for (std::string Path = LevelPath;;)
     {
-        const std::expected<std::optional<std::string>, std::string> Next = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Carried, DebugLevels);
+        const std::expected<std::optional<std::string>, std::string> Next = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Carried, DebugLevels, Panel ? &*Panel : nullptr);
         Renderer.ReleaseSpriteSheets();
         // --start places the player in the first level only.
         Start.reset();

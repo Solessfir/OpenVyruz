@@ -156,6 +156,34 @@ Every object GAF has a `V-`-prefixed shadow variant (e.g. `V-TURRET-ROCKET-UDG.G
 
 Example sizes: `TURRET-GUN-UDG.GAF` 86,508 bytes on disk → 146,804 bytes decompressed (25 `BMP_` frames). `V-TURRET-ROCKET-UDG.GAF` 16,652 → 64,240 bytes (25 frames).
 
+### FNT_ - Fonts
+
+A GAF's `FNT_` entry holds its bitmap fonts in two slots. `GafParseSlot0` (`0047b830`) keeps each slot 0 record's first word as the glyph count and copies the rest into the runtime font from `+0x18`.
+
+Slot 0 has one 72-byte record per font:
+
+| Offset | Field |
+|---|---|
+| `+0x00` | glyph count (256) |
+| `+0x04` | flags: 1 proportional, 2 draw settings present (otherwise mode 1, black, shadow mode 13, offset 2, 2), 4 shadow |
+| `+0x08` | extra line gap of a proportional font |
+| `+0x0c` | spacing added to a proportional glyph's width |
+| `+0x10` | reserved |
+| `+0x14` | clip margin of a line |
+| `+0x18` | advance of a fixed-width glyph and of a space |
+| `+0x1c` | line height |
+| `+0x20` | draw mode, then a 12-byte colour |
+| `+0x30` | shadow draw mode, then a 12-byte colour |
+| `+0x40` | shadow offset X, Y |
+
+Slot 2 has each font's glyph table in turn: a 24-byte record per character code minus one. A record holds a 1-based GOB bitmap with its X and Y offsets, then an overlay bitmap with its offsets. `panel.gaf` has three fonts:
+
+- Font 1: fixed width, 8-pixel advance.
+- Font 2: fixed width, 9-pixel advance, without draw settings.
+- Font 3: proportional, glyph width plus 2.
+
+See [Hud.md](Hud.md#fonts) for how text is laid out.
+
 ## .3DG - Level Tile Bitmap Sheet
 
 Depends on: Generic GAF Record Format, LZSS, BMP_ Chunk Format.

@@ -745,7 +745,7 @@ bool FRenderer::BeginFrame()
 }
 
 void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInSheet, const float X, const float Y, const bool bMirrorX, const bool bMirrorY,
-    const ESpriteBlend Blend, const float ScaleX, const float ScaleY)
+    const ESpriteBlend Blend, const float ScaleX, const float ScaleY, const uint32_t VisibleColumns)
 {
     if (Sheet.Texture >= Textures.size() || FrameIndexInSheet >= Sheet.Frames.size())
     {
@@ -755,7 +755,14 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
     const FSpriteFrame& Frame = Sheet.Frames[FrameIndexInSheet];
     // DrawGobFrame at 00466f40 mirrors around the sprite origin, including the cropped bitmap offset.
     // ponytail: scales the trimmed bitmap around the cell origin; DrawGobFrame truncates the scaled cell size and trim to whole pixels.
-    const float Width = float(Frame.Width) * ScaleX;
+    const uint32_t Columns = std::min(Frame.Width, VisibleColumns);
+    if (Columns == 0)
+    {
+        return;
+    }
+
+    const float Width = float(Columns) * ScaleX;
+    const float U1 = Frame.U0 + (Frame.U1 - Frame.U0) * float(Columns) / float(Frame.Width);
     const float Height = float(Frame.Height) * ScaleY;
     const float Left = X + (bMirrorX ? -float(Frame.TrimX) * ScaleX - Width : float(Frame.TrimX) * ScaleX);
     const float Top = Y + (bMirrorY ? -float(Frame.TrimY) * ScaleY - Height : float(Frame.TrimY) * ScaleY);
@@ -766,7 +773,7 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
 
     const FSpritePush Push{
         .Rect = { Left, Top, Width, Height },
-        .UvRect = { bMirrorX ? Frame.U1 : Frame.U0, bMirrorY ? Frame.V1 : Frame.V0, bMirrorX ? Frame.U0 : Frame.U1, bMirrorY ? Frame.V0 : Frame.V1 },
+        .UvRect = { bMirrorX ? U1 : Frame.U0, bMirrorY ? Frame.V1 : Frame.V0, bMirrorX ? Frame.U0 : U1, bMirrorY ? Frame.V0 : Frame.V1 },
         .ScreenSize = { ScreenWidth, ScreenHeight },
     };
     vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, SpritePipelines[static_cast<size_t>(Blend)]);

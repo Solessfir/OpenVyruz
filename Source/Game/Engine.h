@@ -363,6 +363,8 @@ struct FPlayerInventory
     std::vector<FAmmoStock> Ammo;
     // Carried key items in pickup order (object +0x11c lists them newest first).
     std::vector<FCarriedKey> Keys;
+    // Object +0x26c: the objects the player's shots finished off.
+    int Kills = 0;
 };
 
 // TYPE Gate and TYPE Lift flags (attribute +0x10) as LoadObjectClassLibrary packs them.
@@ -572,6 +574,9 @@ std::expected<void, std::string> VerifyPlayerMovement();
 // Loads every level's weapons and fires them for a few seconds of game time.
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive);
 std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive);
+// The level's enemies still alive, as the session counter at +0x2094 keeps them: seekers and trackers that hunt the player.
+// ponytail: generators of enemies, which EngineActivateObjects also counts, are not ported.
+int CountEnemies(const FLevel& Level, std::span<const FObjectBody> Bodies);
 // Every level's gates close with nothing near and open for the player, and the player rides every usable lift.
 std::expected<std::string, std::string> VerifyDoors(FResourceArchive& Archive);
 // Replays the CAVE\DEMO.3DR inputs through StepPlayer and compares every step with the recorded position.
