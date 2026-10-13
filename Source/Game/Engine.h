@@ -657,6 +657,10 @@ static_assert(sizeof(FDemoRecord) == 20);
 std::expected<std::vector<FDemoRecord>, std::string> LoadDemo(FResourceArchive& Archive);
 // Demo semantics of ReplayPlayerInput (00438800): strafing cancels turning.
 FPlayerCommand PlayerCommandFromInput(uint32_t InputBits);
+// With the mouse as input device, the turn of InputReadDirection (0041d7e0) toward the sight, given the screen vector from the player to it:
+// the short way round (DirectionTurnCommand at 00436600), none when the sight lies straight behind or, while the player moves, within one
+// direction of its facing.
+EPlayerTurn TurnTowardSight(const FPlayerState& Player, FCollisionPoint ScreenVector);
 
 std::expected<FMovementClass, std::string> ReadMovementClass(const FLevelObject& Object);
 FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class);

@@ -31,6 +31,12 @@ The new collision centre is converted back to the world, clamped to `[1, extent 
 - If the direction to the contact point and the motion direction are seven or more of the 24 directions apart, the move is accepted: the collision centre advances and the world position catches up on the next step.
 - Otherwise the velocity is reflected about the centre-to-contact direction and scaled by `Elasticity`. A blocked player that is thrusting uses `speed * facing` as its motion.
 
+## Mouse
+
+`ConfigLoad` (`0042f570`) sets the input device (session `+0x165c`) from `vzconf.txt`: 1 for `use-keyboard`, 2 for `use-joypad`, 3 for `use-mouse`, which also turns the absolute command (option flag 1) on. Only the mouse loads `Data\Menu\cursor.gaf` (`EngineApplyDisplayAndCursor`, `0042f2d0`, session `+0x25b8`); every other device hides the cursor. EngineRunLevel plays the sight by the last step and draws it at the mouse after the rest of the frame.
+
+The mouse's default bindings (`DAT_00509368`) fire with the left button (0x103), thrust with the right one (0x104), back off with Down, and strafe with Left and Right; turning has no binding. `InputReadDirection` (`0041d7e0`) instead takes the vector from the player's screen position (its truncated world position plus the scroll) to the mouse, turns it into a direction through collision axes (`DirectionFromScreen`, `00407630`), and lets `DirectionTurnCommand` (`00436600`) walk the player's direction ring: the target within eleven next nodes turns left, exactly twelve away reads as backward and does not turn, and otherwise it turns right. While the player moves, a target within one direction of its facing gives no turn. `InputActionPressed` drops the turn on a side that strafes.
+
 ## Verification against DEMO.3DR
 
 `--verify-game` replays `CAVE\DEMO.3DR`. The recording came from a development build: its records are taken with the 10 ms demo step cap, its timestamps are clock readings at each step start, and its `Friction-threshold` was 0.001 (the line commented out in the shipped `OBJECT.3DC`). Rebuilding each step's state from the recording, 26454 of 32282 steps match within 0.001 px and 30156 within 0.5 px. The remainder come from object collisions, which are not modelled yet, and from step lengths that the 1 ms timestamps can only place to within a millisecond.

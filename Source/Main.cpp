@@ -24,6 +24,8 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <ranges>
@@ -1141,7 +1143,7 @@ std::string SessionHelp(const FSession& Session)
 // SessionChoose at 00427c30: up to seven saved sessions with their level and clock, then Back, the default. Returns the chosen session.
 // ponytail: the session's thumbnail (its .tga, drawn at 8, 150 for the item under the cursor) is not written.
 std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random,
-    const std::span<const FSession> Sessions)
+    const std::span<const FSession> Settings)
 {
     constexpr int32_t Left = 0x109;
     constexpr int32_t Top = 0x46;
@@ -1159,7 +1161,7 @@ std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Render
         .HighlightFont = HighlightFont,
         .ItemFont = ItemFont,
     };
-    for (const FSession& Session : Sessions | std::views::take(MaxSessions))
+    for (const FSession& Session : Settings | std::views::take(MaxSessions))
     {
         Menu.Items.push_back({
             .Text = std::format("{}   [{} h {} mn {} sec] ", Session.LevelName, Session.Clock / MillisecondsPerHour, Session.Clock % MillisecondsPerHour / MillisecondsPerMinute,
@@ -1177,7 +1179,7 @@ std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Render
     Menu.DefaultItem = Menu.Items.size() - 1;
     std::optional<std::pair<int32_t, int32_t>> Cursor = std::pair(int32_t(ScreenWidth) / 2, int32_t(ScreenHeight) / 2);
     const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
-    return Item && *Item < std::min(Sessions.size(), MaxSessions) ? Item : std::nullopt;
+    return Item && *Item < std::min(Settings.size(), MaxSessions) ? Item : std::nullopt;
 }
 
 // The credits (ShowCredits at 00402990 with the scroller at 00402400): credits.gaf, and credits-en.txt in v-menu.gaf font 4 rising from the bottom of the clip
@@ -1652,11 +1654,14 @@ std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Render
     }
 }
 
-// Where the player's sessions go, and the name the saving plots address.
-struct FSessionContext
+// What vzconf.txt sets that the port follows: the session folder, the player's name the saving plots address, and the input device.
+struct FSettings
 {
     std::filesystem::path Folder;
     std::string PlayerName;
+    // use-mouse (keyword 0x124) makes the mouse the input device (session +0x165c = 3) and turns the absolute command on: the ship turns toward
+    // the sight, the left button fires, the right one thrusts, Down backs off and Left and Right strafe.
+    bool bMouse = false;
 };
 
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a
@@ -1664,7 +1669,7 @@ struct FSessionContext
 // Session and on disk.
 std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
     const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
-    FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, const FSessionContext& Sessions,
+    FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, const FSettings& Settings,
     const std::vector<FDemoRecord>* const Demo)
 {
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
@@ -1815,9 +1820,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             .Shield = Inventory.Shield,
             .Player = Carried,
         };
-        if (!WriteSessionFile(DefaultSessionPath(Sessions.Folder), *Session))
+        if (!WriteSessionFile(DefaultSessionPath(Settings.Folder), *Session))
         {
-            std::fprintf(stderr, "Cannot write the default session in %s\n", Sessions.Folder.string().c_str());
+            std::fprintf(stderr, "Cannot write the default session in %s\n", Settings.Folder.string().c_str());
         }
     }
 
@@ -1831,7 +1836,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         constexpr uint32_t LifeMilliseconds = 2000;
         constexpr uint32_t Font = 6;
         Messages.Add({
-            .Text = std::format("{},\n   you need MORE Cash\n     to see the Map !", Sessions.PlayerName),
+            .Text = std::format("{},\n   you need MORE Cash\n     to see the Map !", Settings.PlayerName),
             .X = float((int32_t(ScreenWidth) >> 1) + TextX),
             .Y = float(int32_t(ScreenHeight) >> 1),
             .LifeMilliseconds = LifeMilliseconds,
@@ -1889,7 +1894,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         ShowScores(Window, Renderer, Archive, *MenuArt,
             MakeScore(Tower, LevelNumber, Inventory.Kills, int32_t(Inventory.Earned), Inventory.ShotsHit, Inventory.ShotsMissed, Combat ? Combat->Clock : 0,
-                Sessions.PlayerName));
+                Settings.PlayerName));
     };
     const std::vector<FSavingPlot> SavingPlots = FindSavingPlots(*Level);
     // SessionLoad (0042ba00) in mode 0 leaves a count running, so the plot a saved session starts on does not save again until the player
@@ -1996,6 +2001,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     bool bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
     bool bPaused = false;
     bool bPauseKeyDown = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS;
+    // EngineApplyDisplayAndCursor (0042f2d0) loads Data\Menu\cursor.gaf's sight (session +0x25b8) for the mouse; EngineRunLevel plays it by the last step and draws it at
+    // the mouse after everything else. Any other device hides the cursor altogether.
+    const std::optional<FObjectGaf> SightGaf = Settings.bMouse ? LoadObjectGaf(Archive, "common\\data\\menu\\cursor.gaf") : std::nullopt;
+    const Gaf::FAnimation* const Sight = SightGaf && !SightGaf->Animations.empty() ? &SightGaf->Animations.front() : nullptr;
+    FAnimationPlayback SightPlayback = Sight ? StartAnimation(*Sight) : FAnimationPlayback{};
+    std::optional<FSpriteSheet> SightSheet;
     // FUN_00403b70 loads Data\Menu\pause.gaf's first animation, which FUN_00403d70 centres on the screen in draw mode 7.
     const std::optional<FObjectGaf> PauseGaf = LoadObjectGaf(Archive, "common\\data\\menu\\pause.gaf");
     std::optional<FSpriteSheet> PauseSheet;
@@ -2017,6 +2028,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     while (!glfwWindowShouldClose(Window))
     {
         glfwPollEvents();
+        if (glfwGetInputMode(Window, GLFW_CURSOR) != GLFW_CURSOR_HIDDEN)
+        {
+            glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+        }
+
         // EnginePause (0043b8d0): action-pause (P) closes an open map, or freezes the game (session +0x20 bit 0x1000000) under pause.gaf until P
         // again; meanwhile only P is read and the clock's time is dropped.
         const bool bPausePressed = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS && !bPauseKeyDown;
@@ -2203,20 +2219,35 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                     // ReadPlayerInput: Reversed-commands swaps left with right and the two strafes; Blocked-motor ignores every command. The default
                     // strafes are Left Shift with an arrow, which then does not turn (InputActionPressed at 0041d4c0); A and D strafe too.
+                    // With the mouse as device (DAT_00509368's defaults) Left and Right strafe on their own, the right button thrusts (Up too), and
+                    // the turn comes from the sight unless that side strafes.
                     const FSurpriseState& Surprises = Inventory.Surprises;
-                    const bool bShift = Pressed(GLFW_KEY_LEFT_SHIFT);
+                    const bool bShift = Pressed(GLFW_KEY_LEFT_SHIFT) || Settings.bMouse;
                     const bool bLeftKey = Pressed(GLFW_KEY_LEFT);
                     const bool bRightKey = Pressed(GLFW_KEY_RIGHT);
-                    const bool bTurnLeft = bLeftKey && !bShift;
-                    const bool bTurnRight = bRightKey && !bShift;
                     const bool bSideLeft = (bLeftKey && bShift) || Pressed(GLFW_KEY_A);
                     const bool bSideRight = (bRightKey && bShift) || Pressed(GLFW_KEY_D);
+                    bool bTurnLeft = bLeftKey && !bShift;
+                    bool bTurnRight = bRightKey && !bShift;
+                    if (Settings.bMouse)
+                    {
+                        const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window);
+                        const FCollisionPoint ToSight{
+                            .X = float(Mouse.first - (TruncateLow(Player->Position.X) - int32_t(std::floor(CameraX)))),
+                            .Y = float(Mouse.second - (TruncateLow(Player->Position.Y) - int32_t(std::floor(CameraY)))),
+                        };
+                        const EPlayerTurn Turn = TurnTowardSight(*Player, ToSight);
+                        bTurnLeft = Turn == EPlayerTurn::Left && !bSideLeft;
+                        bTurnRight = Turn == EPlayerTurn::Right && !bSideRight;
+                    }
+
+                    const bool bForward = Pressed(GLFW_KEY_UP) || (Settings.bMouse && glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
                     const bool bLeft = Surprises.bReversed ? bTurnRight : bTurnLeft;
                     const bool bRight = Surprises.bReversed ? bTurnLeft : bTurnRight;
                     const bool bStrafeLeft = Surprises.bReversed ? bSideRight : bSideLeft;
                     const bool bStrafeRight = Surprises.bReversed ? bSideLeft : bSideRight;
                     FPlayerCommand Command = Surprises.bBlockedMotor ? FPlayerCommand{}
-                                                                      : PlayerCommandFromKeys(Pressed(GLFW_KEY_UP), Pressed(GLFW_KEY_DOWN), bLeft, bRight, bStrafeLeft, bStrafeRight);
+                                                                      : PlayerCommandFromKeys(bForward, Pressed(GLFW_KEY_DOWN), bLeft, bRight, bStrafeLeft, bStrafeRight);
                     // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its
                     // velocity in collision units, and drives with the replayed input.
                     if (Demo && DemoCursor >= 1)
@@ -2261,7 +2292,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     const float ShieldBefore = Inventory.Shield;
                     StepGenerators(*Combat, *Level, Bodies, Rider, StepMilliseconds);
                     constexpr uint32_t FireBit = 0x2;
-                    const bool bLiveFire = Demo ? (DemoInput & FireBit) != 0 : bAutoFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL);
+                    const bool bMouseFire = Settings.bMouse && glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                    const bool bLiveFire = Demo ? (DemoInput & FireBit) != 0 : bAutoFire || bMouseFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL);
                     const bool bFire = !Inventory.Surprises.bBlockedMotor && bLiveFire;
                     if (!DeathTimer)
                     {
@@ -2317,7 +2349,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     std::fflush(stdout);
                 }
 
-                if (StepSavingPlots(Saving, SavingPlots, *Level, *Player, PlayerClass->Radius, Inventory, Messages, ClockMilliseconds(), Sessions.PlayerName))
+                if (StepSavingPlots(Saving, SavingPlots, *Level, *Player, PlayerClass->Radius, Inventory, Messages, ClockMilliseconds(), Settings.PlayerName))
                 {
                     SyncObjects();
                     FSession Saved{
@@ -2330,9 +2362,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     };
                     Saved.Player->Object = {};
                     Saved.Objects = CaptureObjects(*Level, Bodies, *Doors, Saved.Player->Inventory.Keys);
-                    if (!WriteSavedSession(Sessions.Folder, Saved))
+                    if (!WriteSavedSession(Settings.Folder, Saved))
                     {
-                        std::fprintf(stderr, "Cannot write a session in %s\n", Sessions.Folder.string().c_str());
+                        std::fprintf(stderr, "Cannot write a session in %s\n", Settings.Folder.string().c_str());
                     }
                 }
 
@@ -2617,6 +2649,22 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
+        if (Sight && Player)
+        {
+            if (!SightSheet)
+            {
+                SightSheet = Renderer.CreateSpriteSheet(SightGaf->Bitmaps);
+            }
+
+            UpdateAnimation(SightPlayback, *Sight, int32_t(LastStepMilliseconds));
+            const uint32_t Frame = SightPlayback.bEnded ? 0 : SightPlayback.Frame;
+            if (Frame >= 1 && Frame <= Sight->Frames.size())
+            {
+                const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window);
+                DrawHudSprite(Renderer, *SightSheet, { .Frame = Sight->Frames[Frame - 1], .X = float(Mouse.first), .Y = float(Mouse.second) });
+            }
+        }
+
         if (bPaused && PauseGaf && !PauseGaf->Animations.empty() && !PauseGaf->Animations.front().Frames.empty())
         {
             constexpr uint32_t PauseDrawMode = 7;
@@ -2819,7 +2867,7 @@ int main(const int ArgCount, char** const Args)
         const std::expected<std::string, std::string> Doors = VerifyDoors(Archive);
         std::printf("Gates and lifts: %s\n", Doors ? Doors->c_str() : Doors.error().c_str());
         const std::expected<std::string, std::string> SessionCheck = VerifySessions(Archive);
-        std::printf("Sessions: %s\n", SessionCheck ? SessionCheck->c_str() : SessionCheck.error().c_str());
+        std::printf("Settings: %s\n", SessionCheck ? SessionCheck->c_str() : SessionCheck.error().c_str());
         const bool bScores = VerifyScores();
         std::printf("Scores: %s\n", bScores ? "passed" : "failed");
         std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
@@ -2853,32 +2901,55 @@ int main(const int ArgCount, char** const Args)
         std::fprintf(stderr, "No menus: %s\n", MenuArt.error().c_str());
     }
 
-    // VZCONF.TXT's session-name names the session folder and the player.
-    FSessionContext Sessions{ .PlayerName = "Player" };
+    // ConfigLoad (0042f570) reads vzconf.txt from the game folder, else the archive's VZCONF.TXT: session-name names the session folder and the
+    // player, and use-keyboard, use-joypad and use-mouse choose the input device, the last set one winning.
+    FSettings Settings{ .PlayerName = "Player" };
     {
-        const std::string_view Text(reinterpret_cast<const char*>(Config->data()), Config->size());
-        for (const auto Part : std::views::split(Text, '\n'))
+        std::string Text(reinterpret_cast<const char*>(Config->data()), Config->size());
+        std::error_code Error;
+        for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(DataPath->parent_path(), Error))
+        {
+            std::string Name = Entry.path().filename().string();
+            std::ranges::transform(Name, Name.begin(), [](const unsigned char Character) { return char(std::tolower(Character)); });
+            constexpr std::uintmax_t MaxConfigBytes = 65536;
+            if (Name == "vzconf.txt" && Entry.file_size(Error) <= MaxConfigBytes)
+            {
+                std::ifstream File(Entry.path(), std::ios::binary);
+                Text.assign(std::istreambuf_iterator<char>(File), std::istreambuf_iterator<char>());
+            }
+        }
+
+        for (const auto Part : std::views::split(std::string_view(Text), '\n'))
         {
             const std::string_view Row(Part.begin(), Part.end());
-            constexpr std::string_view Key = "session-name";
             const size_t Equals = Row.find('=');
-            if (Row.starts_with(Key) && Equals != std::string_view::npos)
+            if (Row.starts_with('#') || Equals == std::string_view::npos)
             {
-                std::string_view Value = Row.substr(Equals + 1);
-                constexpr std::string_view Blanks = " \t\r";
+                continue;
+            }
+
+            constexpr std::string_view Blanks = " \t\r";
+            const auto Trim = [&](std::string_view Value)
+            {
                 Value.remove_prefix(std::min(Value.size(), Value.find_first_not_of(Blanks)));
-                Value = Value.substr(0, Value.find_last_not_of(Blanks) + 1);
-                if (!Value.empty() && Value.find_first_of("\\/:*?\"<>|.") == std::string_view::npos)
-                {
-                    Sessions.PlayerName = std::string(Value);
-                }
+                return Value.substr(0, Value.find_last_not_of(Blanks) + 1);
+            };
+            const std::string_view Key = Trim(Row.substr(0, Equals));
+            const std::string_view Value = Trim(Row.substr(Equals + 1));
+            if (Key == "session-name" && !Value.empty() && Value.find_first_of("\\/:*?\"<>|.") == std::string_view::npos)
+            {
+                Settings.PlayerName = std::string(Value);
+            }
+            else if ((Key == "use-mouse" || Key == "use-keyboard" || Key == "use-joypad") && Value == "1")
+            {
+                Settings.bMouse = Key == "use-mouse";
             }
         }
     }
 
-    Sessions.Folder = SessionDirectory(Sessions.PlayerName);
+    Settings.Folder = SessionDirectory(Settings.PlayerName);
     std::optional<FCarriedPlayer> Carried;
-    std::optional<FSession> Session = ReadSessionFile(DefaultSessionPath(Sessions.Folder));
+    std::optional<FSession> Session = ReadSessionFile(DefaultSessionPath(Settings.Folder));
     std::optional<FSession> Restore;
     std::optional<std::vector<FDemoRecord>> Demo;
     // Every level in the archive by file name, so each tower's floors follow each other, for the debug next-level key.
@@ -2906,7 +2977,7 @@ int main(const int ArgCount, char** const Args)
         if (bMenu)
         {
             FSession Chosen;
-            const EMenuChoice Choice = RunMainMenu(Window, Renderer, Archive, *MenuArt, Session ? &*Session : nullptr, Sessions.Folder, DataPath->parent_path(), Chosen);
+            const EMenuChoice Choice = RunMainMenu(Window, Renderer, Archive, *MenuArt, Session ? &*Session : nullptr, Settings.Folder, DataPath->parent_path(), Chosen);
             Renderer.ReleaseSpriteSheets();
             if (Choice == EMenuChoice::Quit)
             {
@@ -2939,7 +3010,7 @@ int main(const int ArgCount, char** const Args)
         }
 
         const std::expected<FLevelEnd, std::string> End = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Carried, DebugLevels, Panel ? &*Panel : nullptr,
-            MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Sessions, Demo ? &*Demo : nullptr);
+            MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Settings, Demo ? &*Demo : nullptr);
         Restore.reset();
         Renderer.ReleaseSpriteSheets();
         // --start places the player in the first level only.

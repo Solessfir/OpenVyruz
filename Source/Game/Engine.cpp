@@ -671,6 +671,29 @@ FPlayerCommand PlayerCommandFromKeys(const bool bForward, const bool bBackward, 
     return Command;
 }
 
+EPlayerTurn TurnTowardSight(const FPlayerState& Player, const FCollisionPoint ScreenVector)
+{
+    if (ScreenVector.X == 0.f && ScreenVector.Y == 0.f)
+    {
+        return EPlayerTurn::None;
+    }
+
+    // DirectionFromScreen at 00407630 turns the screen vector into collision axes before FindDirection.
+    const int Target = FindDirection(CollisionFromWorld(ScreenVector));
+    const int Current = Player.Direction;
+    const bool bMoving = Player.Position.X != Player.PreviousPosition.X || Player.Position.Y != Player.PreviousPosition.Y;
+    constexpr int SteadyDistance = 2;
+    if ((bMoving && DirectionDistance(Target, Current) < SteadyDistance) || Target == Current || Target == NoDirection || Current == NoDirection)
+    {
+        return EPlayerTurn::None;
+    }
+
+    // Left takes the ring's next node; a target half way round reads as backward, which does not turn.
+    constexpr int HalfTurn = DirectionCount / 2;
+    const int Ahead = Wrap(Target - Current);
+    return Ahead < HalfTurn ? EPlayerTurn::Left : Ahead == HalfTurn ? EPlayerTurn::None : EPlayerTurn::Right;
+}
+
 FPlayerCommand PlayerCommandFromInput(const uint32_t InputBits)
 {
     const auto Has = [InputBits](const uint32_t Bit) { return (InputBits & Bit) != 0; };
