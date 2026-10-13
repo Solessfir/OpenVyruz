@@ -2820,7 +2820,7 @@ void FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, F
     State.LastFireTime = Combat.Clock;
     const FWeaponClass& Weapon = Combat.Weapons[State.Weapon];
     const auto Ammo = std::ranges::find(Combat.AmmoClasses, Weapon.Ammo, &FAmmoClass::Name);
-    // ponytail: the original switches to the next loaded weapon when this one runs dry (WeaponHasAmmo at 00444450); here the weapon just stops.
+    // The player's weapon switches when it runs dry (WeaponHasAmmo at 00444450, in StepPlayerWeapon); the original would switch the player's weapon for any shooter, but only the player ever runs out.
     if (!Stock || Stock->Count < 1.f || Ammo == Combat.AmmoClasses.end() || Shooter.Direction == NoDirection)
     {
         return;
@@ -4234,7 +4234,13 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
         .SpriteSize = SpriteSize,
         .ObjectIndex = PlayerIndex,
     };
+    const float RoundsBefore = Stock == Inventory.Ammo.end() ? 0.f : Stock->Count;
     FireWeapon(Combat, State, Shooter, Stock == Inventory.Ammo.end() ? nullptr : &*Stock);
+    // WeaponFire calls WeaponHasAmmo again once a shot leaves the stock empty, so the next weapon is in hand at once.
+    if (Stock != Inventory.Ammo.end() && RoundsBefore >= 1.f && Stock->Count < 1.f)
+    {
+        SelectPlayerWeapon(Combat, NextPlayerWeaponSlot(Combat, Inventory), Inventory, Messages);
+    }
 }
 
 namespace

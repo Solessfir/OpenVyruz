@@ -19,7 +19,7 @@ Session `+0x1028` holds the 1-based slot in hand, which starts at 1. `ObjectSetW
 - `PlayerNextWeaponSlot` (`004376a0`) tries the slots after the one in hand, wrapping after 9, until one has a stock of at least 1, and stays when none has.
 - `PlayerSelectWeaponAction` (`0043bad0`) ignores the slot already in hand.
 - `PlayerSelectWeapon` (`00437740`) takes the slot and plays its sound. With option flag 8 it lists `WEAPON <name>`, `FIRE RANGE`, `FIRE DELAY` at 400, 140 to 160, and when ammo is bound `AMMO <name>`, `DAMAGE`, `DAMAGE AREA` at 400, 180 to 200, upper case and typed in the panel's font 3 for 4 seconds. The damage and area are the ammo's `TYPE Ammo` values, or, when either is zero, the largest over its Ammo and Explosion blocks.
-- `WeaponHasAmmo` (`00444450`) moves an empty weapon to the next slot when it fires.
+- `WeaponHasAmmo` (`00444450`) moves an empty weapon to the next slot with ammo when it fires, and again right after the shot that empties it, naming the new slot (`PlayerSelectWeapon`). It uses the player's slot whichever object fires, but only the player ever runs dry.
 
 While fire is held, `ReadPlayerInput` calls `WeaponRaiseSlope` (`0042c210`): the first press sets the slope to `initial-slope`, then each step adds `slope-step` until it passes zero and stays at zero. Releasing calls `WeaponResetSlope` (`0042c280`).
 
@@ -101,10 +101,8 @@ The port runs the original incremental route search from collision centre to col
 
 - The shield reset value (a class field at `+0x6c`).
 - Bouncing ammo (`on-hit = 0`: grenades, saws, pulsars), which the port bursts on first contact.
-- The other seeker kinds (cops, walkers, jeeps and the rest), which follow their routes.
-- The idle look-around of fixed objects (`FixedIdleLookAround`, `00444a40`), with its saved random state.
-- Drawing turret bases, the player's shove and absorption, the HUD and the player's death.
-- Automatic weapon switching when the stock is empty.
+- The idle look-around of two-piece bodies, which turn their top (`FUN_00444b80`).
+- The player's shove and absorption.
 - Water splashes, what a surprise does when collected, the generator's opening animation, the `CREATE` trails and smoke (they draw from their own random stream), and sounds.
 - Blasts hurting pickups.
 - Drawing visible ammo.
