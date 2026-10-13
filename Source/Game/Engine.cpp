@@ -796,6 +796,9 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
         TurnPlayer(Player, Class, Command.Turn, StepMilliseconds);
     }
 
+    constexpr uint32_t ReactorGlowMilliseconds = 1000;
+    Player.ReactorMilliseconds = Command.Thrust == EPlayerThrust::Forward ? ReactorGlowMilliseconds
+                                                                          : Player.ReactorMilliseconds - std::min(Player.ReactorMilliseconds, StepMilliseconds);
     if (Command.Thrust == EPlayerThrust::None && Command.Strafe == 0.f && IsZero(Player.Velocity))
     {
         Player.PreviousPosition = Player.Position;

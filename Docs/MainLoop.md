@@ -68,3 +68,10 @@ The bob comes from `Bounce-period`, `Bounce-amplitude` and `Bounce-average-altit
 | Spider | walk `GAF-index + (pose - 1) / 6` on a diagonal while driving forward, else animation 5 (`rot`), frame = pose | `Shadow-index + (pose - 1) / 6` |
 
 A walker advances its walk only while driving forward or in the pass where its pose changed; a new pose continues from the frame the previous pose's walk had reached. A spider's walk restarts whenever it shows its turning pose. The heli tilt counter moves in both passes. Every actor animation loops (ANM flags 7).
+
+The player (kind `0x18`) also draws three layers from its shadow GAF (`V-VZ.GAF`, set up by `AnimInitializeGraphics` at `00417b30`), each at frame = pose and at the body's place and depth, and none while it fades in or out:
+
+- The reactor glow, animation 3 under the body and animation 4 over it, while the reactor timer (object `+0x258`) runs and the speed is positive, in additive mode 7 with a grey diffuse of `trunc(speed * 255 / Thrust.Max)`. `EngineUpdateObjects` sets the timer to 1000 ms on every step with forward thrust and runs it down by the step otherwise. The Video Details option Reactor FX (session `+0x27e0` bit 4) turns it off.
+- The front light, animation 5, over the body in its own mode, unless the motor is blocked (object flag `0x2000000`) or Ground Smoke details are off (`+0x27e0` bit `0x40`).
+
+These frames carry event flag 4: `DrawAnimationFrame` sets the diffuse colour to the event value, scaled by the colour the draw passes (`ColorCombine`, `0044f310`), so the layers fade by pose. The light shows only for the poses that face the viewer.

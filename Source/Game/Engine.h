@@ -126,6 +126,9 @@ struct FPlayerState
     bool bPushed = false;
     // Object flag 8: seekers and gates do not find the object, and the player takes no damage.
     bool bInvisible = false;
+    // Object +0x258: forward thrust sets it to a second and every other step runs it down (EngineUpdateObjects at 004406e0); ObjectDraw shows
+    // the player's reactor glow while it lasts.
+    uint32_t ReactorMilliseconds = 0;
 };
 
 struct FAmmoStock

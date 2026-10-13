@@ -337,6 +337,7 @@ struct FObjectSprite
     int64_t Depth = 0;
     ESpriteBlend Blend = ESpriteBlend::Opaque;
     float Stretch = 1.f;
+    uint32_t Diffuse = 0xffffff;
 };
 
 struct FObjectSprites
@@ -600,6 +601,24 @@ Gaf::FFrame RenderLevelMap(const FLevel& Level)
 
     return Map;
 }
+
+// ColorCombine at 0044f310 scales each diffuse channel by the other colour's through ColorModulate (0044e040), rounding down like it.
+constexpr uint32_t ModulateColor(const uint32_t Color, const uint32_t By)
+{
+    constexpr uint32_t ChannelMask = 0xff;
+    constexpr uint32_t ChannelBits = 8;
+    uint32_t Result = 0;
+    for (const uint32_t Shift : { 0u, ChannelBits, 2 * ChannelBits })
+    {
+        const uint32_t Channel = (Color >> Shift) & ChannelMask;
+        const uint32_t Removed = ChannelMask - ((By >> Shift) & ChannelMask);
+        Result |= (Channel - (((Removed + 1) * Channel) >> ChannelBits)) << Shift;
+    }
+
+    return Result;
+}
+static_assert(ModulateColor(0xd5d5d5, 0xffffff) == 0xd5d5d5);
+static_assert(ModulateColor(0xffffff, 0x808080) == 0x808080);
 
 struct FSpriteScale
 {
@@ -2495,6 +2514,56 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         const float PlayerAlpha = std::max(MinPlayerAlpha, float(PlayerFade) * FadeAlphaStep);
+        // The player's layers from its shadow GAF (AnimInitializeGraphics at 00417b30, kind 0x18), one frame per pose and left out while it fades
+        // (ObjectDraw at 00431ae0): the reactor glow under the body and over it while the reactor timer runs, grey as bright as the speed is a share
+        // of Thrust.Max, and the front light, off while the motor is blocked.
+        if (Player && PlayerFade >= FullFade)
+        {
+            const auto Shadow = Objects->SheetIndices.find(PlayerObject->ShadowGafPath);
+            const auto Body = std::ranges::find_if(Sprites, [&](const FObjectSprite& Sprite) { return Sprite.ObjectIndex == PlayerIndex && !Sprite.bShadow; });
+            if (Shadow != Objects->SheetIndices.end() && Body != Sprites.end())
+            {
+                const std::vector<Gaf::FAnimation>& Animations = Objects->Animations[Shadow->second];
+                const FObjectSprite Base = *Body;
+                const auto Layer = [&](const size_t Animation, const ESpriteBlend Blend, const uint32_t Diffuse)
+                {
+                    FObjectSprite Sprite = Base;
+                    Sprite.SheetIndex = Shadow->second;
+                    const bool bShown = Animation <= Animations.size() && size_t(Player->Pose) <= Animations[Animation - 1].Frames.size();
+                    Sprite.Frame = bShown ? Animations[Animation - 1].Frames[size_t(Player->Pose - 1)] : Gaf::FAnimationFrame{};
+                    Sprite.Blend = Blend == ESpriteBlend::Opaque ? FrameBlend(Sprite.Frame) : Blend;
+                    Sprite.Diffuse = Diffuse;
+                    return Sprite;
+                };
+
+                constexpr size_t GroundGlowAnimation = 3;
+                constexpr size_t ReactorGlowAnimation = 4;
+                constexpr size_t FrontLightAnimation = 5;
+                constexpr double FullGrey = 255.;
+                constexpr uint32_t GreyChannels = 0x010101;
+                constexpr uint32_t ChannelMask = 0xff;
+                const size_t BodyAt = size_t(Body - Sprites.begin());
+                std::vector<FObjectSprite> After;
+                const bool bGlow = Player->ReactorMilliseconds != 0 && Player->Speed > 0.f && PlayerClass->ThrustMax > 0.f;
+                const uint32_t Grey = bGlow ? uint32_t(int64_t(double(Player->Speed) * FullGrey / double(PlayerClass->ThrustMax))) & ChannelMask : 0;
+                if (bGlow)
+                {
+                    After.push_back(Layer(ReactorGlowAnimation, ESpriteBlend::Additive, Grey * GreyChannels));
+                }
+
+                if (!Inventory.Surprises.bBlockedMotor)
+                {
+                    After.push_back(Layer(FrontLightAnimation, ESpriteBlend::Opaque, Base.Diffuse));
+                }
+
+                Sprites.insert(Sprites.begin() + std::ptrdiff_t(BodyAt) + 1, After.begin(), After.end());
+                if (bGlow)
+                {
+                    Sprites.insert(Sprites.begin() + std::ptrdiff_t(BodyAt), Layer(GroundGlowAnimation, ESpriteBlend::Additive, Grey * GreyChannels));
+                }
+            }
+        }
+
         const auto DrawObject = [&](const FObjectSprite& Sprite)
         {
             const Gaf::FAnimationFrame& Frame = Sprite.Frame;
@@ -2508,8 +2577,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             const float OffsetX = Scale.X != 1.f ? std::trunc(float(Frame.OffsetX) * Scale.X) : float(Frame.OffsetX);
             const float OffsetY = Scale.Y != 1.f ? std::trunc(float(Frame.OffsetY) * Scale.Y) : float(Frame.OffsetY);
             const bool bFadingPlayer = Sprite.ObjectIndex == PlayerIndex && PlayerFade < FullFade;
+            // DrawAnimationFrame at 0045eab0: a frame's event flag 4 sets the diffuse colour to the event value, scaled by the colour the draw passes.
+            // The player's light layers fade by pose this way.
+            constexpr uint32_t DiffuseEventFlag = 4;
+            constexpr uint32_t ColorMask = 0xffffff;
+            const uint32_t Diffuse = (Frame.EventFlags & DiffuseEventFlag) != 0 ? ModulateColor(uint32_t(Frame.EventValue) & ColorMask, Sprite.Diffuse) : Sprite.Diffuse;
             Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + OffsetX - OriginX, Sprite.Y + OffsetY - OriginY,
-                Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, 0xffffff, 0,
+                Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, Diffuse, 0,
                 bFadingPlayer ? PlayerAlpha : 1.f);
         };
         const auto DrawMapRow = [&](const int64_t Row, const std::optional<int32_t> Depth)
