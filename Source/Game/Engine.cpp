@@ -789,8 +789,83 @@ FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class
     return Player;
 }
 
+namespace
+{
+// ApplyDamage at 0043ca30: the shield absorbs first and is reset once it breaks; whatever is left comes off the energy.
+// ponytail: the shield resets to a class field at +0x6c that is not decoded yet; zero until then.
+void ApplyDamage(float& Energy, float& Shield, float Amount)
+{
+    if (0.f < Shield)
+    {
+        Shield = float(double(Shield) - double(Amount));
+        if (0.f <= Shield)
+        {
+            return;
+        }
+
+        Amount = -Shield;
+        Shield = 0.f;
+    }
+
+    Energy = float(double(Energy) - double(Amount));
+}
+
+void ApplyDamage(FObjectBody& Body, const float Amount)
+{
+    if (Body.bIndestructible)
+    {
+        return;
+    }
+
+    Body.bDamaged = true;
+    ApplyDamage(Body.Energy, Body.Shield, Amount);
+}
+
+// EngineUpdateObjects (004406e0) on a knock: a mover that travelled more than 2 units this step hurts itself and what it hit by half its speed times its weight, or itself alone by a tenth of that against the terrain.
+// The player never hurts itself this way, and a Player-direct-fire-only class (flag 0x40 at +0x20) is hurt only in knocks with the player.
+// ponytail: the Bounce-fx spark (FUN_0043d140) and the reward call on a kill (FUN_0043db70) are left to the usual destruction path.
+void KnockDamage(const FPlayerState& Mover, const FMovementClass& Class, const FCollisionPoint Delta, FObjectBody* const Self, FObjectBody* const HitBody, FPlayerKnock* const PlayerHit)
+{
+    constexpr float HardKnockTravel = 2.f;
+    const float Knock = Mover.SpeedMagnitude * Class.Weight;
+    if (Knock == 0.f || std::abs(Delta.X) + std::abs(Delta.Y) <= HardKnockTravel)
+    {
+        return;
+    }
+
+    const bool bAgainstPlayer = PlayerHit && PlayerHit->bHit;
+    if (!HitBody && !bAgainstPlayer)
+    {
+        constexpr double TerrainKnockScale = 0.1f;
+        if (Self && !Self->bPlayerDirectFireOnly)
+        {
+            ApplyDamage(*Self, float(double(Knock) * TerrainKnockScale));
+        }
+
+        return;
+    }
+
+    constexpr double ObjectKnockScale = 0.5f;
+    const float Damage = float(double(Knock) * ObjectKnockScale);
+    if (Self && (!Self->bPlayerDirectFireOnly || bAgainstPlayer))
+    {
+        ApplyDamage(*Self, Damage);
+    }
+
+    if (HitBody && (!HitBody->bPlayerDirectFireOnly || !Self))
+    {
+        ApplyDamage(*HitBody, Damage);
+    }
+
+    if (bAgainstPlayer)
+    {
+        PlayerHit->Damage += Damage;
+    }
+}
+}
+
 const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, const uint32_t StepMilliseconds,
-    const FTerrainCollision& Terrain, const FLevel& Level, const std::span<FObjectBody> Bodies, const FObjectBody* const Self)
+    const FTerrainCollision& Terrain, const FLevel& Level, const std::span<FObjectBody> Bodies, FObjectBody* const Self, FPlayerKnock* const PlayerHit)
 {
     // Actors turn their body in their behaviour update instead (SeekerTurnBody at 0042cfa0).
     if (!Self || !Self->Actor)
@@ -854,7 +929,8 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
     FObjectBody* HitBody = nullptr;
     for (FObjectBody& Body : Bodies)
     {
-        if (&Body == Self || Body.bPassable)
+        // Ignore-same-class-objects lets a class pass through its own kind, as the Particle-of-Death strings on one patrol path do.
+        if (&Body == Self || Body.bPassable || (Self && Self->bIgnoreSameClass && Level.Objects[Body.ObjectIndex].ClassName == Level.Objects[Self->ObjectIndex].ClassName))
         {
             continue;
         }
@@ -867,6 +943,19 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
         }
     }
 
+    // An actor runs into the player too; the original pushes the player like any object, the port only bounces off it.
+    if (PlayerHit)
+    {
+        PlayerHit->bHit = false;
+        const std::optional<FCollisionPoint> PlayerContact = IntersectCircles({ .Center = Candidate, .Radius = Class.Radius }, PlayerHit->Circle);
+        if (PlayerContact && (!Contact || PrefersContact(*Contact, *PlayerContact, Candidate)))
+        {
+            Contact = PlayerContact;
+            HitBody = nullptr;
+            PlayerHit->bHit = true;
+        }
+    }
+
     if (!Contact)
     {
         Player.Velocity = Class.bDropsVelocity ? FCollisionPoint{} : FCollisionPoint{ .X = float(double(TimeScale) * Delta.X), .Y = float(double(TimeScale) * Delta.Y) };
@@ -876,6 +965,7 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
 
     // ObjectRestorePosition at 004449f0 undoes the move before the bounce is resolved.
     Player.Position = Player.PreviousPosition;
+    KnockDamage(Player, Class, Delta, Self, HitBody, PlayerHit);
     const EBounce Result = HitBody ? Push(Player, Class, Command, *HitBody, *Contact) : Bounce(Player, Class, Command, *Contact);
     if (Result == EBounce::Accept)
     {
@@ -897,7 +987,11 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
     constexpr std::string_view TankKind = "tank";
     constexpr std::string_view WalkerKind = "walker";
     constexpr std::string_view SpiderKind = "spider";
-    const bool bActor = std::ranges::contains(ActorKinds, Object.SubType);
+    // Any other thing that patrols or wanders moves too, as the Particle-of-Death things do: EngineUpdateObjects runs every object's behaviour whatever its kind.
+    constexpr std::string_view ThingKind = "thing";
+    const std::optional<uint32_t> ThingBehaviour = Object.SubType == ThingKind ? ParseBehaviour(Object.Behaviour) : std::nullopt;
+    const bool bMovingThing = ThingBehaviour && ((*ThingBehaviour & BehaviourMovementMask) == BehaviourPatrol || (*ThingBehaviour & BehaviourMovementMask) == BehaviourRandom);
+    const bool bActor = std::ranges::contains(ActorKinds, Object.SubType) || bMovingThing;
     if (Object.BoundingBoxSize <= 0 || (!bActor && !std::ranges::contains(SolidKinds, Object.SubType)) || IsPickup(Object))
     {
         return std::nullopt;
@@ -925,6 +1019,8 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
         .Shield = Number(FindBlock(Properties, "Shield"), "Initial"),
         .Reward = Number(&Properties, "Reward"),
         .bIndestructible = Number(&Properties, "Indestructible") != 0.f,
+        .bPlayerDirectFireOnly = Number(&Properties, "Player-direct-fire-only") != 0.f,
+        .bIgnoreSameClass = Number(&Properties, "Ignore-same-class-objects") != 0.f,
     };
     for (const FLevelPropertyBlock& Child : Properties.Children)
     {
@@ -964,8 +1060,8 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
         Body.Class.bOverWater = Number(&Properties, "Over-water") != 0.f;
         Body.State.Speed = Movement->ThrustInitial;
         Body.State.Direction = Object.Direction < DirectionCount ? Object.Direction : 0;
-        // PlayerAdvancePose (00438390) turns cops and burners through 48 poses, the other actors through 24.
-        const int ActorPoses = Object.SubType == CopKind || Object.SubType == BurnerKind ? PosesPerDirection : 1;
+        // PlayerAdvancePose (00438390) turns cops, burners and things through 48 poses, the other actors through 24.
+        const int ActorPoses = Object.SubType == CopKind || Object.SubType == BurnerKind || Object.SubType == ThingKind ? PosesPerDirection : 1;
         Body.State.Pose = Body.State.TargetPose = Body.State.Direction * ActorPoses + 1;
         constexpr float TankCorrectionScale = 0.01f;
         FActor& Actor = Body.Actor.emplace(FActor{
@@ -1939,40 +2035,6 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
     }
 
     return Collected;
-}
-
-namespace
-{
-// ApplyDamage at 0043ca30: the shield absorbs first and is reset once it breaks; whatever is left comes off the energy.
-// ponytail: the shield resets to a class field at +0x6c that is not decoded yet; zero until then.
-void ApplyDamage(float& Energy, float& Shield, float Amount)
-{
-    if (0.f < Shield)
-    {
-        Shield = float(double(Shield) - double(Amount));
-        if (0.f <= Shield)
-        {
-            return;
-        }
-
-        Amount = -Shield;
-        Shield = 0.f;
-    }
-
-    Energy = float(double(Energy) - double(Amount));
-}
-
-void ApplyDamage(FObjectBody& Body, const float Amount)
-{
-    if (Body.bIndestructible)
-    {
-        return;
-    }
-
-    Body.bDamaged = true;
-    ApplyDamage(Body.Energy, Body.Shield, Amount);
-}
-
 }
 
 FWorldCell CellOf(const FCollisionPoint World)
@@ -5035,8 +5097,9 @@ void UpdateMover(FObjectBody& Body, FRouteWork& Work, const uint32_t Mode, const
 }
 
 void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
-    const FLevel& Level, const FPlayerState* const Player)
+    const FLevel& Level, const FPlayerTarget* const Target)
 {
+    const FPlayerState* const Player = Target ? &Target->State : nullptr;
     const int32_t Step = int32_t(StepMilliseconds);
     std::optional<std::vector<FPathObstacle>> Obstacles;
     for (FObjectBody& Body : Bodies)
@@ -5113,7 +5176,18 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
             FireWeapon(*Combat, Seeker.WeaponState, Shooter, &Seeker.Ammo);
         }
 
-        StepPlayer(Body.State, Body.Class, Actor.Command, StepMilliseconds, Terrain, Level, Bodies, &Body);
+        std::optional<FPlayerKnock> Knock;
+        if (Target)
+        {
+            Knock = FPlayerKnock{ .Circle = { .Center = Target->State.Center, .Radius = Target->Radius } };
+        }
+
+        StepPlayer(Body.State, Body.Class, Actor.Command, StepMilliseconds, Terrain, Level, Bodies, &Body, Knock ? &*Knock : nullptr);
+        // ApplyDamage spares an invisible player and an invulnerable one, as for shots.
+        if (Knock && Knock->Damage != 0.f && !Target->State.bInvisible && !Target->Inventory.Surprises.bInvulnerable)
+        {
+            ApplyDamage(Target->Inventory.Energy, Target->Inventory.Shield, Knock->Damage);
+        }
     }
 }
 
@@ -6131,7 +6205,8 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             {
                 Combat->Clock += StepMilliseconds;
                 const size_t Before = Combat->Projectiles.size();
-                StepActors(&*Combat, Bodies, StepMilliseconds, *Terrain, *Level, &Player);
+                const FPlayerTarget Target{ .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
+                StepActors(&*Combat, Bodies, StepMilliseconds, *Terrain, *Level, &Target);
                 CopShots += Combat->Projectiles.size() - Before;
                 StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
             }

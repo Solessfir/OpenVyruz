@@ -553,6 +553,12 @@ void AnimateActors(std::vector<std::optional<FActorAnimation>>& Actors, const st
         {
             Actor->BodyAnimation = CopRotAnimation;
         }
+        else if (Object.SubType == "thing")
+        {
+            // A moving thing keeps its one animation (ObjectDraw's thing case picks one per direction, and the Particle-of-Death has a single one).
+            Actor->BodyAnimation = Base;
+            Actor->BodyFrame = 1;
+        }
         else if (Object.SubType == "jeep" || Object.SubType == "roller" || Object.SubType == TankKind)
         {
             Actor->BodyAnimation = (Object.SubType == TankKind ? 0 : Base) + size_t(Pose - 1);
@@ -2564,8 +2570,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
 
                 StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
-                StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &*Player);
                 const FPlayerTarget Rider{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
+                StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &Rider);
                 if (const FDoor* const Lift = StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds, Messages); Lift && !NextLevel && !DeathTimer)
                 {
                     // A starred 3do-file (only "*End of Tower 3*" in the campaign) ends the game instead of loading a level.

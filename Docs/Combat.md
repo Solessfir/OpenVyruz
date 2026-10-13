@@ -39,6 +39,10 @@ On contact `AmmoHit` (`0043d7d0`) moves the shot to the contact point and calls 
 
 The `TYPE Ammo` attribute's flags decide what a contact does: `On-hit` (flag 1) bursts the shot on anything, `On-object-hit` (flag 2) only on objects. A shot with `On-object-hit` but not `On-hit` (grenades, saws, pulsars) that meets the terrain is put back and bounces (`ObjectBounce`, `004367d0`), then turns to its new heading. A hard knock, more than 2 units of travel that step, takes a tenth of its speed times its weight from its own energy (unless it is `Indestructible`), and a shot emptied that way bursts where it is. `--verify-game` throws grenades all round from each level's start and requires some to bounce and fly on.
 
+## Knocks
+
+`EngineUpdateObjects` (`004406e0`) hurts movers that knock into things. When a mover that travelled more than 2 units this step meets an object, both take half the mover's speed times its weight; against the terrain the mover alone takes a tenth of it. The player never hurts itself this way. A `Player-direct-fire-only` class (keyword `0x36`, flag `0x40` at class `+0x20`) is hurt by knocks only when the player is the other party. `Ignore-same-class-objects` lets a class pass through objects of its own class. This is what makes a `Particle-of-Death` deadly: it has 1 energy, so its first knock destroys it, and its explosion does 5000 damage over 50 pixels. In the port actors also run into the player, which takes their knocks; the original pushes the player like any object, the port only bounces the actor off it.
+
 `AreaDamage` scans the grid cells within the zone and damages every live object whose collision centre lies within `Damage-zone` units: the full damage at distance zero, otherwise `(zone - trunc(sqrt(trunc(d^2)))) / zone * damage`.
 
 `ApplyDamage` (`0043ca30`) takes damage from the shield first; when the shield breaks, the rest goes to energy. An object whose energy reaches zero is destroyed in its next update. Cops, generators, walkers, burners, jeeps, rollers, helicopters, turrets, spiders and tanks pay their `Reward` to the player.

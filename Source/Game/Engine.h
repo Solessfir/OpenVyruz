@@ -404,6 +404,10 @@ struct FObjectBody
     float Reward = 0.f;
     bool bIndestructible = false;
     bool bDamaged = false;
+    // Player-direct-fire-only (class flag 0x40 at +0x20): knocks hurt it only when the player is in them.
+    bool bPlayerDirectFireOnly = false;
+    // Ignore-same-class-objects: it passes through objects of its own class.
+    bool bIgnoreSameClass = false;
     std::vector<FAbsorption> Absorptions;
     // Every TYPE Explosion block: the Boom-fx objects spawned on destruction and the blasts they carry.
     std::vector<FExplosionBlock> Explosions;
@@ -795,14 +799,23 @@ void StepCodeTimeouts(FPlayerInventory& Inventory, FLevel& Level, FMessages& Mes
 void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
     FMessages& Messages, uint32_t StepMilliseconds);
 // One game step of the player's part of EngineUpdateObjects (004406e0).
-// Bodies are the other collidable objects; Self skips one of them.
+// The player as an obstacle for an actor's move, and the knock damage it took.
+struct FPlayerKnock
+{
+    FCollisionCircle Circle;
+    bool bHit = false;
+    float Damage = 0.f;
+};
+
+// Bodies are the other collidable objects; Self is the body moving, if any, which knocks hurt.
 // Returns the body the move ran into, if any.
 const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
-    const FLevel& Level, std::span<FObjectBody> Bodies = {}, const FObjectBody* Self = nullptr);
+    const FLevel& Level, std::span<FObjectBody> Bodies = {}, FObjectBody* Self = nullptr, FPlayerKnock* PlayerHit = nullptr);
 // Moves pushed bodies for one step, in object order.
 // Actors look for the player, patrol, chase and shoot, then move like the player with the resulting command. Without combat they only patrol.
+// Actors that run into the player hurt it by their knocks.
 void StepActors(FCombat* Combat, std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
-    const FPlayerState* Player);
+    const FPlayerTarget* Player);
 void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
 // Every gate and lift of the level, in their activation state (AnimInitializeGraphics at 00417b30): open ones are passable and show the last frame of their first animation.
 std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, FResourceArchive& Archive, std::span<FObjectBody> Bodies);
