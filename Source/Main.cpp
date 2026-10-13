@@ -1112,6 +1112,8 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                         StepSurprises(*Combat, *Level, Bodies, *Player, *PlayerClass, Inventory, Messages, StepMilliseconds);
                     }
 
+                    StepCodeTimeouts(Inventory, *Level, Messages, StepMilliseconds);
+
                     // ReadPlayerInput: Reversed-commands swaps left with right and the two strafes; Blocked-motor ignores every command.
                     const FSurpriseState& Surprises = Inventory.Surprises;
                     const bool bLeft = Pressed(Surprises.bReversed ? GLFW_KEY_RIGHT : GLFW_KEY_LEFT);

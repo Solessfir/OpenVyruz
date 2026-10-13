@@ -1588,6 +1588,7 @@ std::optional<FPickup> CreatePickup(const FLevel& Level, const size_t Index)
         const auto Number = [Item](const std::string_view Field) { return ParseLevelFloat(Item->Find(Field)).value_or(0.f); };
         const FLevelPropertyBlock* const Key = FindTypeBlock(Object.Properties, "Key");
         const auto KeyNumber = [Key](const std::string_view Field) { return int(ParseLevelFloat(Key->Find(Field)).value_or(0.f)); };
+        const std::optional<FCollisionPoint> WarnAt = ParsePair(Item->Find("Warn-message-position"));
         return FPickup{
             .ObjectIndex = Index,
             .Circle = { .Center = CollisionFromWorld({ .X = Object.X, .Y = Object.Y }), .Radius = Object.BoundingBoxSize > 0 ? float(Object.BoundingBoxSize) : DefaultCollisionRadius },
@@ -1596,8 +1597,20 @@ std::optional<FPickup> CreatePickup(const FLevel& Level, const size_t Index)
             .AddMoney = Number("Add-Money"),
             .AmmoType = std::string(Item->Find("Ammo-Type")),
             .AddAmmo = Number("Add-Ammo"),
-            .Key = Key ? std::optional(FCarriedKey{ .Id = KeyNumber("Id"), .bCode = KeyNumber("Is-code") != 0, .PartId = KeyNumber("Code-part-id"),
-                                                    .PartCount = KeyNumber("Code-part-count") })
+            .Key = Key ? std::optional(FCarriedKey{
+                             .Id = KeyNumber("Id"),
+                             .bCode = KeyNumber("Is-code") != 0,
+                             .PartId = KeyNumber("Code-part-id"),
+                             .PartCount = KeyNumber("Code-part-count"),
+                             .ObjectIndex = Index,
+                             .bHasTimeout = Number("Has-timeout") != 0.f,
+                             .Timeout = int32_t(Number("Timeout")),
+                             .WarnTimeout = int32_t(Number("Warn-timeout")),
+                             .WarnFormat = std::string(Item->Find("Warn-message-format")),
+                             .WarnX = WarnAt ? int32_t(WarnAt->X) : 0,
+                             .WarnY = WarnAt ? int32_t(WarnAt->Y) : 0,
+                             .ReactivateAfter = int32_t(Number("Reactivate-after")),
+                         })
                        : std::nullopt,
             .Surprise = SurpriseFromName(Item->Find("Surprise-type")),
         };
@@ -3123,6 +3136,66 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
 
     State.Active = Type;
 }
+}
+
+void StepCodeTimeouts(FPlayerInventory& Inventory, FLevel& Level, FMessages& Messages, const uint32_t StepMilliseconds)
+{
+    constexpr uint32_t LifeMilliseconds = 2000;
+    constexpr uint32_t Font = 6;
+    const int32_t Step = int32_t(StepMilliseconds);
+    // ponytail: a Random-Location code (FUN_004396b0 mode 2) would return to a random open cell; no level places one.
+    std::vector<int> Expired;
+    std::vector<int> Returned;
+    for (FCarriedKey& Key : Inventory.Keys | std::views::reverse)
+    {
+        if (!Key.bCode || Key.PartId != 1 || !CarriesKey(Inventory.Keys, Key.Id) || Key.Timeout < 1)
+        {
+            continue;
+        }
+
+        // FUN_00439410: the count and its warnings, one each time the seconds left are a multiple of the warning time's.
+        Key.Timeout -= Step;
+        const int32_t Seconds = Key.Timeout / int32_t(MillisecondsPerSecond);
+        const int32_t WarnSeconds = Key.WarnTimeout / int32_t(MillisecondsPerSecond);
+        if (Key.WarnTimeout != 0 && !Key.WarnFormat.empty() && Seconds != 0 && WarnSeconds != 0 && Seconds % WarnSeconds == 0)
+        {
+            std::string Text = Key.WarnFormat;
+            if (const size_t Number = Text.find("%d"); Number != std::string::npos)
+            {
+                Text.replace(Number, 2, std::to_string(Seconds));
+            }
+
+            Messages.Add({ .Text = std::move(Text), .X = float(Key.WarnX), .Y = float(Key.WarnY), .LifeMilliseconds = LifeMilliseconds, .Font = Font },
+                EMessagePlacement::Replace);
+        }
+
+        if (Key.Timeout < 1)
+        {
+            Key.Timeout = 0;
+            if (Key.ReactivateAfter < 1)
+            {
+                Expired.push_back(Key.Id);
+            }
+            else if (Key.bHasTimeout)
+            {
+                Returned.push_back(Key.Id);
+                Messages.Add({ .Text = std::format("Code #{} regenerated !", Key.Id), .X = float(Key.WarnX), .Y = float(Key.WarnY),
+                    .LifeMilliseconds = LifeMilliseconds, .Font = Font }, EMessagePlacement::Replace);
+            }
+        }
+    }
+
+    // FUN_004396b0 and FUN_00439870: an expired code's parts are destroyed, a returning one's lie again where they were picked up.
+    std::erase_if(Inventory.Keys, [&](const FCarriedKey& Key)
+    {
+        if (std::ranges::contains(Returned, Key.Id))
+        {
+            Level.Objects[Key.ObjectIndex].bRemoved = false;
+            return true;
+        }
+
+        return std::ranges::contains(Expired, Key.Id);
+    });
 }
 
 void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
@@ -5441,6 +5514,34 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     if (Dropped == 0 || Wrecks == 0)
     {
         return std::unexpected(std::format("{} objects dropped, {} wrecks", Dropped, Wrecks));
+    }
+
+    // A complete timed code goes back where its parts lay once its time is up.
+    {
+        FLevel CodeLevel;
+        CodeLevel.Objects.resize(2);
+        CodeLevel.Objects[0].bRemoved = true;
+        CodeLevel.Objects[1].bRemoved = true;
+        FMessages CodeMessages;
+        constexpr int CodeId = 7;
+        constexpr int32_t CodeTimeout = 3000;
+        constexpr int32_t CodeReactivate = 5000;
+        constexpr uint32_t CodeStep = 10;
+        constexpr uint32_t CodeMilliseconds = 3100;
+        const FCarriedKey Part{ .Id = CodeId, .bCode = true, .PartId = 1, .PartCount = 2, .bHasTimeout = true, .Timeout = CodeTimeout, .ReactivateAfter = CodeReactivate };
+        FCarriedKey Second = Part;
+        Second.PartId = 2;
+        Second.ObjectIndex = 1;
+        FPlayerInventory Coded{ .Keys = { Part, Second } };
+        for (uint32_t Time = 0; Time < CodeMilliseconds; Time += CodeStep)
+        {
+            StepCodeTimeouts(Coded, CodeLevel, CodeMessages, CodeStep);
+        }
+
+        if (!Coded.Keys.empty() || CodeLevel.Objects[0].bRemoved || CodeLevel.Objects[1].bRemoved)
+        {
+            return std::unexpected("a timed code did not go back into the level");
+        }
     }
 
     // Every surprise starts after its half-second delay and is gone once its time is up; an invisible player takes no damage.

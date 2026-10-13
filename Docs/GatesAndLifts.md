@@ -83,6 +83,15 @@ The player arrives on the next level's lift. That lift is present, so it carries
 
 `Key-N` and `Code` items have `Carry`. `ConsumeItem` (`00444660`) moves a carried item without an item action onto the player's list at object `+0x11c`, newest first. `ObjectCarriesKey` (`0043dcb0`) checks the newest item with the id. A code counts only when the parts carried with that id match the first part's `Code-part-count` and include part 1 (`ObjectFindCompleteCode`, `00439270`). `Destroy-key` makes `ObjectDestroyKeys` (`0043dd20`) remove every carried key or part with the id. Without `Key-always-needed` the door then forgets its id.
 
+## Timed codes
+
+A code item's `TYPE Item` can carry a timeout (item attribute `+0x28` to `+0x7c`): `Has-timeout` (flag 4), `Timeout`, `Warn-timeout`, `Warn-message-format` and `Warn-message-position`, `Reactivate-after`, and `Random-Location` (flag 8). `CPU\T3P2`'s four `Code-30s-timeout` parts make the code of the last lift.
+
+`FUN_00439510` runs after the player's surprises while it holds such an item. For every complete code it carries (part 1 present and every part counted, `ObjectFindCompleteCode`), `FUN_00439410` counts part 1's timer down by the step. While the seconds left are a multiple of the warning time's (25, 20, 15, 10 and 5 for 30 and 5 seconds), it shows the warning text with them, in `v-bonus.gaf` font 6 for 2 seconds. When the time is up:
+
+- Without `Reactivate-after` the code's parts are destroyed.
+- With it and `Has-timeout`, `FUN_004396b0` takes every part of the code from the player and `FUN_00439870` puts them back where they were picked up (or, with `Random-Location`, on a random open cell), each with its full time again, and part 1 says "Code #%d regenerated !" at the warning position.
+
 ## Port
 
 `CreateDoors` and `StepDoors` in `Source/Game/Engine` follow these updates after the actors' step. `--verify-game` checks them:

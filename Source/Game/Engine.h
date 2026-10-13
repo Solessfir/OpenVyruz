@@ -414,6 +414,16 @@ struct FCarriedKey
     bool bCode = false;
     int PartId = 0;
     int PartCount = 0;
+    // The level object the key was picked up from, which a code's expiry puts back.
+    size_t ObjectIndex = 0;
+    // The TYPE Item's timeout fields (item attribute +0x28 to +0x7c): a complete code counts down on its first part.
+    bool bHasTimeout = false;
+    int32_t Timeout = 0;
+    int32_t WarnTimeout = 0;
+    std::string WarnFormat;
+    int32_t WarnX = 0;
+    int32_t WarnY = 0;
+    int32_t ReactivateAfter = 0;
 };
 
 // A collectable item: an indestructible Item-kind object with a TYPE Item block.
@@ -646,6 +656,9 @@ FPlayerInventory CreateInventory(const FLevelObject& Player);
 size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level,
     FMessages& Messages, FCombat* Combat = nullptr);
 // FUN_0041d290 for the player once a step, before it moves: surprises wait, start, and end. Then the invisible drone's return (FUN_00445380).
+// FUN_00439510 for the player after its surprises: a complete code with a timeout counts down on its first part, warns, and at the end goes
+// back into the level (or is destroyed without Reactivate-after).
+void StepCodeTimeouts(FPlayerInventory& Inventory, FLevel& Level, FMessages& Messages, uint32_t StepMilliseconds);
 void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
     FMessages& Messages, uint32_t StepMilliseconds);
 // One game step of the player's part of EngineUpdateObjects (004406e0). Bodies are the other collidable objects; Self skips one of them. Returns
