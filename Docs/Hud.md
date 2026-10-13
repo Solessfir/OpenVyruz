@@ -4,9 +4,9 @@ Traced from `Vyruz.exe` 1.31.01 in Ghidra.
 
 ## Panel
 
-`FUN_00434d40` (called from `VzRun`) loads `Data\Panel\panel.gaf` and `v-panel.gaf`, falling back to `..\Common\Data\Panel\`; only Common has them. It starts one animation instance for each of 26 slots, where slot N plays animation N of its GAF. Slots 3 (`screen`), 7 to 10 (the border bars) and 22 (`black_square`) come from `v-panel.gaf`, the rest from `panel.gaf`. The panel mode (session `+0x2578`) starts at 5, the fullest.
+`PanelLoad` (`00434d40`) (called from `VzRun`) loads `Data\Panel\panel.gaf` and `v-panel.gaf`, falling back to `..\Common\Data\Panel\`; only Common has them. It starts one animation instance for each of 26 slots, where slot N plays animation N of its GAF. Slots 3 (`screen`), 7 to 10 (the border bars) and 22 (`black_square`) come from `v-panel.gaf`, the rest from `panel.gaf`. The panel mode (session `+0x2578`) starts at 5, the fullest.
 
-`FUN_00435000` runs twice:
+`PanelUpdate` (`00435000`) runs twice:
 
 - With its draw flag clear after every game step, following the object update pass. It advances the animated slots: `score2`, `NRJ1` while the shield is low, the weapon lights, and the infos light while a turret has locked on.
 - With the flag set once per frame, after the objects. It draws the panel.
@@ -29,7 +29,7 @@ Every part is placed from a screen corner (session `+0xf84` and `+0xf88`), so th
 
 ## Radar
 
-`FUN_00436080` plots single pixels into the radar beside the speedometer. It takes objects within 15 columns and 30 rows of the player's cell and within 960 pixels. It leaves out ammo, FX, gates, things, passable objects and items without a key. Each dot is at 72 + dx / 32, height - 59 + dy / 32, in palette colour 0xfa for the player, 0xfc for a lift, 0xfb for a key or code, and 0xf9 otherwise. The legend reads "RED: ENEMY, YELLOW: KEY/CODE, BLUE: LIFT".
+`PanelDrawRadar` (`00436080`) plots single pixels into the radar beside the speedometer. It takes objects within 15 columns and 30 rows of the player's cell and within 960 pixels. It leaves out ammo, FX, gates, things, passable objects and items without a key. Each dot is at 72 + dx / 32, height - 59 + dy / 32, in palette colour 0xfa for the player, 0xfc for a lift, 0xfb for a key or code, and 0xf9 otherwise. The legend reads "RED: ENEMY, YELLOW: KEY/CODE, BLUE: LIFT".
 
 ## Fonts
 

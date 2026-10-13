@@ -23,7 +23,7 @@ enum class EHudSheet : uint8_t
     Colors,
 };
 
-// Radar dot colours, as the indices FUN_00436080 plots.
+// Radar dot colours, as the indices PanelDrawRadar at 00436080 plots.
 enum class ERadarDot : uint8_t
 {
     Other,
@@ -66,12 +66,12 @@ struct FRadarDot
     ERadarDot Kind = ERadarDot::Other;
 };
 
-// The panel of EngineRunLevel (FUN_00435000) in its full mode 5: score, shield and energy bars, weapon block, speed and radar, and the
+// The panel (PanelUpdate at 00435000) in its full mode 5: score, shield and energy bars, weapon block, speed and radar, and the
 // position, kill, enemy and time screen. Corners are taken from the view size, which the original keeps at 640x480.
 class FPanel
 {
 public:
-    // FUN_00434d40 loads the panel GAFs and starts one animation per slot.
+    // PanelLoad at 00434d40 loads the panel GAFs and starts one animation per slot.
     static std::expected<FPanel, std::string> Load(FResourceArchive& Archive);
 
     // The update pass (param 0): the animated slots advance by the step.
@@ -101,5 +101,5 @@ private:
     std::array<FSlot, SlotCount> Slots;
 };
 
-// FUN_00436080: the objects within 960 pixels of the player as dots in the radar beside the speedometer.
+// PanelDrawRadar at 00436080: the objects within 960 pixels of the player as dots in the radar beside the speedometer.
 std::vector<FRadarDot> FindRadarDots(const FLevel& Level, std::span<const FObjectBody> Bodies, FCollisionPoint Player, size_t PlayerIndex, int ViewHeight);

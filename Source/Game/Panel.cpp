@@ -8,7 +8,7 @@
 
 namespace
 {
-// FUN_00434d40 loads these with VzLoadGaf; a zone's own Data\Panel would come first, but only Common has one.
+// PanelLoad at 00434d40 loads these with VzLoadGaf; a zone's own Data\Panel would come first, but only Common has one.
 constexpr std::string_view PanelPath = "common\\data\\panel\\panel.gaf";
 constexpr std::string_view VPanelPath = "common\\data\\panel\\v-panel.gaf";
 

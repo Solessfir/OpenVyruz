@@ -935,7 +935,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                 }
 
                 AnimateActors(ActorAnimations, Bodies, *Level, *Objects, View, int32_t(StepMilliseconds));
-                // The panel's update pass follows the objects' (FUN_00435000 with its draw flag clear).
+                // The panel's update pass follows the objects' (PanelUpdate at 00435000 with its draw flag clear).
                 if (Panel)
                 {
                     Panel->Step(PanelValues(), int32_t(StepMilliseconds));
