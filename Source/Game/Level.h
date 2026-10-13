@@ -108,6 +108,8 @@ struct FLevel
     // .3DX: animated map GAFs (archive paths) and the semantic type of each 1-based tile descriptor (index 0 unused).
     std::vector<std::string> AnimGafs;
     std::vector<ETerrain> TileTypes;
+    // Each descriptor's line in .3DX order: a 1-based AnimGafs index (0 for a bitmap path) and the name after it, an animation of that GAF.
+    std::vector<std::pair<int, std::string>> TileReferences;
 
     // .3DI: four semantic slots per cell holding tile descriptor indices (see Docs/DataFormats.md).
     uint32_t WorldExtentX = 0;

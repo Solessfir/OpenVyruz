@@ -3381,9 +3381,52 @@ std::expected<void, std::string> ArmSeeker(FCombat& Combat, const FLevel& Level,
 }
 }
 
+namespace
+{
+// LevelStartMapAnimations at 0041f0b0, which VzLoadLevel runs after its reseed and before EngineActivateObjects: every .3DX descriptor whose GAF
+// lies two folders below an Anim directory (Level3dxResolveEntry's kind 1) starts its named animation on RandomRange(1, frames). A name the
+// GAF lacks drops the descriptor without a draw. ponytail: the map animations themselves are not drawn yet, so the frames only keep the draws.
+void StartMapAnimations(const FLevel& Level, FResourceArchive& Archive, FRandom& Random)
+{
+    std::unordered_map<int, std::vector<Gaf::FAnimation>> Loaded;
+    for (const auto& [Gaf, Name] : Level.TileReferences)
+    {
+        if (Gaf < 1 || size_t(Gaf) > Level.AnimGafs.size())
+        {
+            continue;
+        }
+
+        const std::string& Path = Level.AnimGafs[size_t(Gaf - 1)];
+        const size_t File = Path.rfind('\\');
+        const size_t Folder = File == std::string::npos || File == 0 ? std::string::npos : Path.rfind('\\', File - 1);
+        const size_t Kind = Folder == std::string::npos || Folder == 0 ? std::string::npos : Path.rfind('\\', Folder - 1);
+        if (Kind == std::string::npos || ToLowerName(std::string_view(Path).substr(Kind + 1, Folder - Kind - 1)) != "anim")
+        {
+            continue;
+        }
+
+        auto [Animations, bNew] = Loaded.try_emplace(Gaf);
+        if (bNew)
+        {
+            const std::optional<std::vector<uint8_t>> Data = Archive.Read(Path);
+            const std::optional<std::vector<Gaf::FFrame>> Bitmaps = Data ? Gaf::LoadFrames(*Data) : std::nullopt;
+            std::optional<std::vector<Gaf::FAnimation>> Decoded = Bitmaps ? Gaf::LoadAnimations(*Data, Bitmaps->size()) : std::nullopt;
+            Animations->second = Decoded ? std::move(*Decoded) : std::vector<Gaf::FAnimation>{};
+        }
+
+        const auto Animation = std::ranges::find(Animations->second, Name, &Gaf::FAnimation::Name);
+        if (Animation != Animations->second.end())
+        {
+            Random.Range(1, int(Animation->Frames.size()));
+        }
+    }
+}
+}
+
 std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, std::vector<FObjectBody>& Bodies)
 {
     FCombat Combat;
+    StartMapAnimations(Level, Archive, Combat.Random);
     Combat.Bobs = ActivateObjects(Level, Bodies, Combat.Random);
     for (const FLevelPropertyBlock& Child : Player.Properties.Children)
     {

@@ -510,6 +510,7 @@ std::expected<void, std::string> Load3dx(FResourceArchive& Archive, const std::s
             return std::unexpected(std::format("{}: malformed object name '{}'", Path, Entry));
         }
         std::string_view Source = Trim(Entry.substr(Space));
+        Level.TileReferences.emplace_back(*Flag, std::string(Source));
         if (*Flag != 0)
         {
             Source = *Flag > 0 && size_t(*Flag) <= Level.AnimGafs.size() ? std::string_view(Level.AnimGafs[*Flag - 1]) : std::string_view();
