@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 class FResourceArchive;
 struct FPlayerState;
@@ -25,6 +26,74 @@ struct FAudioSettings
     int VoicesVolume = Sound::MaxVolume;
 };
 
+// The voice lines of VoiceLoad (00411cb0), in the order of its table (session +0x208c), each Data\Sound\<language>\v-<name>.wav. Slot 25 is
+// never loaded.
+enum class EVoice : uint8_t
+{
+    Code,
+    Key,
+    Bonus,
+    Malus,
+    Gun,
+    Grenade,
+    Rockets,
+    Flame,
+    Saw,
+    Homing,
+    Lazer,
+    Pulsar,
+    Mine,
+    NeedCode,
+    NeedKey,
+    NeedCash,
+    GameSaved,
+    GameOver,
+    HighSpeed,
+    LowSpeed,
+    Help,
+    Inventory,
+    Map,
+    Menu,
+    Pause,
+    Unused,
+    ShieldLow,
+    Warning,
+    WatchOut,
+    TakeCare,
+    Locked,
+    WakeUp,
+    WaitingFor,
+    WhatDoing,
+    ForgetMission,
+    Ariba,
+    Laugh,
+    Looser,
+    SadMan,
+    WellDone,
+    Yeepee,
+    Yeah,
+    ComeOn,
+    Hey,
+    Ooh,
+    Yo,
+    GiveMe,
+    TheBest,
+    WantMore,
+};
+
+// VoiceQueue (00413200): queues a line to start after Delay ms, holding the voice channel for Duration ms and the queue entry Hold ms longer.
+// A line already queued is not queued again, and without voices nothing is. Returns whether it was queued.
+bool QueueVoice(EVoice Voice, uint32_t Delay, uint32_t Duration, uint32_t Hold);
+// VoiceQueueClear (00411170): drops every queued line.
+void ClearVoices();
+// The session's game clock (+0x1020), whose low bits pick among several lines; the level loop sets it each step.
+void SetVoiceClock(uint32_t Clock);
+uint32_t GetVoiceClock();
+// EngineUpdateObjects at 004406e0, on each update of the player, with the fire input that ReadPlayerInput (00438540) returns. Firing without a
+// break of 3 seconds cheers three times in eight; 20 seconds without firing, after the first shot, brings one of four lines that wake the
+// player up.
+void StepPlayerVoices(uint32_t Clock, bool bFiring);
+
 // How the game shares the mixer's channels: music on 1, the player's weapon and death on 2, the player's motor on 4 and voices on 5; animation
 // sounds take any idle one.
 class FAudio
@@ -36,6 +105,9 @@ public:
     static constexpr uint32_t VoiceChannel = 5;
 
     explicit FAudio(FResourceArchive& InArchive);
+    ~FAudio();
+    FAudio(const FAudio&) = delete;
+    FAudio& operator=(const FAudio&) = delete;
 
     // Opens the output and hands the mixer to the animations; false leaves the game silent.
     bool Open();
@@ -79,6 +151,13 @@ public:
     // ShieldAlarmUpdate (0043e370): shield-alarm.wav on channel 3.
     void PlayShieldAlarm();
 
+    // VoiceQueueUpdate (004132e0): sets the voice channel to the voices volume and starts each queued line once its time comes, through VoicePlay
+    // (004133a0), which plays it on channel 5 at priority 0xbf only once the line before has had its duration; a line that comes too early is
+    // lost. Entries leave the queue once held long enough.
+    void UpdateVoices();
+    bool AddVoice(EVoice Voice, uint32_t Delay, uint32_t Duration, uint32_t Hold);
+    void DropVoices();
+
 private:
     // SoundBankLoad (00403a40): a sound by file name from Data\Sound, loaded once.
     std::shared_ptr<const Sound::FSample> Load(std::string_view Name);
@@ -95,6 +174,17 @@ private:
     // DAT_005237c8 and DAT_005237cc: the tune playing (1 to 3, zero for none) and the one it replaced.
     int Track = 0;
     int PreviousTrack = 0;
+    struct FQueuedVoice
+    {
+        EVoice Voice = EVoice::Code;
+        uint64_t Start = 0;
+        uint32_t Duration = 0;
+        uint64_t End = 0;
+        bool bStarted = false;
+    };
+    // DAT_00523598 and DAT_005235a0: the queue and the time the voice channel stays taken.
+    std::vector<FQueuedVoice> Voices;
+    uint64_t VoiceBusyUntil = 0;
     // Object flags 0x10000 and 0x20000 of the player: its weapon's start sound or fire sound is under way.
     bool bWeaponStarting = false;
     bool bWeaponFiring = false;

@@ -85,9 +85,38 @@ The `TYPE Weapon` block names its sounds (`LoadObjectClassLibrary`, keywords `0x
 | `money.wav` | 3 | The open map's drain crossing a multiple of 5000 cash (`PanelUpdate`), and a saving plot's payment (`SavingPlotUpdate`) |
 | `fade.wav` | any | The gamma fades (not ported) |
 
+## Voices
+
+`VoiceLoad` (`00411cb0`) loads 48 lines from `Data\Sound\<language>\v-*.wav` into a table (session `+0x208c`) when voices are on: code, key, bonus, malus, the nine weapon slots (gun, grenade, rockets, flame, saw, homing, lazer, pulsar, mine), need-code, need-key, need-cash, game-saved, game-over, high-speed, low-speed, help, inventory, map, menu, pause, an unused slot, shield-low, warning, watch-out, take-care, locked, wake-up, waiting-for, what-doing, forget-mission, ariba, laugh-1, looser, sad-man, well-done, yeepee, yeah, come-on, hey, ooh, yo, give-me, the-best and want-more. The port plays the English set.
+
+`VoiceQueue` (`00413200`) queues a line with a delay, a duration and a hold; a line already queued is not queued again. `VoiceQueueUpdate` (`004132e0`) runs each frame (and inside the pause and before the game menu): it sets channel 5 to the voices volume and starts each line whose time has come through `VoicePlay` (`004133a0`), which plays it on channel 5 at priority `0xbf` only once the previous line's duration has passed. A line that comes too early is lost. An entry leaves the queue after its delay, duration and hold. `VoiceQueueClear` (`00411170`) empties it. The queue runs on real time (`PgClockNow`); the random choices take the low bits of the game clock (session `+0x1020`).
+
+| Line | Delay, duration, hold (ms) | When |
+|---|---|---|
+| Gun to Mine | 750, 500, 0 | `PlayerSelectWeapon`: the slot taken, 1 to 9 |
+| Pause, Map | 0, 1000, 5000 | `EngineReadActionKeys`: P and M |
+| Menu | 0, 1000, 2000 | Escape while alive, played at once |
+| Need-cash | 0, 1000, 5000 | The map refused (`MapNeedsCash`) or a saving plot refused |
+| Game-saved | 500, 1000, 3000 | A saving plot saved |
+| Need-key, Need-code | 0, 1000, 5000 | A gate refuses |
+| Key, Code | 0, 1000, 0 | `ConsumeItem`: a key, a code part or a whole code |
+| Bonus / Malus | 0, 2000 / 1000, 0 | `ConsumeItem`: a surprise by its name (`SurpriseIsBonus`, `0041bcf0`), none for Nop |
+| Ariba or Yeepee | 3000, 2000, 0 | `SurpriseStart`: the extasy surprise, by clock `& 3` |
+| Laugh, Yeepee, Yeah, Hey, Yo, Give-me | 0, 1000, 0 | Picking up money, by clock `& 15` (six in sixteen) |
+| Yeah, Hey, Yo, Give-me, The-best, Want-more, Laugh | 1000, 1500, 0 | `VoiceKillCheer` (`0043d070`): the player's shot kills, by clock `& 15` |
+| Ooh, Looser, Sad-man | 500, 2000, 5000 | `AreaDamage`: a blast of 300 or more on the living player, by clock `& 7` |
+| Warning, Watch-out, Take-care, Locked | 0, 1000, 10000 | `PanelUpdate` with HUD Green Info while the player is locked, by clock `& 3` |
+| Shield-low | 0, 1000, 15000 | `PanelUpdate` with HUD Green Info, the bars showing a shield at 1% or less, while alive |
+| Ariba, Yeepee, Yeah | 300, 2000, 0 | `EngineUpdateObjects`: firing for 3 seconds without a break, by clock `& 7` |
+| Wake-up, Waiting-for, What-doing, Forget-mission | 0, 3000, 0 | `EngineUpdateObjects`: 20 seconds without firing, by clock `& 7` |
+| Well-done | 0, 1000, 10000 | `ObjectUpdateLevelExit`, after emptying the queue |
+| Game-over | 0, 1000, 0 | `EngineGameOver`, after emptying the queue |
+
+The fire input is what `ReadPlayerInput` (`00438540`) returns. The two timers behind the last two rows (`DAT_00523810`, `DAT_00523814`) start at zero and outlive the level, so the wake-up lines start only after the player's first shot.
+
 ## Not ported yet
 
 - **Other objects' weapon sounds**: only the player's weapon sounds; turrets and actors stay silent when they fire.
-- **Voices**: 48 lines in `english\` and `french\`, on channel 5 through `VoicePlay` (`004133a0`) and the queue `VoiceQueueUpdate` (`004132e0`).
+- **Voices without their action**: Help and Inventory (actions not ported), High-speed and Low-speed (the speed toggle), the fast-kill bonus's cheers, and the Yeepee of `FUN_0043db70`.
 - **Other animated objects**: items, mines, the `Particle-of-Death` things and the map animations do not animate in the port yet, so their sounds do not play.
 - **Options**: the audio menus.

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <format>
 
 namespace
@@ -20,11 +21,106 @@ constexpr uint32_t MenuPriority = 0xbf;
 constexpr uint32_t MusicPriority = 0xff;
 constexpr uint32_t ChannelPriority = 0x7f;
 constexpr uint32_t HighPriorityBoost = 0x40;
+
+// The sound that the voice functions reach, as the original's globals do.
+FAudio* VoiceAudio = nullptr;
+uint32_t VoiceClock = 0;
+
+// PgClockNow: the voice queue runs on real time.
+uint64_t NowMilliseconds()
+{
+    return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+constexpr std::array<std::string_view, size_t(EVoice::WantMore) + 1> VoiceNames = {
+    "code", "key", "bonus", "malus", "gun", "grenade", "rockets", "flame", "saw", "homing", "lazer", "pulsar", "mine", "need-code", "need-key",
+    "need-cash", "game-saved", "game-over", "high-speed", "low-speed", "help", "inventory", "map", "menu", "pause", "", "shield-low", "warning",
+    "watch-out", "take-care", "locked", "wake-up", "waiting-for", "what-doing", "forget-mission", "ariba", "laugh-1", "looser", "sad-man",
+    "well-done", "yeepee", "yeah", "come-on", "hey", "ooh", "yo", "give-me", "the-best", "want-more",
+};
+}
+
+bool QueueVoice(const EVoice Voice, const uint32_t Delay, const uint32_t Duration, const uint32_t Hold)
+{
+    return VoiceAudio && VoiceAudio->AddVoice(Voice, Delay, Duration, Hold);
+}
+
+void ClearVoices()
+{
+    if (VoiceAudio)
+    {
+        VoiceAudio->DropVoices();
+    }
+}
+
+void SetVoiceClock(const uint32_t Clock)
+{
+    VoiceClock = Clock;
+}
+
+void StepPlayerVoices(const uint32_t Clock, const bool bFiring)
+{
+    // DAT_00523810 and DAT_00523814: the last update without and with fire, or the last line they brought. Like the originals they outlive the
+    // level.
+    static uint32_t LastQuiet = 0;
+    static uint32_t LastFire = 0;
+    constexpr uint32_t PickMask = 7;
+    if (bFiring)
+    {
+        constexpr uint32_t CheerAfter = 3000;
+        LastFire = Clock;
+        if (LastQuiet == 0 || Clock - LastQuiet < CheerAfter)
+        {
+            return;
+        }
+
+        constexpr std::array Cheers = { EVoice::Ariba, EVoice::Yeepee, EVoice::Yeah };
+        constexpr uint32_t CheerDelay = 300;
+        constexpr uint32_t CheerDuration = 2000;
+        if (const uint32_t Pick = Clock & PickMask; Pick < Cheers.size())
+        {
+            QueueVoice(Cheers[Pick], CheerDelay, CheerDuration, 0);
+        }
+
+        LastQuiet = Clock;
+        return;
+    }
+
+    constexpr uint32_t IdleAfter = 20000;
+    LastQuiet = Clock;
+    if (LastFire == 0 || Clock - LastFire < IdleAfter)
+    {
+        return;
+    }
+
+    constexpr std::array WakeUps = { EVoice::WakeUp, EVoice::WaitingFor, EVoice::WhatDoing, EVoice::ForgetMission };
+    constexpr uint32_t WakeUpDuration = 3000;
+    if (const uint32_t Pick = Clock & PickMask; Pick < WakeUps.size())
+    {
+        QueueVoice(WakeUps[Pick], 0, WakeUpDuration, 0);
+    }
+
+    LastFire = Clock;
+}
+
+uint32_t GetVoiceClock()
+{
+    return VoiceClock;
 }
 
 FAudio::FAudio(FResourceArchive& InArchive)
     : Archive(InArchive)
 {
+}
+
+FAudio::~FAudio()
+{
+    if (VoiceAudio == this)
+    {
+        VoiceAudio = nullptr;
+    }
+
+    SetAnimationMixer(nullptr);
 }
 
 bool FAudio::Open()
@@ -35,6 +131,7 @@ bool FAudio::Open()
     }
 
     SetAnimationMixer(&Mixer);
+    VoiceAudio = this;
     return true;
 }
 
@@ -311,6 +408,51 @@ void FAudio::PlayMoney()
 {
     constexpr uint32_t ItemChannel = 3;
     PlayOnChannel(Load("money.wav"), ItemChannel, false, true);
+}
+
+bool FAudio::AddVoice(const EVoice Voice, const uint32_t Delay, const uint32_t Duration, const uint32_t Hold)
+{
+    // VoiceLoad loads the lines only with voices on (EngineApplyDisplayAndCursor), in the voice-type language.
+    const std::string_view Name = VoiceNames[size_t(Voice)];
+    if (!Settings.bVoices || Name.empty() || std::ranges::contains(Voices, Voice, &FQueuedVoice::Voice) || !Load(std::format("english\\v-{}.wav", Name)))
+    {
+        return false;
+    }
+
+    const uint64_t Start = NowMilliseconds() + Delay;
+    Voices.push_back({ .Voice = Voice, .Start = Start, .Duration = Duration, .End = Start + Duration + Hold });
+    return true;
+}
+
+void FAudio::DropVoices()
+{
+    Voices.clear();
+}
+
+void FAudio::UpdateVoices()
+{
+    constexpr uint32_t VoicePriority = 0xbf;
+    Mixer.SetVolume(VoiceChannel, Settings.VoicesVolume);
+    const uint64_t Now = NowMilliseconds();
+    std::erase_if(Voices, [&](FQueuedVoice& Queued)
+    {
+        if (!Queued.bStarted && Queued.Start <= Now)
+        {
+            Queued.bStarted = true;
+            if (VoiceBusyUntil == 0 || VoiceBusyUntil <= Now)
+            {
+                VoiceBusyUntil = Now + Queued.Duration;
+                if (Mixer.IsPlaying(VoiceChannel))
+                {
+                    Mixer.Stop(ChannelBit(VoiceChannel));
+                }
+
+                Mixer.Play(Load(std::format("english\\v-{}.wav", VoiceNames[size_t(Queued.Voice)])), false, VoicePriority, ChannelBit(VoiceChannel));
+            }
+        }
+
+        return Queued.End <= Now;
+    });
 }
 
 void FAudio::PlayShieldAlarm()

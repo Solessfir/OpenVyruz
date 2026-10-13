@@ -1,5 +1,6 @@
 #include "Game/Engine.h"
 
+#include "Game/Audio.h"
 #include "Game/Level.h"
 #include "Game/Loop.h"
 #include "Pg/Binary.h"
@@ -1416,6 +1417,40 @@ ESurprise SurpriseFromName(const std::string_view Name)
     return Found == Names.end() ? ESurprise::None : Found->second;
 }
 
+// ConsumeItem at 00444660 announces a surprise by its name (SurpriseIsBonus at 0041bcf0): a Bonus line, a Malus line, or nothing for Nop.
+void AnnounceSurprise(const ESurprise Type)
+{
+    constexpr uint32_t MalusDuration = 1000;
+    constexpr uint32_t BonusDuration = 2000;
+    switch (Type)
+    {
+    case ESurprise::ReverseCommands:
+    case ESurprise::Trap:
+    case ESurprise::WeaponJam:
+    case ESurprise::Darken:
+    case ESurprise::Extasy:
+    case ESurprise::LowSpeed:
+    case ESurprise::Pinball:
+    case ESurprise::Banana:
+    case ESurprise::BlockedMotor:
+        QueueVoice(EVoice::Malus, 0, MalusDuration, 0);
+        break;
+    case ESurprise::DestroyAround:
+    case ESurprise::TouchAndDestroy:
+    case ESurprise::AutoShieldUp:
+    case ESurprise::Invisible:
+    case ESurprise::CircularFire:
+    case ESurprise::TimeWarp:
+    case ESurprise::ReloadWeapons:
+    case ESurprise::Invulnerability:
+    case ESurprise::TripleFire:
+        QueueVoice(EVoice::Bonus, 0, BonusDuration, 0);
+        break;
+    default:
+        break;
+    }
+}
+
 // FUN_0041ba00: the weights of DAT_0050d5d0, summed at load by FUN_0041b830, choose the type of a random surprise.
 ESurprise DrawSurprise(FRandom& Random)
 {
@@ -1762,6 +1797,8 @@ void CollectSurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Typ
         Type = DrawSurprise(Combat.Random);
     }
 
+    AnnounceSurprise(Type);
+
     // FUN_0041bfb0 gives every surprise a 500 ms delay.
     constexpr int32_t StartDelay = 500;
     constexpr int32_t ShortTimeout = 2;
@@ -1839,6 +1876,14 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
             Inventory.Earned += Pickup.AddMoney;
             AddPickupMessage(Messages, Object, OffsetY, std::format("Money +{}", int32_t(Pickup.AddMoney)), MoneyColor);
             bUsed = true;
+            // EngineUpdateObjects cheers six times in sixteen by the game clock.
+            constexpr std::array MoneyVoices = { EVoice::Laugh, EVoice::Yeepee, EVoice::Yeah, EVoice::Hey, EVoice::Yo, EVoice::GiveMe };
+            constexpr uint32_t MoneyVoiceMask = 0xf;
+            constexpr uint32_t MoneyVoiceDuration = 1000;
+            if (const uint32_t Pick = GetVoiceClock() & MoneyVoiceMask; Pick < MoneyVoices.size())
+            {
+                QueueVoice(MoneyVoices[Pick], 0, MoneyVoiceDuration, 0);
+            }
         }
 
         if (Pickup.AddShield != 0.f && Inventory.Shield < Inventory.ShieldMax)
@@ -1873,6 +1918,8 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
                                          : CarriesKey(Inventory.Keys, Key.Id) ? std::format("Code #{} complete !", Key.Id)
                                                                               : std::format("Code #{} : part {} !", Key.Id, Key.PartId);
                 AddCentreMessage(Messages, Text, KeyColor);
+                constexpr uint32_t KeyVoiceDuration = 1000;
+                QueueVoice(Key.bCode ? EVoice::Code : EVoice::Key, 0, KeyVoiceDuration, 0);
             }
 
             bUsed = true;
@@ -2432,6 +2479,21 @@ void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float
             if (!Player.State.bInvisible && !Player.Inventory.Surprises.bInvulnerable)
             {
                 ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield, *Amount);
+            }
+
+            // AreaDamage at 0043cb20: a blast of 300 or more makes a living player cry out three times in eight by the game clock.
+            constexpr float CryDamage = 300.f;
+            constexpr std::array Cries = { EVoice::Ooh, EVoice::Looser, EVoice::SadMan };
+            constexpr uint32_t CryMask = 7;
+            if (CryDamage <= Damage && 0.f < Player.Inventory.Energy)
+            {
+                if (const uint32_t Pick = GetVoiceClock() & CryMask; Pick < Cries.size())
+                {
+                    constexpr uint32_t CryDelay = 500;
+                    constexpr uint32_t CryDuration = 2000;
+                    constexpr uint32_t CryHold = 5000;
+                    QueueVoice(Cries[Pick], CryDelay, CryDuration, CryHold);
+                }
             }
         }
     }
@@ -3172,8 +3234,11 @@ void ReportDoorContact(const std::span<const FDoor> Doors, const FObjectBody& Bo
     }
     else if (bNeedsKey)
     {
-        // The gate also plays a sound for 5 seconds.
+        // The gate also says what it needs, held for 5 seconds.
         Text = std::format("Gate needs {} #{} !", bCode ? "full code" : "key", Door->Id);
+        constexpr uint32_t NeedDuration = 1000;
+        constexpr uint32_t NeedHold = 5000;
+        QueueVoice(bCode ? EVoice::NeedCode : EVoice::NeedKey, 0, NeedDuration, NeedHold);
     }
     else
     {
@@ -3230,11 +3295,19 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
         State.JammedWeapon = Combat.PlayerWeapon.Weapon;
         break;
     case ESurprise::Extasy:
+    {
+        // SurpriseStart cheers Ariba or Yeepee by the game clock, three seconds in.
+        constexpr uint32_t ExtasyVoiceMask = 3;
+        constexpr uint32_t FirstYeepee = 2;
+        constexpr uint32_t ExtasyVoiceDelay = 3000;
+        constexpr uint32_t ExtasyVoiceDuration = 2000;
+        QueueVoice((GetVoiceClock() & ExtasyVoiceMask) < FirstYeepee ? EVoice::Ariba : EVoice::Yeepee, ExtasyVoiceDelay, ExtasyVoiceDuration, 0);
         State.AccelerationStep = Class.AccelerationStep;
         State.DecelerationStep = Class.DecelerationStep;
         Class.AccelerationStep = Class.AccelerationStep + Class.AccelerationStep;
         Class.DecelerationStep = Class.DecelerationStep + Class.DecelerationStep;
         break;
+    }
     case ESurprise::LowSpeed:
     {
         constexpr float LowSpeedScale = 0.25f;
@@ -3415,6 +3488,9 @@ bool StepSavingPlots(FSavingState& State, const std::span<const FSavingPlot> Plo
         if (Reward < 0 && Inventory.Money < float(-Reward))
         {
             Say(Plot, std::format("Not enough Cash {} !\n You need {} $\n  to save this game ...", PlayerName, -Reward), RefusedLife);
+            constexpr uint32_t RefusedVoiceDuration = 1000;
+            constexpr uint32_t RefusedVoiceHold = 5000;
+            QueueVoice(EVoice::NeedCash, 0, RefusedVoiceDuration, RefusedVoiceHold);
             continue;
         }
 
@@ -3424,6 +3500,10 @@ bool StepSavingPlots(FSavingState& State, const std::span<const FSavingPlot> Plo
         }
 
         Say(Plot, "Saving Completed.", SavedLife);
+        constexpr uint32_t SavedVoiceDelay = 500;
+        constexpr uint32_t SavedVoiceDuration = 1000;
+        constexpr uint32_t SavedVoiceHold = 3000;
+        QueueVoice(EVoice::GameSaved, SavedVoiceDelay, SavedVoiceDuration, SavedVoiceHold);
         bSave = true;
     }
 
@@ -5166,9 +5246,20 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
                 }
             }
 
+            const int32_t KillsBefore = Player.Inventory.Kills;
             for (size_t Index = 0; Index < WasAlive.size(); ++Index)
             {
                 Player.Inventory.Kills += WasAlive[Index] && Bodies[Index].Energy <= 0.f ? 1 : 0;
+            }
+
+            // VoiceKillCheer (0043d070) cheers a kill seven times in sixteen by the game clock.
+            constexpr std::array KillVoices = { EVoice::Yeah, EVoice::Hey, EVoice::Yo, EVoice::GiveMe, EVoice::TheBest, EVoice::WantMore, EVoice::Laugh };
+            constexpr uint32_t KillVoiceMask = 0xf;
+            if (const uint32_t Pick = GetVoiceClock() & KillVoiceMask; Player.Inventory.Kills != KillsBefore && Pick < KillVoices.size())
+            {
+                constexpr uint32_t KillVoiceDelay = 1000;
+                constexpr uint32_t KillVoiceDuration = 1500;
+                QueueVoice(KillVoices[Pick], KillVoiceDelay, KillVoiceDuration, 0);
             }
 
             // AmmoImpact puts the Hit-fx at the contact point; a shot that sank to the ground leaves a ground impact instead.

@@ -1901,6 +1901,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     bool bMapShown = false;
     std::optional<FSpriteSheet> MapSheet;
     // MapNeedsCash at 00435fe0.
+    // Most of EngineReadActionKeys' lines last a second and stay queued five more.
+    constexpr uint32_t VoiceDuration = 1000;
+    constexpr uint32_t VoiceHold = 5000;
     const auto SayMapNeedsCash = [&]
     {
         constexpr int32_t TextX = -200;
@@ -1913,6 +1916,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             .LifeMilliseconds = LifeMilliseconds,
             .Font = Font,
         }, EMessagePlacement::Replace);
+        QueueVoice(EVoice::NeedCash, 0, VoiceDuration, VoiceHold);
     };
     // MapToggleWithPanel at 0043b570: MapToggle (00436460) closes the map, or opens it for at least 21000 cash; the panel shows mode 1 under it.
     const auto ToggleMap = [&]
@@ -2125,6 +2129,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         bPauseKeyDown = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS;
         if (bPausePressed && Player && !Demo)
         {
+            QueueVoice(EVoice::Pause, 0, VoiceDuration, VoiceHold);
             if (bMapShown)
             {
                 ToggleMap();
@@ -2159,6 +2164,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 if (!MenuSheets)
                 {
                     MenuSheets = CreateMenuSheets(Renderer, *MenuArt);
+                }
+
+                // EngineReadActionKeys says Menu, at once, while the player lives.
+                if (Player && Inventory.Energy > 0.f && QueueVoice(EVoice::Menu, 0, VoiceDuration, 2000) && GameAudio)
+                {
+                    GameAudio->UpdateVoices();
                 }
 
                 FRandom MenuRandom;
@@ -2197,6 +2208,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             if (bMapPressed && Player && !Demo)
             {
                 ToggleMap();
+                QueueVoice(EVoice::Map, 0, VoiceDuration, VoiceHold);
             }
 
             std::array<bool, WeaponKeyCount> WeaponKeysNow{};
@@ -2365,6 +2377,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                     // EngineUpdateObjects puts the sound listener where the player stands (SoundSetListener at 0045edb0).
                     SetSoundListener(Player->Position.X, Player->Position.Y, PlayerObject->Altitude);
+                    if (Combat)
+                    {
+                        SetVoiceClock(Combat->Clock);
+                        StepPlayerVoices(Combat->Clock, bFireInput);
+                    }
                 }
 
                 StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
@@ -2374,6 +2391,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 {
                     // A starred 3do-file (only "*End of Tower 3*" in the campaign) ends the game instead of loading a level.
                     NextLevel = Lift->NextLevel.starts_with('*') ? Lift->NextLevel : NextLevelPath(LevelPath, *Lift);
+                    // ObjectUpdateLevelExit drops the queued lines and says Well Done.
+                    constexpr uint32_t WellDoneHold = 10000;
+                    ClearVoices();
+                    if (QueueVoice(EVoice::WellDone, 0, VoiceDuration, WellDoneHold) && GameAudio)
+                    {
+                        GameAudio->UpdateVoices();
+                    }
                 }
                 if (Combat)
                 {
@@ -2505,6 +2529,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         // Game over (EngineGameOver at 00445a40): the game-over image, then the menu.
         if (DeathTimer && *DeathTimer <= 0)
         {
+            // EngineGameOver drops the queued lines and says Game Over.
+            ClearVoices();
+            if (QueueVoice(EVoice::GameOver, 0, VoiceDuration, 0) && GameAudio)
+            {
+                GameAudio->UpdateVoices();
+            }
+
             ShowImage(Window, Renderer, Archive, "common\\data\\extra\\game-over.gaf");
             ShowFinalScore();
             return FLevelEnd{ .Kind = ELevelEnd::Menu };
@@ -2598,7 +2629,15 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             {
                 if (HeardWeaponSwitches && *HeardWeaponSwitches != Combat->WeaponSwitches)
                 {
+                    // PlayerSelectWeapon also names the slot: Gun for slot 1 through Mine for slot 9.
                     GameAudio->PlayWeaponSwitch();
+                    constexpr size_t NamedSlots = 9;
+                    constexpr uint32_t SlotVoiceDelay = 750;
+                    constexpr uint32_t SlotVoiceDuration = 500;
+                    if (Combat->PlayerSlot >= 1 && Combat->PlayerSlot <= NamedSlots)
+                    {
+                        QueueVoice(EVoice(size_t(EVoice::Gun) + Combat->PlayerSlot - 1), SlotVoiceDelay, SlotVoiceDuration, 0);
+                    }
                 }
 
                 HeardWeaponSwitches = Combat->WeaponSwitches;
@@ -2864,6 +2903,32 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             DrawHud(Panel->Draw(PanelValues(), Radar, int(ScreenWidth), int(ScreenHeight), Combat ? Combat->MiscRandom : NoMiscRandom));
             Panel->PostWarnings(PanelValues(), Messages);
             PayForMap();
+            // PanelUpdate with HUD Green Info: while locked, one of four warnings by the game clock, held ten seconds; with the bars showing a
+            // shield at 1% or less, Shield Low, held fifteen.
+            if (Settings.Details.bGreenInfo)
+            {
+                const FPanelValues Values = PanelValues();
+                if (Values.bLocked)
+                {
+                    constexpr std::array LockVoices = { EVoice::Warning, EVoice::WatchOut, EVoice::TakeCare, EVoice::Locked };
+                    constexpr uint32_t LockVoiceMask = 3;
+                    constexpr uint32_t LockVoiceHold = 10000;
+                    QueueVoice(LockVoices[GetVoiceClock() & LockVoiceMask], 0, VoiceDuration, LockVoiceHold);
+                }
+
+                constexpr int BarsMode = 2;
+                constexpr float ShieldLowRatio = 0.01f;
+                constexpr uint32_t ShieldLowHold = 15000;
+                if (Panel->GetMode() >= BarsMode && Values.ShieldMax != 0.f && Values.Shield / Values.ShieldMax <= ShieldLowRatio && 0.f < Inventory.Energy)
+                {
+                    QueueVoice(EVoice::ShieldLow, 0, VoiceDuration, ShieldLowHold);
+                }
+            }
+        }
+
+        if (GameAudio)
+        {
+            GameAudio->UpdateVoices();
         }
 
         // PanelDrawBigRadar (004362a0) after the panel: the map, then icons scaled from the level's size, the player's (animation 21) and every lift's
