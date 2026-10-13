@@ -2641,6 +2641,11 @@ std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Lev
         .FireAltitude = int(ClassNumber(*Block, "Fire-altitude")),
         .InitialSlope = SlopeRadians(ClassNumber(*Block, "Initial-slope")),
         .SlopeStep = SlopeRadians(ClassNumber(*Block, "Slope-step")),
+        .FireSound = ToLowerName(Block->Find("Fire-sound")),
+        .FireStartSound = ToLowerName(Block->Find("Fire-start-sound")),
+        .FireEndSound = ToLowerName(Block->Find("Fire-end-sound")),
+        .NoAmmoSound = ToLowerName(Block->Find("No-ammo-sound")),
+        .bFireSoundLoops = ClassNumber(*Block, "Fire-sound-loop") != 0.f,
     });
     return Combat.Weapons.size() - 1;
 }
@@ -3963,6 +3968,11 @@ size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inven
     return Current;
 }
 
+const FAmmoStock* PlayerSlotAmmo(const FCombat& Combat, const FPlayerInventory& Inventory)
+{
+    return SlotAmmo(Combat, Combat.PlayerSlot, Inventory);
+}
+
 void SelectPlayerWeapon(FCombat& Combat, const size_t Slot, const FPlayerInventory& Inventory, FMessages& Messages)
 {
     // FUN_004375f0 keeps the weapon in hand's state with its ADD Weapon entry and clears the new one's last shot.
@@ -3972,6 +3982,7 @@ void SelectPlayerWeapon(FCombat& Combat, const size_t Slot, const FPlayerInvento
     }
 
     Combat.PlayerSlot = Slot;
+    ++Combat.WeaponSwitches;
     if (Slot == 0 || Slot > Combat.PlayerSlotStates.size())
     {
         return;

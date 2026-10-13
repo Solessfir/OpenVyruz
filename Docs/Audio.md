@@ -62,10 +62,32 @@ In the port, FX effects (explosions, impacts) and gates and lifts play their sou
 
 `PlayerUpdateMotorSound` (`00445c50`) runs each frame while the player has energy and no lift is taking it away (`DAT_00523820`). With a working motor it loops `vz-motor.wav` on channel 4 (`SoundPlayOnChannel`, `00403f80`, at priority `0xbf`). It sets the channel's volume to `trunc((fx - fx / 3) * speed / Thrust.Max + fx / 3)`, at least `fx / 3`, where `fx` is the sound-fx volume (read directly, so the motor plays even with sound-fx off). While the motor is blocked, it plays `start-engine.wav` once at the full sound-fx volume when the player pushes forward and channel 4 is free. `EngineRunLevel` stops channels 2 and 4 when the level ends.
 
+## Weapons
+
+The `TYPE Weapon` block names its sounds (`LoadObjectClassLibrary`, keywords `0x98` to `0x9c`): `Fire-sound` (`+0x34`), `Fire-start-sound` (`+0x38`), `Fire-end-sound` (`+0x3c`), `No-ammo-sound` (`+0x40`), and `Fire-sound-loop` (flag `0x10` at `+0x30`). `ObjectsUpdateWeaponSounds` (`0043df70`) runs each frame over the armed objects, keeping two object flags: `0x10000` while the start sound plays and `0x20000` while the fire sound does. The player uses channel 2 at priority `0xbf`; others use their weapon's ADD Weapon channel, or the weapon class's `Sample-channel-range` and `Sample-channel-priority`. Its trigger is object flag 2, which a jammed weapon, a blocked motor and invisibility clear.
+
+- **Firing**: a weapon with a start sound plays it first, then marks the fire sound once it ends; the fire sound then plays, looping for the player when `Fire-sound-loop` is set and otherwise again whenever it ends. A weapon without a start sound plays its fire sound straight away. A bound stock (object `+0x248`) that has run dry plays `No-ammo-sound` instead.
+- **Letting go**: after a looping fire sound, or after any fire sound of a weapon with a start sound once the channel is free, it stops the channel and plays `Fire-end-sound`.
+- **No stock bound**: firing ends both states and plays `No-ammo-sound` whenever the channel is free; letting go stops a looping fire sound.
+
+`PlayerSelectWeapon` (`00437740`) ends both states and plays `weapon-switch.wav` on channel 2.
+
+## Other sounds
+
+`LoadSessionSounds` (`0043bc30`) loads the session's own sounds. `SoundPlayOnChannel` (`00403f80`) restarts a channel with one, at priority `0x7f` or `0xbf`:
+
+| Sound | Channel | When |
+|---|---|---|
+| `pickup-heavy.wav` | 3 | Every item `ConsumeItem` (`00444660`) takes |
+| `weapon-switch.wav` | 2 | Every weapon switch |
+| `aaaa.wav` | 2 | The player's death (`EngineUpdateObjects`) |
+| `shield-alarm.wav` | 3 | `ShieldAlarmUpdate` (`0043e370`), each frame with the panel in mode 0 or 1: once a second while the shield is at 1% or less. With HUD Green Info it also keeps "DANGER : SHIELD IS LOW" up at 100, 100 for two seconds; the other modes show the bars' own warning |
+| `money.wav` | 3 | The open map's drain crossing a multiple of 5000 cash (`PanelUpdate`), and a saving plot's payment (`SavingPlotUpdate`) |
+| `fade.wav` | any | The gamma fades (not ported) |
+
 ## Not ported yet
 
-- **Weapon sounds**: `ObjectsUpdateWeaponSounds` (`0043df70`) and the weapon blocks' `fire-sound`, `fire-sound-loop`, `fire-start-sound`, `fire-end-sound` and `no-ammo-sound`. The player uses channel 2 at priority `0xbf`; others use their weapon's channel and priority.
+- **Other objects' weapon sounds**: only the player's weapon sounds; turrets and actors stay silent when they fire.
 - **Voices**: 48 lines in `english\` and `french\`, on channel 5 through `VoicePlay` (`004133a0`) and the queue `VoiceQueueUpdate` (`004132e0`).
 - **Other animated objects**: items, mines, the `Particle-of-Death` things and the map animations do not animate in the port yet, so their sounds do not play.
-- **Other sounds**: the player's death (channel 2), `shield-alarm.wav`, `money.wav`, `pickup-heavy.wav`, `weapon-switch.wav`, and `fade.wav` with the gamma fades.
 - **Options**: the audio menus.

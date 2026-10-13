@@ -1951,7 +1951,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             return;
         }
 
+        // PanelUpdate rings the till each time the cash drops past a multiple of 5000.
+        constexpr int32_t TillStep = 5000;
+        const int32_t Cash = int32_t(Inventory.Money);
         Inventory.Money -= float(MapCashPerPass);
+        if (GameAudio && Cash / TillStep != (Cash - MapCashPerPass) / TillStep)
+        {
+            GameAudio->PlayMoney();
+        }
     };
     // The game's end records its score, from the level's LEVEL-ID [ tower.level ], unless it was the demo.
     const auto ShowFinalScore = [&]
@@ -2074,7 +2081,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     bool bPauseKeyDown = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS;
     // The forward input of the last step, which a blocked motor answers with start-engine.wav, and the surprise whose tune plays.
     bool bThrustInput = false;
+    bool bFireInput = false;
     ESurprise TuneSurprise = ESurprise::None;
+    // The weapon switches already heard; the level's own first selection plays nothing.
+    std::optional<uint32_t> HeardWeaponSwitches;
+    // Session +0x2090: the shield alarm's repeat timer.
+    int32_t ShieldAlarmTimer = 0;
     // EngineApplyDisplayAndCursor (0042f2d0) loads Data\Menu\cursor.gaf's sight (session +0x25b8) for the mouse; EngineRunLevel plays it by the last step and draws it at
     // the mouse after everything else. Any other device hides the cursor altogether.
     const std::optional<FObjectGaf> SightGaf = Settings.bMouse ? LoadObjectGaf(Archive, "common\\data\\menu\\cursor.gaf") : std::nullopt;
@@ -2373,6 +2385,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     constexpr uint32_t FireBit = 0x2;
                     const bool bMouseFire = Settings.bMouse && glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
                     const bool bLiveFire = Demo ? (DemoInput & FireBit) != 0 : bAutoFire || bMouseFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL);
+                    bFireInput = bLiveFire;
                     const bool bFire = !Inventory.Surprises.bBlockedMotor && bLiveFire;
                     if (!DeathTimer)
                     {
@@ -2394,6 +2407,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         ExplodePlayer(*Combat, Player->Position, PlayerObject->Altitude);
                         PlayerObject->bRemoved = true;
                         DeathTimer = DeathMilliseconds;
+                        if (GameAudio)
+                        {
+                            GameAudio->PlayDeath();
+                        }
                     }
                 }
                 // Objects the step created, such as dropped items, join the pickups and the drawn objects.
@@ -2424,12 +2441,23 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                 if (!DeathTimer && CollectPickups(*Player, *PlayerClass, Inventory, Pickups, *Level, Messages, Combat ? &*Combat : nullptr) != 0)
                 {
+                    if (GameAudio)
+                    {
+                        GameAudio->PlayPickup();
+                    }
+
                     std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
                     std::fflush(stdout);
                 }
 
+                const float CashBeforePlot = Inventory.Money;
                 if (StepSavingPlots(Saving, SavingPlots, *Level, *Player, PlayerClass->Radius, Inventory, Messages, ClockMilliseconds(), Settings.PlayerName))
                 {
+                    if (GameAudio && Inventory.Money != CashBeforePlot)
+                    {
+                        GameAudio->PlayMoney();
+                    }
+
                     SyncObjects();
                     FSession Saved{
                         .LevelPath = LevelPath,
@@ -2518,6 +2546,44 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
+        // ShieldAlarmUpdate (0043e370), each frame: with the panel in mode 0 or 1 and the shield at 1% or less, shield-alarm.wav sounds once a second and, with
+        // HUD Green Info, "DANGER : SHIELD IS LOW" stays up at 100, 100; the other modes show the bars' own warning.
+        if (Player && Panel && !DeathTimer && Panel->GetMode() <= 1)
+        {
+            constexpr float AlarmRatio = 0.01f;
+            constexpr int32_t AlarmPeriodMilliseconds = 1000;
+            constexpr int32_t ShieldNoteX = 100;
+            constexpr int32_t ShieldNoteY = 100;
+            constexpr uint32_t ShieldNoteLifeMilliseconds = 2000;
+            constexpr uint32_t PanelScreenFont = 3;
+            ShieldAlarmTimer -= int32_t(LastStepMilliseconds);
+            if (ShieldAlarmTimer < 1 && Inventory.ShieldMax != 0.f && Inventory.Shield / Inventory.ShieldMax <= AlarmRatio)
+            {
+                ShieldAlarmTimer = AlarmPeriodMilliseconds;
+                if (GameAudio)
+                {
+                    GameAudio->PlayShieldAlarm();
+                }
+
+                if (Settings.Details.bGreenInfo && Messages.Exists(ShieldNoteX, ShieldNoteY))
+                {
+                    Messages.SetLife(ShieldNoteX, ShieldNoteY, ShieldNoteLifeMilliseconds);
+                }
+                else if (Settings.Details.bGreenInfo)
+                {
+                    Messages.Add({
+                        .Text = "DANGER : SHIELD IS LOW",
+                        .X = float(ShieldNoteX),
+                        .Y = float(ShieldNoteY),
+                        .LifeMilliseconds = ShieldNoteLifeMilliseconds,
+                        .bTypewriter = true,
+                        .Gaf = EMessageGaf::Panel,
+                        .Font = PanelScreenFont,
+                    }, EMessagePlacement::Replace);
+                }
+            }
+        }
+
         // EngineRunLevel runs the motor (PlayerUpdateMotorSound (00445c50)) while the player lives and no lift is taking it away. The darkness and the extasy surprises
         // play their own tunes (SurpriseStart at 0041c390) and give the previous one back when they end (SurpriseEnd).
         if (GameAudio && Player && PlayerClass)
@@ -2525,6 +2591,22 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             if (Inventory.Energy > 0.f && !NextLevel)
             {
                 GameAudio->UpdateMotor(*Player, PlayerClass->ThrustMax, Inventory.Surprises.bBlockedMotor, bThrustInput);
+            }
+
+            // ObjectsUpdateWeaponSounds (0043df70): object flag 2 is the trigger, which a jammed weapon, a blocked motor and invisibility clear.
+            if (Combat && Combat->PlayerSlot >= 1 && Combat->PlayerSlot <= Combat->PlayerWeapons.size())
+            {
+                if (HeardWeaponSwitches && *HeardWeaponSwitches != Combat->WeaponSwitches)
+                {
+                    GameAudio->PlayWeaponSwitch();
+                }
+
+                HeardWeaponSwitches = Combat->WeaponSwitches;
+                const FWeaponClass& Weapon = Combat->Weapons[Combat->PlayerWeapon.Weapon];
+                const FAmmoStock* const Stock = PlayerSlotAmmo(*Combat, Inventory);
+                const bool bFiring = bFireInput && !DeathTimer && Inventory.Surprises.JammedWeapon != Combat->PlayerWeapon.Weapon &&
+                    !Inventory.Surprises.bBlockedMotor && !Player->bInvisible;
+                GameAudio->UpdatePlayerWeapon(Weapon, bFiring, Stock != nullptr, Stock ? Stock->Count : 0.f);
             }
 
             const ESurprise Surprise = Inventory.Surprises.Active;

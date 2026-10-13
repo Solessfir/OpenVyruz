@@ -11,6 +11,7 @@
 
 class FResourceArchive;
 struct FPlayerState;
+struct FWeaponClass;
 
 // The audio options vzconf.txt sets (ConfigLoad at 0042f570): music (option flag 0x400), sound-fx (0x800) and voices (0x1000), and their volumes
 // at session +0x27e4, +0x27e8 and +0x27ec. The defaults are the archive's own VZCONF.TXT.
@@ -62,6 +63,22 @@ public:
     // EngineRunLevel at 0043e5f0 stops the player's weapon and motor channels when the level ends.
     void StopLevelChannels();
 
+    // ObjectsUpdateWeaponSounds (0043df70) for the player, each frame, on channel 2 at priority 0xbf. Firing, a weapon with Fire-start-sound
+    // plays it first and its Fire-sound once that ends; one without plays Fire-sound straight away, looping with Fire-sound-loop, else again
+    // whenever it ends. Letting go plays Fire-end-sound. An empty stock plays No-ammo-sound. bFiring is object flag 2, which a jammed weapon,
+    // a blocked motor and invisibility clear; bStock tells whether a stock is bound (object +0x248) and Rounds what it holds.
+    void UpdatePlayerWeapon(const FWeaponClass& Weapon, bool bFiring, bool bStock, float Rounds);
+    // PlayerSelectWeapon (00437740): weapon-switch.wav on channel 2, which also ends the weapon's sound states.
+    void PlayWeaponSwitch();
+    // The player's death cry, aaaa.wav, on channel 2 (EngineUpdateObjects at 004406e0).
+    void PlayDeath();
+    // ConsumeItem (00444660): pickup-heavy.wav on channel 3 for every item taken.
+    void PlayPickup();
+    // money.wav on channel 3: the map's drain crossing a multiple of 5000 (PanelUpdate) and a saving plot's payment (SavingPlotUpdate).
+    void PlayMoney();
+    // ShieldAlarmUpdate (0043e370): shield-alarm.wav on channel 3.
+    void PlayShieldAlarm();
+
 private:
     // SoundBankLoad (00403a40): a sound by file name from Data\Sound, loaded once.
     std::shared_ptr<const Sound::FSample> Load(std::string_view Name);
@@ -78,4 +95,7 @@ private:
     // DAT_005237c8 and DAT_005237cc: the tune playing (1 to 3, zero for none) and the one it replaced.
     int Track = 0;
     int PreviousTrack = 0;
+    // Object flags 0x10000 and 0x20000 of the player: its weapon's start sound or fire sound is under way.
+    bool bWeaponStarting = false;
+    bool bWeaponFiring = false;
 };

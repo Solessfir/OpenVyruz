@@ -5,6 +5,7 @@
 #include "Pg/ResourceArchive.h"
 
 #include <algorithm>
+#include <cctype>
 #include <format>
 
 namespace
@@ -39,14 +40,20 @@ bool FAudio::Open()
 
 std::shared_ptr<const Sound::FSample> FAudio::Load(const std::string_view Name)
 {
-    const std::string Key(Name);
+    std::string Key(Name);
+    std::ranges::transform(Key, Key.begin(), [](const unsigned char Character) { return char(std::tolower(Character)); });
+    if (Key.empty())
+    {
+        return nullptr;
+    }
+
     if (const auto Found = Bank.find(Key); Found != Bank.end())
     {
         return Found->second;
     }
 
     std::shared_ptr<const Sound::FSample> Sample;
-    if (const std::optional<std::vector<uint8_t>> File = Archive.Read(std::format("common\\data\\sound\\{}", Name)))
+    if (const std::optional<std::vector<uint8_t>> File = Archive.Read(std::format("common\\data\\sound\\{}", Key)))
     {
         if (std::optional<Sound::FSample> Decoded = Sound::DecodeWav(*File))
         {
@@ -186,4 +193,128 @@ void FAudio::UpdateMotor(const FPlayerState& Player, const float ThrustMax, cons
 void FAudio::StopLevelChannels()
 {
     Mixer.Stop(ChannelBit(PlayerWeaponChannel) | ChannelBit(MotorChannel));
+}
+
+void FAudio::UpdatePlayerWeapon(const FWeaponClass& Weapon, const bool bFiring, const bool bStock, const float Rounds)
+{
+    constexpr uint32_t WeaponPriority = 0xbf;
+    const uint32_t Mask = ChannelBit(PlayerWeaponChannel);
+    const bool bPlaying = Mixer.IsPlaying(PlayerWeaponChannel);
+    const auto Restart = [&](const std::string& Name, const bool bLoop)
+    {
+        if (bPlaying)
+        {
+            Mixer.Stop(Mask);
+        }
+
+        Mixer.Play(Load(Name), bLoop, WeaponPriority, Mask);
+    };
+
+    if (!bStock)
+    {
+        if (!bFiring)
+        {
+            if (bWeaponFiring && Weapon.bFireSoundLoops && bPlaying)
+            {
+                Mixer.Stop(Mask);
+            }
+
+            return;
+        }
+
+        if (bWeaponStarting || bWeaponFiring)
+        {
+            bWeaponStarting = bWeaponFiring = false;
+            if (bPlaying)
+            {
+                Mixer.Stop(Mask);
+            }
+        }
+
+        if (!Mixer.IsPlaying(PlayerWeaponChannel))
+        {
+            Mixer.Play(Load(Weapon.NoAmmoSound), false, WeaponPriority, Mask);
+        }
+
+        return;
+    }
+
+    if (!bFiring)
+    {
+        const bool bLoopEnds = !Weapon.FireSound.empty() && bWeaponFiring && Weapon.bFireSoundLoops;
+        const bool bShotEnds = !Weapon.FireStartSound.empty() && bWeaponFiring && !bPlaying;
+        if (bLoopEnds || bShotEnds)
+        {
+            bWeaponStarting = bWeaponFiring = false;
+            Mixer.Stop(Mask);
+            Mixer.Play(Load(Weapon.FireEndSound), false, WeaponPriority, Mask);
+        }
+
+        return;
+    }
+
+    if (Weapon.FireStartSound.empty() || bWeaponFiring)
+    {
+        if (!Weapon.FireSound.empty() && (!bWeaponFiring || !bPlaying))
+        {
+            if (Rounds == 0.f)
+            {
+                Restart(Weapon.NoAmmoSound, false);
+                return;
+            }
+
+            bWeaponStarting = false;
+            bWeaponFiring = true;
+            Restart(Weapon.FireSound, Weapon.bFireSoundLoops);
+        }
+
+        return;
+    }
+
+    if (!bWeaponStarting)
+    {
+        if (Rounds != 0.f)
+        {
+            bWeaponFiring = false;
+            bWeaponStarting = true;
+        }
+
+        Restart(Rounds == 0.f ? Weapon.NoAmmoSound : Weapon.FireStartSound, false);
+        return;
+    }
+
+    if (!bPlaying)
+    {
+        bWeaponStarting = false;
+        bWeaponFiring = !Weapon.FireSound.empty();
+    }
+}
+
+void FAudio::PlayWeaponSwitch()
+{
+    bWeaponStarting = bWeaponFiring = false;
+    PlayOnChannel(Load("weapon-switch.wav"), PlayerWeaponChannel, false, true);
+}
+
+void FAudio::PlayDeath()
+{
+    PlayOnChannel(Load("aaaa.wav"), PlayerWeaponChannel, false, true);
+}
+
+void FAudio::PlayPickup()
+{
+    constexpr uint32_t ItemChannel = 3;
+    PlayOnChannel(Load("pickup-heavy.wav"), ItemChannel, false, true);
+}
+
+void FAudio::PlayMoney()
+{
+    constexpr uint32_t ItemChannel = 3;
+    PlayOnChannel(Load("money.wav"), ItemChannel, false, true);
+}
+
+void FAudio::PlayShieldAlarm()
+{
+    constexpr uint32_t ItemChannel = 3;
+    PlayOnChannel(Load("shield-alarm.wav"), ItemChannel, false, false);
 }

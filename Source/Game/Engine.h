@@ -523,6 +523,12 @@ struct FWeaponClass
     // Radians; LoadObjectClassLibrary converts the degrees in the file.
     float InitialSlope = 0.f;
     float SlopeStep = 0.f;
+    // The TYPE Weapon block's sounds (keywords 0x98 to 0x9c, block +0x34 to +0x40), file names in Data\Sound, and Fire-sound-loop (flag 0x10).
+    std::string FireSound;
+    std::string FireStartSound;
+    std::string FireEndSound;
+    std::string NoAmmoSound;
+    bool bFireSoundLoops = false;
 };
 
 // An ammo class: its movement and the TYPE Ammo block.
@@ -618,6 +624,8 @@ struct FCombat
     // Session +0x1028: the 1-based weapon slot in hand; a slot past the player's weapons leaves it unarmed. Each ADD Weapon keeps its own
     // trigger state, which PlayerSlotStates holds for the slots not in hand.
     size_t PlayerSlot = 1;
+    // Counts PlayerSelectWeapon's switches, each of which plays weapon-switch.wav.
+    uint32_t WeaponSwitches = 0;
     std::vector<FWeaponState> PlayerSlotStates;
     // The player class's TYPE Explosion blocks, set off when it dies.
     std::vector<FExplosionBlock> PlayerExplosions;
@@ -706,6 +714,8 @@ size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inven
 void ExplodePlayer(FCombat& Combat, FCollisionPoint Position, float Altitude);
 // FUN_00437740: takes the slot's weapon in hand and, with option flag 8, lists its weapon and ammo for 4 seconds.
 void SelectPlayerWeapon(FCombat& Combat, size_t Slot, const FPlayerInventory& Inventory, FMessages& Messages);
+// The stock that feeds the weapon in hand, if the player carries one.
+const FAmmoStock* PlayerSlotAmmo(const FCombat& Combat, const FPlayerInventory& Inventory);
 std::optional<FPickup> CreatePickup(const FLevel& Level, size_t ObjectIndex);
 FPlayerInventory CreateInventory(const FLevelObject& Player);
 // Collects every pickup the player's circle touches; returns how many were taken and marks them removed in the level.
