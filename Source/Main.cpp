@@ -491,11 +491,12 @@ void AnimateActors(std::vector<std::optional<FActorAnimation>>& Actors, const st
         Actor->ShadowAnimation = size_t(std::max(Object.ShadowIndex - 1, 0));
         Actor->ShadowFrame = uint32_t(Pose);
         Actor->BodyFrame = uint32_t(Pose);
-        if (Object.SubType == "cop")
+        // ObjectDraw draws a burner (kind 0x1a) like a cop: its lean animations exist only for the player, so it always shows the rot animation.
+        if (Object.SubType == "cop" || Object.SubType == "burner")
         {
             Actor->BodyAnimation = CopRotAnimation;
         }
-        else if (Object.SubType == "jeep" || Object.SubType == TankKind)
+        else if (Object.SubType == "jeep" || Object.SubType == "roller" || Object.SubType == TankKind)
         {
             Actor->BodyAnimation = (Object.SubType == TankKind ? 0 : Base) + size_t(Pose - 1);
             Actor->BodyFrame = 1;

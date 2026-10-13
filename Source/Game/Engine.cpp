@@ -891,8 +891,9 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
     const FLevelObject& Object = Level.Objects[Index];
     // Kinds come from the class Sub-type or the GAF folder (CreateObject at 00413800); pickups are collected instead of blocking.
     constexpr std::array<std::string_view, 8> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller", "lift", "gate" };
-    constexpr std::array<std::string_view, 6> ActorKinds = { "cop", "jeep", "tank", "walker", "spider", "heli" };
+    constexpr std::array<std::string_view, 8> ActorKinds = { "cop", "jeep", "tank", "walker", "spider", "heli", "burner", "roller" };
     constexpr std::string_view CopKind = "cop";
+    constexpr std::string_view BurnerKind = "burner";
     constexpr std::string_view TankKind = "tank";
     constexpr std::string_view WalkerKind = "walker";
     constexpr std::string_view SpiderKind = "spider";
@@ -963,7 +964,8 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
         Body.Class.bOverWater = Number(&Properties, "Over-water") != 0.f;
         Body.State.Speed = Movement->ThrustInitial;
         Body.State.Direction = Object.Direction < DirectionCount ? Object.Direction : 0;
-        const int ActorPoses = Object.SubType == CopKind ? PosesPerDirection : 1;
+        // PlayerAdvancePose (00438390) turns cops and burners through 48 poses, the other actors through 24.
+        const int ActorPoses = Object.SubType == CopKind || Object.SubType == BurnerKind ? PosesPerDirection : 1;
         Body.State.Pose = Body.State.TargetPose = Body.State.Direction * ActorPoses + 1;
         constexpr float TankCorrectionScale = 0.01f;
         FActor& Actor = Body.Actor.emplace(FActor{
@@ -4359,18 +4361,19 @@ void TurnActorBody(FPlayerState& State, const FMovementClass& Class, FActor& Act
         return;
     }
 
+    const int PosesPerStep = Actor.PosesPerDirection;
+    const int PoseCount = DirectionCount * PosesPerStep;
+    // A spider stops at the nearest of the four axis directions.
+    constexpr int SpiderStep = DirectionCount / 4;
+    const int Target = Actor.bSpider ? (Direction + SpiderStep / 2) / SpiderStep * SpiderStep % DirectionCount : Direction;
+    Actor.bTurnCommand = Actor.bTurnCommand || Target * PosesPerStep + 1 != State.Pose;
     State.TurnTimer -= Step;
     if (State.TurnTimer >= 1)
     {
         return;
     }
 
-    const int PosesPerStep = Actor.PosesPerDirection;
-    const int PoseCount = DirectionCount * PosesPerStep;
     State.TurnTimer = std::max(0, State.TurnTimer + Class.TurnTimeout);
-    // A spider stops at the nearest of the four axis directions.
-    constexpr int SpiderStep = DirectionCount / 4;
-    const int Target = Actor.bSpider ? (Direction + SpiderStep / 2) / SpiderStep * SpiderStep % DirectionCount : Direction;
     State.TargetPose = Target * PosesPerStep + 1;
     const int Previous = State.Pose;
     State.Pose = AdvancePose(State.Pose, State.TargetPose, PoseCount);
@@ -4384,6 +4387,56 @@ void TurnActorBody(FPlayerState& State, const FMovementClass& Class, FActor& Act
         Actor.TopPose = Rotate(Actor.TopPose);
         Actor.TopTargetPose = Rotate(Actor.TopTargetPose);
     }
+}
+
+// FixedIdleLookAround at 00444a40, which EngineUpdateObjects (004406e0) runs for a seeker or tracker that can turn on the spot and stands still without a turn or thrust command.
+// Waiting at its pose, it draws RandomRange(1, 150) from the Misc stream, and a 75 picks a new target pose from 1 to 24, whatever its pose count; then it turns one pose toward it per Turn-timeout.
+// ponytail: a two-piece body (FUN_00444b80) looks around with its top instead; tanks have no Can-turn-on-place, so it is left out.
+void LookAround(FObjectBody& Body, FRandom& Misc, const int32_t Step)
+{
+    const FActor& Actor = *Body.Actor;
+    FPlayerState& State = Body.State;
+    const uint32_t Target = Actor.Behaviour & BehaviourTargetMask;
+    const bool bIdle = Actor.Command.Thrust == EPlayerThrust::None && !Actor.bTurnCommand && State.Position.X == State.PreviousPosition.X &&
+        State.Position.Y == State.PreviousPosition.Y;
+    if (!Actor.bTurnOnPlace || Actor.bTwoPieces || (Target != BehaviourSeeker && Target != BehaviourTracker) || !bIdle || Body.Class.TurnTimeout <= 0)
+    {
+        return;
+    }
+
+    constexpr int LookChanceRange = 150;
+    constexpr int LookChance = 75;
+    constexpr int LookPoseCount = 24;
+    const int PoseCount = DirectionCount * Actor.PosesPerDirection;
+    if (State.Pose == State.TargetPose && Misc.Range(1, LookChanceRange) == LookChance)
+    {
+        State.TargetPose = Misc.Range(0, LookPoseCount - 1) + 1;
+    }
+
+    if (State.TurnTimer < 0)
+    {
+        State.Pose = AdvancePose(State.Pose, State.TargetPose, PoseCount);
+    }
+
+    // PlayerTurn at 00443990 with the turn FUN_00436520 derives from the target pose: one pose per Turn-timeout until it is reached.
+    State.TurnTimer -= Step;
+    if (State.TurnTimer < 1)
+    {
+        do
+        {
+            State.TurnTimer += Body.Class.TurnTimeout;
+            if (State.Pose != State.TargetPose)
+            {
+                State.Pose = AdvancePose(State.Pose, State.TargetPose, PoseCount);
+                if (State.Pose == State.TargetPose || State.TurnTimer >= 0)
+                {
+                    break;
+                }
+            }
+        } while (State.TurnTimer < 0);
+    }
+
+    State.Direction = (State.Pose - 1) / Actor.PosesPerDirection;
 }
 
 // SeekerTurnTop at 0042d150: in firing range, one top pose toward the target per Turret-turn-timeout.
@@ -4944,6 +4997,7 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
         // EngineUpdateObjects (004406e0) clears the command and the segment pull before the behaviour updates.
         FActor& Actor = *Body.Actor;
         Actor.Command = {};
+        Actor.bTurnCommand = false;
         Actor.bTrigger = false;
         if (Actor.Seeker)
         {
@@ -4977,6 +5031,11 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
         else
         {
             Actor.Command.Correction = { .X = Actor.Command.Correction.X * Actor.CorrectionScale, .Y = Actor.Command.Correction.Y * Actor.CorrectionScale };
+        }
+
+        if (Combat)
+        {
+            LookAround(Body, Combat->MiscRandom, Step);
         }
 
         // A pushed actor drifts without thrust until it slows down.

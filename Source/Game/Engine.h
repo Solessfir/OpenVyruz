@@ -347,6 +347,8 @@ struct FActor
     std::optional<FPatrol> Patrol;
     std::optional<FRandomMove> RandomMove;
     FPlayerCommand Command;
+    // Object +0x220, the turn command: a behaviour wanted the body to face another pose this step.
+    bool bTurnCommand = false;
     // Object flag 2: pull the trigger in this step's weapon update.
     bool bTrigger = false;
     // A heli's tilt counter (object +0x21c), which HeliSelectBodyPose (004334e0) moves toward its speed band in every object pass.
