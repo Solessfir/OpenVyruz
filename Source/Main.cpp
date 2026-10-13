@@ -671,7 +671,8 @@ struct FCarriedPlayer
 // One level of LoopLevels: runs until the window closes or the player takes a lift, and then returns the next level's path with the player
 // in Carried.
 std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive,
-    const std::string& LevelPath, const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried)
+    const std::string& LevelPath, const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried,
+    const std::span<const std::string> DebugLevels)
 {
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
     if (!Level)
@@ -793,6 +794,10 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
     // ponytail: frame rate in the window title until the HUD can draw text.
     uint32_t FpsWindowStart = ClockMilliseconds();
     uint32_t FpsFrames = 0;
+    // Development aid: N starts the next level, wrapping to the first after the last, always without a carried player.
+    bool bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
+    const auto Current = std::ranges::find(DebugLevels, LevelPath);
+    const size_t CurrentIndex = Current == DebugLevels.end() ? DebugLevels.size() : size_t(Current - DebugLevels.begin());
     while (!glfwWindowShouldClose(Window))
     {
         glfwPollEvents();
@@ -801,6 +806,17 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
         {
             glfwSetWindowShouldClose(Window, GLFW_TRUE);
         }
+
+        const bool bNextPressed = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS && !bNextKeyDown;
+        bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
+        if (bNextPressed && !DebugLevels.empty())
+        {
+            const size_t Next = (CurrentIndex + 1) % DebugLevels.size();
+            std::printf("Debug: level %zu of %zu\n", Next + 1, DebugLevels.size());
+            Carried.reset();
+            return std::optional(DebugLevels[Next]);
+        }
+
         uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
         while (RemainingMilliseconds != 0)
         {
@@ -1228,11 +1244,30 @@ int main(const int ArgCount, char** const Args)
     FRenderer Renderer;
     Renderer.Init(Window);
     std::optional<FCarriedPlayer> Carried;
+    // Every level in the archive by file name, so each tower's floors follow each other, for the debug next-level key.
+    std::vector<std::string> DebugLevels;
+    for (const std::string& Name : Archive.GetNames())
+    {
+        if (Name.ends_with(".3do"))
+        {
+            DebugLevels.push_back(Name.substr(0, Name.size() - 4));
+        }
+    }
+
+    const auto FileName = [](const std::string& Path) { return std::string_view(Path).substr(Path.rfind('\\') + 1); };
+    std::ranges::sort(DebugLevels, [&](const std::string& A, const std::string& B) { return std::pair(FileName(A), A) < std::pair(FileName(B), B); });
+    for (size_t Index = 0; Index < DebugLevels.size(); ++Index)
+    {
+        std::printf("Debug level %zu: %s\n", Index + 1, DebugLevels[Index].c_str());
+    }
+
     int Result = 0;
     for (std::string Path = LevelPath;;)
     {
-        const std::expected<std::optional<std::string>, std::string> Next = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Carried);
+        const std::expected<std::optional<std::string>, std::string> Next = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Carried, DebugLevels);
         Renderer.ReleaseSpriteSheets();
+        // --start places the player in the first level only.
+        Start.reset();
         if (!Next)
         {
             std::fprintf(stderr, "%s\n", Next.error().c_str());
