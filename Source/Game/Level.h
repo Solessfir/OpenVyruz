@@ -123,7 +123,12 @@ struct FLevel
     std::unordered_map<std::string, FLevelPropertyBlock> Classes;
     // Archive path of each class's GAF-name, for the classes whose GAF exists.
     std::unordered_map<std::string, std::string> ClassGafPaths;
+    // A fresh object of each drawable class, for objects created at run time such as dropped items.
+    std::unordered_map<std::string, FLevelObject> ClassObjects;
 };
+
+// Adds an object of the class (any case) at the position, as 3do::CreateObject (00413800) does at run time; returns its index.
+std::optional<size_t> CreateLevelObject(FLevel& Level, std::string_view ClassName, float X, float Y);
 
 // Loads <Zone>\<Name>.3DX/.3DI/.3DO/.3DP/.3DG plus the COMMON and zone .3DC class libraries, e.g. "UNDERGROUND\T1U1".
 // Mirrors VzLoadLevel (0041f7c0) -> LevelLoadFiles (00429710) and LevelLoad3dg (0041eae0).

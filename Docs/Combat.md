@@ -38,6 +38,24 @@ FX classes (`fx.3dc`) play one animation from their GAF. `UpdateAnimation` (`004
 
 A destroyed object with a `TYPE Explosion` block hands it to a new `Boom-fx` object at its position (`ObjectDestroy`, `00437d40`). Before half of the effect's animation has played, the blast waits up to 500 ms; then `AreaDamage` goes off once around the effect with the block's `damage` and `damage-zone`. Blasts destroy neighbouring objects, so explosions chain.
 
+## Drops
+
+`ObjectDestroy` (`00437d40`) calls `ObjectDropContents` (`00437f80`), which creates the destroyed object's contents with `3do::CreateObject` (`00413800`):
+
+- The class's `HAVE <class>` lines (class `+0xa4`), always.
+- Its `RANDOM <class> <chance> <out-of>` lines (class `+0xa8`, the numbers at object `+0x2b0` and `+0x2b4`), each when `RandomRange(1, out-of)` is at most the chance. A demo recording or replay skips these.
+- The objects it carries (object `+0x11c`).
+
+The class loader prepends each entry, so a list runs from the last declared line back to the first, and a derived class's lines come before its parent's. `Override-Objects` and `Override-Random-Objects` empty the lists.
+
+The first object lands on the wreck's truncated position. Each later one is placed from the previous offset `dx` and a row `dy`, both starting at 0, with the ring `r` starting at 32 and `left = -r` at the start of each list:
+
+- `dx = 0`: the object goes to `left`.
+- `dx < 0`: it goes to `-dx`, mirrored right.
+- `dx > 0`: `r` and `-left` grow by 10 and the row changes: 0 becomes -10, -10 becomes 10, and 10 becomes 0 with the object at `left`; otherwise it goes to `dx = 0`.
+
+The new objects are not activated, so they draw no bob phase. Gold boxes leave `Gold` (500 money), and many classes drop a `Surprise` power-up by chance.
+
 ## Turrets
 
 Turrets (`Behaviour = Fixed Seeker`, kind Turret) draw a rotating top from the 24 animations at `GAF-index` and a fixed base from animation 25. `SeekerUpdate` (`0042c5a0`) runs their `TYPE Seeker` block every step:
@@ -58,7 +76,7 @@ The port runs the original incremental route search from collision centre to col
 - The idle look-around of fixed objects (`FixedIdleLookAround`, `00444a40`), with its saved random state.
 - Drawing turret bases, the player's shove and absorption, the HUD and the player's death.
 - Automatic weapon switching when the stock is empty.
-- Water splashes, two-piece wrecks, surprise drops and sounds.
+- Water splashes, two-piece wrecks, what a surprise does when collected, and sounds.
 - Blasts hurting pickups.
 - Drawing visible ammo.
 

@@ -524,10 +524,9 @@ FSpriteScale FrameScale(const Gaf::FAnimationFrame& Frame, const float Stretch)
 }
 
 // shortcut: initial poses only, use the behaviour update for animation state changes and attachments.
-std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive& Archive, FRenderer& Renderer, const FLevel& Level)
+// The sprites of one object, appended unsorted.
+std::expected<void, std::string> AddObjectSprites(FObjectSprites& Result, FResourceArchive& Archive, FRenderer& Renderer, const FLevel& Level, const size_t ObjectIndex)
 {
-    FObjectSprites Result;
-    for (size_t ObjectIndex = 0; ObjectIndex < Level.Objects.size(); ++ObjectIndex)
     {
         const FLevelObject& Object = Level.Objects[ObjectIndex];
         for (const bool bShadow : { true, false })
@@ -609,6 +608,20 @@ std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive&
                 Top.Frame = GafAnimations[TopIndex].Frames[Index - size_t(Object.GafIndex - 1)];
                 Result.Sprites.push_back(Top);
             }
+        }
+    }
+
+    return {};
+}
+
+std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive& Archive, FRenderer& Renderer, const FLevel& Level)
+{
+    FObjectSprites Result;
+    for (size_t ObjectIndex = 0; ObjectIndex < Level.Objects.size(); ++ObjectIndex)
+    {
+        if (std::expected<void, std::string> Added = AddObjectSprites(Result, Archive, Renderer, Level, ObjectIndex); !Added)
+        {
+            return std::unexpected(Added.error());
         }
     }
 
@@ -928,6 +941,26 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                         std::fflush(stdout);
                     }
                 }
+                // Objects the step created, such as dropped items, join the pickups and the drawn objects.
+                if (Combat)
+                {
+                    for (const size_t Created : Combat->CreatedObjects)
+                    {
+                        if (std::optional<FPickup> Pickup = CreatePickup(*Level, Created))
+                        {
+                            Pickups.push_back(std::move(*Pickup));
+                        }
+
+                        if (std::expected<void, std::string> Added = AddObjectSprites(*Objects, Archive, Renderer, *Level, Created); !Added)
+                        {
+                            std::fprintf(stderr, "%s\n", Added.error().c_str());
+                        }
+                    }
+
+                    Combat->CreatedObjects.clear();
+                    ActorAnimations.resize(Level->Objects.size());
+                }
+
                 if (CollectPickups(*Player, *PlayerClass, Inventory, Pickups, *Level, Messages) != 0)
                 {
                     std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);

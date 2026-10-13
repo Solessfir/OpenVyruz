@@ -19,6 +19,7 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <sstream>
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
@@ -1331,17 +1332,29 @@ std::vector<FPickup> CreatePickups(const FLevel& Level)
     std::vector<FPickup> Pickups;
     for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
     {
-        const FLevelObject& Object = Level.Objects[Index];
-        const FLevelPropertyBlock* const Item = IsPickup(Object) ? FindItemBlock(Object) : nullptr;
-        if (!Item)
+        if (std::optional<FPickup> Pickup = CreatePickup(Level, Index))
         {
-            continue;
+            Pickups.push_back(std::move(*Pickup));
         }
+    }
 
+    return Pickups;
+}
+
+std::optional<FPickup> CreatePickup(const FLevel& Level, const size_t Index)
+{
+    const FLevelObject& Object = Level.Objects[Index];
+    const FLevelPropertyBlock* const Item = IsPickup(Object) ? FindItemBlock(Object) : nullptr;
+    if (!Item)
+    {
+        return std::nullopt;
+    }
+
+    {
         const auto Number = [Item](const std::string_view Field) { return ParseLevelFloat(Item->Find(Field)).value_or(0.f); };
         const FLevelPropertyBlock* const Key = FindTypeBlock(Object.Properties, "Key");
         const auto KeyNumber = [Key](const std::string_view Field) { return int(ParseLevelFloat(Key->Find(Field)).value_or(0.f)); };
-        Pickups.push_back({
+        return FPickup{
             .ObjectIndex = Index,
             .Circle = { .Center = CollisionFromWorld({ .X = Object.X, .Y = Object.Y }), .Radius = Object.BoundingBoxSize > 0 ? float(Object.BoundingBoxSize) : DefaultCollisionRadius },
             .AddEnergy = Number("Add-NRJ"),
@@ -1352,10 +1365,8 @@ std::vector<FPickup> CreatePickups(const FLevel& Level)
             .Key = Key ? std::optional(FCarriedKey{ .Id = KeyNumber("Id"), .bCode = KeyNumber("Is-code") != 0, .PartId = KeyNumber("Code-part-id"),
                                                     .PartCount = KeyNumber("Code-part-count") })
                        : std::nullopt,
-        });
+        };
     }
-
-    return Pickups;
 }
 
 FPlayerInventory CreateInventory(const FLevelObject& Player)
@@ -3708,6 +3719,112 @@ void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrai
     }
 }
 
+namespace
+{
+struct FDrop
+{
+    std::string ClassName;
+    float X = 0.f;
+    float Y = 0.f;
+};
+
+// ObjectDropContents at 00437f80: a destroyed object leaves its class's HAVE objects, then each RANDOM one whose draw RandomRange(1, Out-of)
+// does not exceed its Chance. The class loader prepends both lists, so the last declared, and the derived class's before its parent's, come
+// first. The first object lands on the wreck and the others around it, alternately left and right and then in rows 10 pixels apart.
+// ponytail: objects carried at object +0x11c are not dropped, and a demo recording or replay would skip the RANDOM draws.
+void DropContents(FRandom& Random, const FLevelObject& Object, std::vector<FDrop>& Drops)
+{
+    constexpr int32_t FirstRing = 0x20;
+    constexpr int32_t RingStep = 10;
+    struct FEntry
+    {
+        std::string ClassName;
+        int Chance = 0;
+        int OutOf = 0;
+    };
+    std::vector<FEntry> Have;
+    std::vector<FEntry> Chances;
+    for (const auto& [Key, Value] : Object.Properties.Fields | std::views::reverse)
+    {
+        std::istringstream Words{ std::string(Key) };
+        std::string Directive;
+        FEntry Entry;
+        Words >> Directive >> Entry.ClassName;
+        if (ToLowerName(Directive) == "have" && !Entry.ClassName.empty())
+        {
+            Have.push_back(std::move(Entry));
+        }
+        else if (ToLowerName(Directive) == "random" && Words >> Entry.Chance >> Entry.OutOf)
+        {
+            Entry.Chance = std::abs(Entry.Chance);
+            Entry.OutOf = std::abs(Entry.OutOf);
+            Chances.push_back(std::move(Entry));
+        }
+    }
+
+    const int32_t BaseX = TruncateLow(Object.X);
+    const int32_t BaseY = TruncateLow(Object.Y);
+    bool bFirst = true;
+    int32_t Ring = FirstRing;
+    int32_t Previous = 0;
+    int32_t RowY = 0;
+    const auto Place = [&](int32_t& Left, const std::string& ClassName)
+    {
+        int32_t OffsetX = 0;
+        if (bFirst)
+        {
+            bFirst = false;
+        }
+        else
+        {
+            OffsetX = Left;
+            if (Previous < 0)
+            {
+                OffsetX = -Previous;
+            }
+            else if (Previous > 0)
+            {
+                Ring += RingStep;
+                Left -= RingStep;
+                OffsetX = 0;
+                if (RowY == 0)
+                {
+                    RowY = -RingStep;
+                }
+                else if (RowY < 0)
+                {
+                    RowY = -RowY;
+                }
+                else
+                {
+                    RowY = 0;
+                    OffsetX = Left;
+                }
+            }
+
+            Previous = OffsetX;
+        }
+
+        Drops.push_back({ .ClassName = ClassName, .X = float(BaseX + OffsetX), .Y = float(BaseY + RowY) });
+    };
+
+    int32_t Left = -Ring;
+    for (const FEntry& Entry : Have)
+    {
+        Place(Left, Entry.ClassName);
+    }
+
+    Left = -Ring;
+    for (const FEntry& Entry : Chances)
+    {
+        if (Random.Range(1, Entry.OutOf) <= Entry.Chance)
+        {
+            Place(Left, Entry.ClassName);
+        }
+    }
+}
+}
+
 void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
     const FPlayerTarget& Player, FMessages& Messages)
 {
@@ -3868,6 +3985,8 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
     // Session +0x2094 counts the hunters down as they die; the last one announces the empty level.
     const auto IsHunter = [](const FObjectBody& Body) { return Body.Turret || (Body.Actor && Body.Actor->Seeker); };
     int Hunters = int(std::ranges::count_if(Bodies, [&](const FObjectBody& Body) { return IsHunter(Body) && !Level.Objects[Body.ObjectIndex].bRemoved; }));
+    // The dropped objects join the level once the destroyed ones are gone, so no object reference outlives the list growing.
+    std::vector<FDrop> Drops;
     std::erase_if(Bodies, [&](const FObjectBody& Body)
     {
         // Objects die in their next update once damage has taken their energy to zero.
@@ -3878,6 +3997,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
         FLevelObject& Object = Level.Objects[Body.ObjectIndex];
         Object.bRemoved = true;
+        DropContents(Combat.Random, Object, Drops);
         if (IsHunter(Body) && --Hunters == 0)
         {
             // The player's name at session +0x2754 starts as Jack. ponytail: the 100000 bonus is only printed here.
@@ -3941,6 +4061,14 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
         return true;
     });
+
+    for (const FDrop& Drop : Drops)
+    {
+        if (const std::optional<size_t> Index = CreateLevelObject(Level, Drop.ClassName, Drop.X, Drop.Y))
+        {
+            Combat.CreatedObjects.push_back(*Index);
+        }
+    }
 }
 
 std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive)
@@ -4190,6 +4318,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     size_t CopShots = 0;
     std::set<std::string> CopNames;
     size_t Destroyed = 0;
+    size_t Dropped = 0;
     size_t Effects = 0;
     // A direct cardinal route locks, a diagonal route is rejected, and an overlapping target aborts; each attempt refills the scan timer.
     const std::array<FCollisionPoint, 3> SearchTargets = {
@@ -4372,6 +4501,12 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         ++Levels;
         Shots += LevelShots;
         Destroyed += BodyCount - Bodies.size();
+        Dropped += Combat->CreatedObjects.size();
+    }
+
+    if (Dropped == 0)
+    {
+        return std::unexpected("no destroyed object dropped anything");
     }
 
     if (Duels != 0 && DuelShots == 0)
@@ -4384,7 +4519,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         return std::unexpected(std::format("no cop fired in {} duels", CopDuels));
     }
 
-    return std::format("{} levels, {} player shots, {} turret shots while spinning, {} objects destroyed, at least {} effects; {} turret duels: {} shots, {:.0f} damage taken; "
+    return std::format("{} levels, {} player shots, {} turret shots while spinning, {} objects destroyed, {} objects dropped, at least {} effects; {} turret duels: {} shots, {:.0f} damage taken; "
         "{} cop duels ({} classes): {} shots",
-        Levels, Shots, TurretShots, Destroyed, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots);
+        Levels, Shots, TurretShots, Destroyed, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots);
 }

@@ -502,6 +502,8 @@ struct FCombat
     std::vector<FObjectBob> Bobs;
     // The game clock in milliseconds; never zero, since a zero last-shot time means no shot yet.
     uint32_t Clock = 1;
+    // Level objects the steps created, such as dropped items, for the window and the pickups to take on.
+    std::vector<size_t> CreatedObjects;
 };
 
 // The player as a target of shots and blasts.
@@ -541,6 +543,7 @@ FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class
 // Every collidable object except the player; classes without movement properties keep zeroed fields like the original class record.
 std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level);
 std::vector<FPickup> CreatePickups(const FLevel& Level);
+std::optional<FPickup> CreatePickup(const FLevel& Level, size_t ObjectIndex);
 FPlayerInventory CreateInventory(const FLevelObject& Player);
 // Collects every pickup the player's circle touches; returns how many were taken and marks them removed in the level.
 size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level,

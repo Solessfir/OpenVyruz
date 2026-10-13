@@ -752,6 +752,75 @@ std::string_view FLevelPropertyBlock::Find(const std::string_view Field) const
     return {};
 }
 
+namespace
+{
+// The rendering fields of an object of the class whose resolved properties are given; the position stays at zero.
+std::expected<FLevelObject, std::string> BuildObject(const std::vector<std::string>& ArchiveNames, const std::string_view Zone, const std::string& ClassName,
+    FBlock Properties)
+{
+    const std::string_view AltitudeText = Properties.Find("Altitude");
+    const std::optional<float> Altitude = AltitudeText.empty() ? std::optional<float>(0.f) : ParseFloat(AltitudeText);
+    const auto IntegerProperty = [&](const std::string_view Field)
+    {
+        const std::string_view Value = Properties.Find(Field);
+        return Value.empty() ? std::optional<int>(0) : ParseInt(Value);
+    };
+    const std::optional<int> GafIndex = ParseAnimationIndex(Properties.Find("GAF-index"));
+    const std::optional<int> ShadowIndex = ParseAnimationIndex(Properties.Find("Shadow-index"));
+    const std::optional<int> BoundingBoxSize = IntegerProperty("Bounding-box-size");
+    const std::optional<int> InGround = IntegerProperty("In-ground");
+    const std::optional<int> ZShadow = IntegerProperty("Z-shadow");
+    const std::optional<int> Direction = ParseDirection(Properties.Find("Dir"));
+    if (!Altitude || !GafIndex || !ShadowIndex || !BoundingBoxSize || *BoundingBoxSize < 0 || !InGround || !ZShadow || !Direction)
+    {
+        return std::unexpected(std::format("invalid rendering properties for '{}'", ClassName));
+    }
+
+    const std::expected<std::string, std::string> GafPath = ResolveGafPath(ArchiveNames, Zone, Properties.Find("GAF-name"));
+    const std::expected<std::string, std::string> ShadowGafPath = ResolveGafPath(ArchiveNames, Zone, Properties.Find("Shadow-GAF"));
+    if (!GafPath || !ShadowGafPath)
+    {
+        return std::unexpected(std::format("class '{}': {}", ClassName, !GafPath ? GafPath.error() : ShadowGafPath.error()));
+    }
+
+    const std::string_view SubTypeText = Properties.Find("Sub-type");
+    const std::string SubType = ToLower(SubTypeText.empty() ? ParentDirectory(Properties.Find("GAF-name")) : SubTypeText);
+    // AnimInitializeGraphics at 00417b30 allocates 24 consecutive directional animations for these subtypes.
+    static constexpr std::string_view DirectionalTypes[] = { "ammo", "cop", "vyruz", "walker", "burner", "jeep", "roller", "turret", "tank" };
+    return FLevelObject{
+        .ClassName = ClassName,
+        .Altitude = *Altitude,
+        .BoundingBoxSize = *BoundingBoxSize,
+        .Behaviour = std::string(Properties.Find("Behaviour")),
+        .GafPath = *GafPath,
+        .ShadowGafPath = *ShadowGafPath,
+        .GafIndex = *GafIndex,
+        .ShadowIndex = *ShadowIndex,
+        .Direction = *Direction,
+        .bInGround = *InGround != 0,
+        .bZShadow = *ZShadow != 0,
+        .bDirectional = std::ranges::find(DirectionalTypes, SubType) != std::end(DirectionalTypes),
+        .SubType = SubType,
+        .Properties = std::move(Properties),
+    };
+}
+}
+
+std::optional<size_t> CreateLevelObject(FLevel& Level, const std::string_view ClassName, const float X, const float Y)
+{
+    const auto Template = Level.ClassObjects.find(ToLower(ClassName));
+    if (Template == Level.ClassObjects.end())
+    {
+        return std::nullopt;
+    }
+
+    FLevelObject Object = Template->second;
+    Object.X = X;
+    Object.Y = Y;
+    Level.Objects.push_back(std::move(Object));
+    return Level.Objects.size() - 1;
+}
+
 std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const std::string_view LevelPath)
 {
     static const bool bClassesChecked = CheckLevelProperties();
@@ -856,54 +925,15 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
         FBlock Properties = Class->second.Resolved;
         MergeProperties(Properties, Block, true);
         const std::optional<std::pair<float, float>> Position = ParsePosition(Properties.Find("Position"));
-        const std::string_view AltitudeText = Properties.Find("Altitude");
-        const std::optional<float> Altitude = AltitudeText.empty() ? std::optional<float>(0.f) : ParseFloat(AltitudeText);
-        const auto IntegerProperty = [&](const std::string_view Field)
+        std::expected<FLevelObject, std::string> Object = BuildObject(ArchiveNames, Zone, ClassName, std::move(Properties));
+        if (!Position || !Object)
         {
-            const std::string_view Value = Properties.Find(Field);
-            return Value.empty() ? std::optional<int>(0) : ParseInt(Value);
-        };
-        const std::optional<int> GafIndex = ParseAnimationIndex(Properties.Find("GAF-index"));
-        const std::optional<int> ShadowIndex = ParseAnimationIndex(Properties.Find("Shadow-index"));
-        const std::optional<int> BoundingBoxSize = IntegerProperty("Bounding-box-size");
-        const std::optional<int> InGround = IntegerProperty("In-ground");
-        const std::optional<int> ZShadow = IntegerProperty("Z-shadow");
-        const std::optional<int> Direction = ParseDirection(Properties.Find("Dir"));
-        if (!Position || !Altitude || !GafIndex || !ShadowIndex ||
-            !BoundingBoxSize || *BoundingBoxSize < 0 || !InGround || !ZShadow || !Direction)
-        {
-            return std::unexpected(std::format("{}.3do: invalid rendering properties for '{}'", Base, ClassName));
+            return std::unexpected(std::format("{}.3do: {}", Base, Object ? std::format("invalid position for '{}'", ClassName) : Object.error()));
         }
 
-        const std::expected<std::string, std::string> GafPath = ResolveGafPath(ArchiveNames, Zone, Properties.Find("GAF-name"));
-        const std::expected<std::string, std::string> ShadowGafPath = ResolveGafPath(ArchiveNames, Zone, Properties.Find("Shadow-GAF"));
-        if (!GafPath || !ShadowGafPath)
-        {
-            return std::unexpected(std::format("class '{}': {}", ClassName, !GafPath ? GafPath.error() : ShadowGafPath.error()));
-        }
-
-        const std::string_view SubTypeText = Properties.Find("Sub-type");
-        const std::string SubType = ToLower(SubTypeText.empty() ? ParentDirectory(Properties.Find("GAF-name")) : SubTypeText);
-        // AnimInitializeGraphics at 00417b30 allocates 24 consecutive directional animations for these subtypes.
-        static constexpr std::string_view DirectionalTypes[] = { "ammo", "cop", "vyruz", "walker", "burner", "jeep", "roller", "turret", "tank" };
-        Level.Objects.push_back({
-            .ClassName = ClassName,
-            .X = Position->first,
-            .Y = Position->second,
-            .Altitude = *Altitude,
-            .BoundingBoxSize = *BoundingBoxSize,
-            .Behaviour = std::string(Properties.Find("Behaviour")),
-            .GafPath = *GafPath,
-            .ShadowGafPath = *ShadowGafPath,
-            .GafIndex = *GafIndex,
-            .ShadowIndex = *ShadowIndex,
-            .Direction = *Direction,
-            .bInGround = *InGround != 0,
-            .bZShadow = *ZShadow != 0,
-            .bDirectional = std::ranges::find(DirectionalTypes, SubType) != std::end(DirectionalTypes),
-            .SubType = SubType,
-            .Properties = std::move(Properties),
-        });
+        Object->X = Position->first;
+        Object->Y = Position->second;
+        Level.Objects.push_back(std::move(*Object));
     }
 
     for (auto& [ClassName, Class] : Classes)
@@ -911,6 +941,12 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
         if (const std::expected<std::string, std::string> GafPath = ResolveGafPath(ArchiveNames, Zone, Class.Resolved.Find("GAF-name")); GafPath && !GafPath->empty())
         {
             Level.ClassGafPaths.emplace(ClassName, *GafPath);
+        }
+
+        // Classes that cannot be drawn, such as abstract bases, get no template.
+        if (std::expected<FLevelObject, std::string> Template = BuildObject(ArchiveNames, Zone, std::string(Class.Resolved.Find("Name")), Class.Resolved); Template)
+        {
+            Level.ClassObjects.emplace(ClassName, std::move(*Template));
         }
 
         Level.Classes.emplace(ClassName, std::move(Class.Resolved));
