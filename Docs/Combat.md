@@ -35,7 +35,7 @@ While fire is held, `ReadPlayerInput` calls `WeaponRaiseSlope` (`0042c210`): the
 
 Ammo objects with `Behaviour = Straight` thrust forward through `ObjectComputeDisplacement` like any object. A `damage-after` timer detonates the shot when it runs out. Objects other than the player are removed once they leave the level.
 
-On contact `AmmoHit` (`0043d7d0`) moves the shot to the contact point and calls `AreaDamage` (`0043cb20`) around its last committed collision centre. `AmmoImpact` (`0043d350`) then pushes the struck object by `40 / Weight` along the shot's facing and damages it by `damage`, scaled by a matching `TYPE Absorption` coefficient (`AbsorptionScale`, `0043d780`).
+On contact `AmmoHit` (`0043d7d0`) moves the shot to the contact point and calls `AreaDamage` (`0043cb20`) around its last committed collision centre. `AmmoImpact` (`0043d350`) then pushes the struck object by `40 / Weight` along the shot's facing and damages it by `damage`, scaled by a matching `TYPE Absorption` coefficient (`AbsorptionScale`, `0043d780`). The player is shoved and absorbs the same way, with its class's `Weight` and absorption blocks.
 
 The `TYPE Ammo` attribute's flags decide what a contact does: `On-hit` (flag 1) bursts the shot on anything, `On-object-hit` (flag 2) only on objects. A shot with `On-object-hit` but not `On-hit` (grenades, saws, pulsars) that meets the terrain is put back and bounces (`ObjectBounce`, `004367d0`), then turns to its new heading. A hard knock, more than 2 units of travel that step, takes a tenth of its speed times its weight from its own energy (unless it is `Indestructible`), and a shot emptied that way bursts where it is. `--verify-game` throws grenades all round from each level's start and requires some to bounce and fly on.
 
@@ -112,7 +112,6 @@ The port runs the original incremental route search from collision centre to col
 - The shield reset value (a class field at `+0x6c`).
 - The spark a bouncing shot throws off (`FUN_0043d140`, one of four `Bounce-fx` classes by side).
 - The idle look-around of two-piece bodies, which turn their top (`FUN_00444b80`).
-- The player's shove and absorption.
 - Water splashes, what a surprise does when collected, the generator's opening animation, the `CREATE` trails and smoke (they draw from their own random stream), and sounds.
 - Blasts hurting pickups.
 - Drawing visible ammo.

@@ -976,6 +976,24 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
     return HitBody;
 }
 
+namespace
+{
+// The TYPE Absorption blocks: the coefficient that scales a matching ammo class's damage.
+std::vector<FAbsorption> ReadAbsorptions(const FLevelPropertyBlock& Properties)
+{
+    std::vector<FAbsorption> Result;
+    for (const FLevelPropertyBlock& Child : Properties.Children)
+    {
+        if (Child.Kind == "TYPE" && Child.Name == "Absorption")
+        {
+            Result.push_back({ .AmmoClass = ToLowerName(Child.Find("Class-name")), .Coeff = ParseLevelFloat(Child.Find("Coeff")).value_or(0.f) });
+        }
+    }
+
+    return Result;
+}
+}
+
 std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t Index)
 {
     const FLevelObject& Object = Level.Objects[Index];
@@ -1024,13 +1042,7 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
         .bInvisible = Number(&Properties, "Invisible") != 0.f,
         .bVisibleWhenFiring = Number(&Properties, "Visible-when-firing") != 0.f,
     };
-    for (const FLevelPropertyBlock& Child : Properties.Children)
-    {
-        if (Child.Kind == "TYPE" && Child.Name == "Absorption")
-        {
-            Body.Absorptions.push_back({ .AmmoClass = ToLowerName(Child.Find("Class-name")), .Coeff = Number(&Child, "Coeff") });
-        }
-    }
+    Body.Absorptions = ReadAbsorptions(Properties);
 
     for (const FLevelPropertyBlock& Child : Properties.Children)
     {
@@ -1793,6 +1805,8 @@ FPlayerInventory CreateInventory(const FLevelObject& Player)
         .EnergyMax = Value("Energy", "Max"),
         .Shield = Value("Shield", "Initial"),
         .ShieldMax = Value("Shield", "Max"),
+        .Absorptions = ReadAbsorptions(Properties),
+        .Weight = Value("Weight", "Initial") != 0.f ? Value("Weight", "Initial") : 1.f,
     };
 
     // .3DO instances can override the starting Energy and Shield with plain fields.
@@ -5485,13 +5499,19 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
                 ApplyDamage(*Target, Absorption == Target->Absorptions.end() ? Ammo.Damage : float(double(Ammo.Damage) * double(Absorption->Coeff)));
             }
 
-            // ponytail: the player's own shove and absorption blocks are not ported.
+            // The player is shoved and its absorptions scale the damage like any object's.
             if (bPlayer)
             {
+                constexpr double ImpactPush = 40.;
+                const FCollisionPoint Facing = FacingVector(Shot.State.Direction);
+                Player.Inventory.Shove.X = float(double(Facing.X) * ImpactPush / double(Player.Inventory.Weight) + double(Player.Inventory.Shove.X));
+                Player.Inventory.Shove.Y = float(double(Facing.Y) * ImpactPush / double(Player.Inventory.Weight) + double(Player.Inventory.Shove.Y));
                 // ApplyDamage spares an invisible player and an invulnerable object (flags 8 and 0x800000).
                 if (!Player.State.bInvisible && !Player.Inventory.Surprises.bInvulnerable)
                 {
-                    ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield, Ammo.Damage);
+                    const auto Absorption = std::ranges::find(Player.Inventory.Absorptions, Ammo.Name, &FAbsorption::AmmoClass);
+                    ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield,
+                        Absorption == Player.Inventory.Absorptions.end() ? Ammo.Damage : float(double(Ammo.Damage) * double(Absorption->Coeff)));
                 }
             }
 

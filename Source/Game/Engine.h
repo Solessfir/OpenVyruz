@@ -480,6 +480,11 @@ struct FPlayerInventory
     int ShotsHit = 0;
     int ShotsMissed = 0;
     FSurpriseState Surprises;
+    // The player class's TYPE Absorption blocks and Weight, which AmmoImpact (0043d350) uses on the player as on any object.
+    std::vector<FAbsorption> Absorptions;
+    float Weight = 1.f;
+    // The shoves of this step's hits, for the caller to add to the player's velocity.
+    FCollisionPoint Shove;
 };
 
 // TYPE Gate and TYPE Lift flags (attribute +0x10) as LoadObjectClassLibrary packs them.

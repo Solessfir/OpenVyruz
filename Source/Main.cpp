@@ -1930,6 +1930,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
     const FSpriteSheet ColorSheet = Renderer.CreateSpriteSheet(RadarPixels);
     FPlayerInventory Inventory = Carried ? Carried->Inventory : PlayerObject != Level->Objects.end() ? CreateInventory(*PlayerObject) : FPlayerInventory{};
+    // A carried or saved inventory takes the class's absorptions and weight from this level's player.
+    if (Carried && PlayerObject != Level->Objects.end())
+    {
+        FPlayerInventory Class = CreateInventory(*PlayerObject);
+        Inventory.Absorptions = std::move(Class.Absorptions);
+        Inventory.Weight = Class.Weight;
+    }
     if (PlayerObject != Level->Objects.end())
     {
         std::expected<FMovementClass, std::string> Class = ReadMovementClass(*PlayerObject);
@@ -2613,6 +2620,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, *Player);
                     StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies,
                         { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
+                    Player->Velocity = { .X = Player->Velocity.X + Inventory.Shove.X, .Y = Player->Velocity.Y + Inventory.Shove.Y };
+                    Inventory.Shove = {};
                     if (Inventory.Money != MoneyBefore || Inventory.Energy != EnergyBefore || Inventory.Shield != ShieldBefore)
                     {
                         std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
