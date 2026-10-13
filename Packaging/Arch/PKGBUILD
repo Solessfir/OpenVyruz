@@ -1,0 +1,54 @@
+# Maintainer: Constantine Romakhov <34831419+Solessfir@users.noreply.github.com>
+pkgname=openvyruz-git
+pkgver=r0
+pkgrel=1
+pkgdesc='Native reimplementation of Vyruz: Destruction of the Untel Empire (needs the original vz-data.rsc)'
+arch=('x86_64')
+url='https://github.com/Solessfir/OpenVyruz'
+license=('MIT')
+depends=('gcc-libs' 'glibc' 'vulkan-icd-loader' 'vulkan-driver' 'wayland' 'libxkbcommon' 'libx11' 'libxrandr' 'libxinerama' 'libxcursor' 'libxi')
+makedepends=('git' 'vulkan-headers' 'shader-slang')
+optdepends=('libpulse: sound through PulseAudio or PipeWire'
+            'alsa-lib: sound through ALSA')
+provides=('openvyruz')
+conflicts=('openvyruz')
+options=('!debug')
+_premake=premake-5.0.0-beta8-linux.tar.gz
+source=('git+https://github.com/Solessfir/OpenVyruz.git'
+        'git+https://github.com/glfw/glfw.git'
+        "https://github.com/premake/premake-core/releases/download/v5.0.0-beta8/${_premake}")
+noextract=("${_premake}")
+sha256sums=('SKIP'
+            'SKIP'
+            '63edd3e7461eebdd45b500a3c7e8ad4e7a67d68f230010f9a97cbb71b4ec59c8')
+
+pkgver() {
+    cd OpenVyruz
+    printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+    cd OpenVyruz
+    git submodule init
+    git config submodule.External/glfw.url "${srcdir}/glfw"
+    git -c protocol.file.allow=always submodule update
+
+    # GenerateProjectFiles.sh downloads premake when it is missing; makepkg fetched it already.
+    mkdir -p External/Premake/Linux
+    tar -xzf "${srcdir}/${_premake}" -C External/Premake/Linux
+    chmod +x External/Premake/Linux/premake5
+}
+
+build() {
+    cd OpenVyruz
+    ./GenerateProjectFiles.sh gmake
+    make config=shipping Vyruz
+}
+
+package() {
+    cd OpenVyruz
+    install -Dm755 Binaries/linux/Shipping/Vyruz "${pkgdir}/usr/bin/openvyruz"
+    install -Dm644 Resources/Linux/openvyruz.desktop "${pkgdir}/usr/share/applications/openvyruz.desktop"
+    install -Dm644 Resources/Linux/openvyruz.png "${pkgdir}/usr/share/icons/hicolor/256x256/apps/openvyruz.png"
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

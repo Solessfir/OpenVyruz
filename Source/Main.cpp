@@ -3250,6 +3250,8 @@ int main(const int ArgCount, char** const Args)
         }
     }
 
+    const bool bDataPathGiven = DataPath.has_value();
+    const std::filesystem::path GameFolderFile = UserDataDirectory() / "game-folder.txt";
     if (!DataPath)
     {
         const auto Directory = ExecutableDirectory();
@@ -3260,6 +3262,15 @@ int main(const int ArgCount, char** const Args)
         }
 
         DataPath = *Directory / "vz-data.rsc";
+        // An installed binary (such as /usr/bin from the Arch package) has no data beside it, so it uses the game folder last given on the command line.
+        if (std::error_code Error; !std::filesystem::exists(*DataPath, Error))
+        {
+            std::string Remembered;
+            if (std::ifstream File(GameFolderFile); std::getline(File, Remembered) && !Remembered.empty())
+            {
+                DataPath = std::filesystem::path(std::u8string(Remembered.begin(), Remembered.end()));
+            }
+        }
     }
     else
     {
@@ -3273,8 +3284,16 @@ int main(const int ArgCount, char** const Args)
     FResourceArchive Archive;
     if (!Archive.Open(*DataPath))
     {
-        std::fprintf(stderr, "Cannot open %s\n", DataPath->string().c_str());
+        std::fprintf(stderr, "Cannot open %s. Pass the game folder holding vz-data.rsc once; later runs remember it.\n", DataPath->string().c_str());
         return 1;
+    }
+
+    if (bDataPathGiven)
+    {
+        std::error_code Error;
+        std::filesystem::create_directories(GameFolderFile.parent_path(), Error);
+        const std::u8string Absolute = std::filesystem::absolute(*DataPath, Error).u8string();
+        std::ofstream(GameFolderFile) << std::string(Absolute.begin(), Absolute.end()) << '\n';
     }
     const std::optional<std::vector<uint8_t>> Config = Archive.Read("VZCONF.TXT");
     if (!Config || Config->empty() || (*Config)[0] != '#')

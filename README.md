@@ -46,7 +46,13 @@ make config=development Vyruz -j"$(nproc)"
 
 The executable is written to `Binaries/linux/Development/Vyruz`.
 
-The window's app id is `openvyruz`, so the compositor shows the icon once the desktop entry and icon are installed:
+On Arch, `Packaging/Arch/PKGBUILD` builds the `openvyruz-git` package from the latest `main`: it installs `/usr/bin/openvyruz` with its desktop entry and icon. Run `openvyruz <path to vz-data.rsc>` (the folder holding `vz-data.rsc`) once so it remembers the game folder.
+
+```bash
+cd Packaging/Arch && makepkg -si
+```
+
+Otherwise, the window's app id is `openvyruz`, so the compositor shows the icon once the desktop entry and icon are installed:
 
 ```bash
 install -Dm644 Resources/Linux/openvyruz.desktop ~/.local/share/applications/openvyruz.desktop
@@ -57,7 +63,7 @@ From Windows, `wsl -d archlinux -- bash Scripts/WslCheck.sh [gcc|clang]` builds 
 
 ## Running
 
-The game needs the original `vz-data.rsc`, which is not included. It looks beside the executable by default. Pass an archive file or the directory containing it to use another location.
+The game needs the original `vz-data.rsc`, which is not included. Pass an archive file or the directory containing it; the port remembers it in `game-folder.txt` in its user data folder (`%APPDATA%\OpenVyruz` or `$XDG_DATA_HOME/OpenVyruz`), and a later run without one uses `vz-data.rsc` beside the executable if there is one, else the remembered folder (which is how the installed Arch package finds it).
 
 ```powershell
 .\Binaries\windows\Development\Vyruz.exe <path to vz-data.rsc>
@@ -88,6 +94,7 @@ Without a verify flag the window shows a level's map and placed objects, and the
 | `Docs\PathSearch.md` | Incremental obstacle-corner route search and the fixed-seeker caller |
 | `Docs\Audio.md` | The channel mixer, music, menu, motor and animation sounds |
 | `Resources\` | The app icon: the Windows `.ico` and `.rc` linked into the exe, and the Linux desktop entry and icon |
+| `Packaging\Arch\` | The Arch `PKGBUILD` |
 | `External\` | Third-party code: GLFW as a submodule, miniaudio vendored |
 
 ## Original Module Map
