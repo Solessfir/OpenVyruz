@@ -2690,6 +2690,7 @@ std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Lev
         });
     }
 
+    const FSoundEmitter Channels = MakeSoundEmitter(Class->Find("Sample-channel-range"), Class->Find("Sample-channel-priority"), 0.f, 0.f, 0.f);
     Combat.Weapons.push_back({
         .Name = LowerName,
         .Ammo = AmmoName,
@@ -2708,6 +2709,8 @@ std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Lev
         .FireEndSound = ToLowerName(Block->Find("Fire-end-sound")),
         .NoAmmoSound = ToLowerName(Block->Find("No-ammo-sound")),
         .bFireSoundLoops = ClassNumber(*Block, "Fire-sound-loop") != 0.f,
+        .SoundChannelMask = Channels.ChannelMask,
+        .SoundPriority = Channels.Priority,
     });
     return Combat.Weapons.size() - 1;
 }
@@ -2801,6 +2804,7 @@ bool WeaponReady(const FCombat& Combat, const FWeaponState& State)
 // WeaponFire at 00443bd0.
 void FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, FAmmoStock* const Stock)
 {
+    State.bSoundTrigger = true;
     if (State.LastFireTime == 0)
     {
         State.LastFireTime = Combat.Clock;

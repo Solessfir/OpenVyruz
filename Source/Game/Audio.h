@@ -140,6 +140,11 @@ public:
     // whenever it ends. Letting go plays Fire-end-sound. An empty stock plays No-ammo-sound. bFiring is object flag 2, which a jammed weapon,
     // a blocked motor and invisibility clear; bStock tells whether a stock is bound (object +0x248) and Rounds what it holds.
     void UpdatePlayerWeapon(const FWeaponClass& Weapon, bool bFiring, bool bStock, float Rounds);
+    // The same for any other armed object, on its weapon class's Sample-channel-range at its Sample-channel-priority, never looping. The
+    // original's playing checks and stops name no channel then, so they see nothing playing and stop nothing. bStarting and bSounding are its
+    // object flags 0x10000 and 0x20000.
+    void UpdateWeapon(const FWeaponClass& Weapon, bool& bStarting, bool& bSounding, bool bFiring, bool bStock, float Rounds, uint32_t Channel,
+        uint32_t Mask, uint32_t Priority, bool bMayLoop);
     // PlayerSelectWeapon (00437740): weapon-switch.wav on channel 2, which also ends the weapon's sound states.
     void PlayWeaponSwitch();
     // The player's death cry, aaaa.wav, on channel 2 (EngineUpdateObjects at 004406e0).

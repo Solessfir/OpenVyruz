@@ -294,24 +294,39 @@ void FAudio::StopLevelChannels()
 
 void FAudio::UpdatePlayerWeapon(const FWeaponClass& Weapon, const bool bFiring, const bool bStock, const float Rounds)
 {
-    constexpr uint32_t WeaponPriority = 0xbf;
-    const uint32_t Mask = ChannelBit(PlayerWeaponChannel);
-    const bool bPlaying = Mixer.IsPlaying(PlayerWeaponChannel);
+    constexpr uint32_t PlayerWeaponPriority = 0xbf;
+    UpdateWeapon(Weapon, bWeaponStarting, bWeaponFiring, bFiring, bStock, Rounds, PlayerWeaponChannel, ChannelBit(PlayerWeaponChannel), PlayerWeaponPriority, true);
+}
+
+void FAudio::UpdateWeapon(const FWeaponClass& Weapon, bool& bStarting, bool& bSounding, const bool bFiring, const bool bStock, const float Rounds,
+    const uint32_t Channel, const uint32_t Mask, const uint32_t Priority, const bool bMayLoop)
+{
+    const bool bAll = Mask == Sound::FMixer::AllChannels;
+    const auto Playing = [&] { return Channel != 0 && Mixer.IsPlaying(Channel); };
+    const bool bPlaying = Playing();
+    // The original stops "channel 0" for a weapon on a range of channels, which stops nothing.
+    const auto StopOwn = [&]
+    {
+        if (Channel != 0)
+        {
+            Mixer.Stop(ChannelBit(Channel));
+        }
+    };
     const auto Restart = [&](const std::string& Name, const bool bLoop)
     {
-        if (bPlaying)
+        if (!bAll && bPlaying)
         {
-            Mixer.Stop(Mask);
+            StopOwn();
         }
 
-        Mixer.Play(Load(Name), bLoop, WeaponPriority, Mask);
+        Mixer.Play(Load(Name), bLoop, Priority, Mask);
     };
 
     if (!bStock)
     {
         if (!bFiring)
         {
-            if (bWeaponFiring && Weapon.bFireSoundLoops && bPlaying)
+            if (bSounding && Weapon.bFireSoundLoops && (bAll || bPlaying))
             {
                 Mixer.Stop(Mask);
             }
@@ -319,18 +334,18 @@ void FAudio::UpdatePlayerWeapon(const FWeaponClass& Weapon, const bool bFiring, 
             return;
         }
 
-        if (bWeaponStarting || bWeaponFiring)
+        if (bStarting || bSounding)
         {
-            bWeaponStarting = bWeaponFiring = false;
-            if (bPlaying)
+            bStarting = bSounding = false;
+            if (!bAll && bPlaying)
             {
-                Mixer.Stop(Mask);
+                StopOwn();
             }
         }
 
-        if (!Mixer.IsPlaying(PlayerWeaponChannel))
+        if (!bAll && !Playing())
         {
-            Mixer.Play(Load(Weapon.NoAmmoSound), false, WeaponPriority, Mask);
+            Mixer.Play(Load(Weapon.NoAmmoSound), false, Priority, Mask);
         }
 
         return;
@@ -338,21 +353,25 @@ void FAudio::UpdatePlayerWeapon(const FWeaponClass& Weapon, const bool bFiring, 
 
     if (!bFiring)
     {
-        const bool bLoopEnds = !Weapon.FireSound.empty() && bWeaponFiring && Weapon.bFireSoundLoops;
-        const bool bShotEnds = !Weapon.FireStartSound.empty() && bWeaponFiring && !bPlaying;
+        const bool bLoopEnds = !Weapon.FireSound.empty() && bSounding && Weapon.bFireSoundLoops;
+        const bool bShotEnds = !Weapon.FireStartSound.empty() && bSounding && (bAll || !bPlaying);
         if (bLoopEnds || bShotEnds)
         {
-            bWeaponStarting = bWeaponFiring = false;
-            Mixer.Stop(Mask);
-            Mixer.Play(Load(Weapon.FireEndSound), false, WeaponPriority, Mask);
+            bStarting = bSounding = false;
+            if (!bAll)
+            {
+                StopOwn();
+            }
+
+            Mixer.Play(Load(Weapon.FireEndSound), false, Priority, Mask);
         }
 
         return;
     }
 
-    if (Weapon.FireStartSound.empty() || bWeaponFiring)
+    if (Weapon.FireStartSound.empty() || bSounding)
     {
-        if (!Weapon.FireSound.empty() && (!bWeaponFiring || !bPlaying))
+        if (!Weapon.FireSound.empty() && (!bSounding || bAll || !bPlaying))
         {
             if (Rounds == 0.f)
             {
@@ -360,30 +379,30 @@ void FAudio::UpdatePlayerWeapon(const FWeaponClass& Weapon, const bool bFiring, 
                 return;
             }
 
-            bWeaponStarting = false;
-            bWeaponFiring = true;
-            Restart(Weapon.FireSound, Weapon.bFireSoundLoops);
+            bStarting = false;
+            bSounding = true;
+            Restart(Weapon.FireSound, bMayLoop && Weapon.bFireSoundLoops);
         }
 
         return;
     }
 
-    if (!bWeaponStarting)
+    if (!bStarting)
     {
         if (Rounds != 0.f)
         {
-            bWeaponFiring = false;
-            bWeaponStarting = true;
+            bSounding = false;
+            bStarting = true;
         }
 
         Restart(Rounds == 0.f ? Weapon.NoAmmoSound : Weapon.FireStartSound, false);
         return;
     }
 
-    if (!bPlaying)
+    if (bAll || !bPlaying)
     {
-        bWeaponStarting = false;
-        bWeaponFiring = !Weapon.FireSound.empty();
+        bStarting = false;
+        bSounding = !Weapon.FireSound.empty();
     }
 }
 

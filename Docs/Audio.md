@@ -72,6 +72,8 @@ The `TYPE Weapon` block names its sounds (`LoadObjectClassLibrary`, keywords `0x
 
 `PlayerSelectWeapon` (`00437740`) ends both states and plays `weapon-switch.wav` on channel 2.
 
+The pass covers every object of the level (session `+0x2010`) except ammo, FX, items, lifts, gates and things. Other objects never loop their fire sound. With no ADD Weapon channel they play on the weapon class's `Sample-channel-range` (weapons: 9 to 16) at its `Sample-channel-priority` (129). Their "channel" is then 0, so every playing check sees nothing and every stop stops nothing: a fire sound starts again on each frame of firing. The port takes a turret's or actor's trigger as the shots its weapon took since the last frame.
+
 ## Other sounds
 
 `LoadSessionSounds` (`0043bc30`) loads the session's own sounds. `SoundPlayOnChannel` (`00403f80`) restarts a channel with one, at priority `0x7f` or `0xbf`:
@@ -116,7 +118,7 @@ The fire input is what `ReadPlayerInput` (`00438540`) returns. The two timers be
 
 ## Not ported yet
 
-- **Other objects' weapon sounds**: only the player's weapon sounds; turrets and actors stay silent when they fire.
+- **ADD Weapon channels**: an ADD Weapon entry's own channel (`+0x18`) is not read; every object uses its weapon class's range.
 - **Voices without their action**: Help and Inventory (actions not ported), High-speed and Low-speed (the speed toggle), the fast-kill bonus's cheers, and the Yeepee of `FUN_0043db70`.
 - **Other animated objects**: items, mines, the `Particle-of-Death` things and the map animations do not animate in the port yet, so their sounds do not play.
 - **Options**: the audio menus.

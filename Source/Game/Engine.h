@@ -216,6 +216,11 @@ struct FWeaponState
     float Slope = 0.f;
     // Weapon flag 1, flipped on every shot of an Alternated-fire weapon.
     bool bAlternateSide = false;
+    // The trigger was pulled since the last frame's weapon sounds, and the owner's object flags 0x10000 and 0x20000 (ObjectsUpdateWeaponSounds
+    // at 0043df70): its start sound or its fire sound is under way.
+    bool bSoundTrigger = false;
+    bool bSoundStarting = false;
+    bool bSoundFiring = false;
 };
 
 // A Fixed Seeker turret: the TYPE Seeker block, its scan and lock state, and the rotating top that aims its weapon.
@@ -529,6 +534,9 @@ struct FWeaponClass
     std::string FireEndSound;
     std::string NoAmmoSound;
     bool bFireSoundLoops = false;
+    // The weapon class's Sample-channel-range and Sample-channel-priority, which other objects' weapon sounds play on.
+    uint32_t SoundChannelMask = 0;
+    uint32_t SoundPriority = 0;
 };
 
 // An ammo class: its movement and the TYPE Ammo block.

@@ -2648,6 +2648,36 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 GameAudio->UpdatePlayerWeapon(Weapon, bFiring, Stock != nullptr, Stock ? Stock->Count : 0.f);
             }
 
+            // Every other armed object of the level, its trigger being the shots its weapon took since the last frame.
+            if (Combat)
+            {
+                for (FObjectBody& Body : Bodies)
+                {
+                    FWeaponState* State = nullptr;
+                    const FAmmoStock* Stock = nullptr;
+                    if (Body.Turret)
+                    {
+                        State = &Body.Turret->Weapon;
+                        Stock = &Body.Turret->Ammo;
+                    }
+                    else if (Body.Actor && Body.Actor->Seeker && Body.Actor->Seeker->Weapon)
+                    {
+                        State = &Body.Actor->Seeker->WeaponState;
+                        Stock = &Body.Actor->Seeker->Ammo;
+                    }
+
+                    if (!State || Level->Objects[Body.ObjectIndex].bRemoved || State->Weapon >= Combat->Weapons.size())
+                    {
+                        continue;
+                    }
+
+                    const FWeaponClass& Weapon = Combat->Weapons[State->Weapon];
+                    GameAudio->UpdateWeapon(Weapon, State->bSoundStarting, State->bSoundFiring, State->bSoundTrigger && !Body.State.bInvisible, true, Stock->Count, 0,
+                        Weapon.SoundChannelMask, Weapon.SoundPriority, false);
+                    State->bSoundTrigger = false;
+                }
+            }
+
             const ESurprise Surprise = Inventory.Surprises.Active;
             const bool bTune = Surprise == ESurprise::Darken || Surprise == ESurprise::Extasy;
             if (Surprise != TuneSurprise)
