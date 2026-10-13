@@ -31,6 +31,8 @@ There is no fixed tick. Each frame:
 3. Each sub-step: debug/cheat keys, demo record/playback, pause menu, then the game update `FUN_004406e0` (returns -1 restart, 0 level end, 1 continue), messages, scroll and object updates.
 4. After the sub-steps, once per frame: camera and scroll position (clamped to the map), screen shake, map/scroll draw (`FUN_00469820`), objects (`FUN_00433b30`), HUD and overlays, cursor, flip.
 
+`EnginePause` (`0043b8d0`, `action-pause`, P) closes an open map instead; otherwise it sets session `+0x20` bit `0x1000000`, centres `Data\Menu\pause.gaf`'s first animation over the screen in draw mode 7 (`FUN_00403b70`, `FUN_00403d70`), and polls until P goes down again, so the game clock does not advance. The port keeps drawing the frozen level under the picture.
+
 `g_FramePeriodMs` comes from `PgMeasureRefreshRate` (`004504a0`): it times 20 vsync flips, keeps the samples between 3 and 33 ms, and stores `1000000 / (refresh * 1000)`, e.g. 16 ms at 60 Hz (1000000 if no rate could be measured). Recording or playing a demo (`.3DR`) uses a fixed 10 ms step cap instead.
 
 The port therefore cannot use a fixed tick and stay faithful: it must reproduce the variable millisecond step capped at the display period (or 10 ms for demos).

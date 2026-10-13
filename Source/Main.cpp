@@ -1937,6 +1937,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     uint32_t FpsFrames = 0;
     // Development aid: N starts the next level, wrapping to the first after the last, always without a carried player.
     bool bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
+    bool bPaused = false;
+    bool bPauseKeyDown = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS;
+    // FUN_00403b70 loads Data\Menu\pause.gaf's first animation, which FUN_00403d70 centres on the screen in draw mode 7.
+    const std::optional<FObjectGaf> PauseGaf = LoadObjectGaf(Archive, "common\\data\\menu\\pause.gaf");
+    std::optional<FSpriteSheet> PauseSheet;
     // Backspace, then the digits 1 to 9.
     constexpr size_t WeaponKeyCount = 10;
     // g_DemoReplayCursor.
@@ -1955,93 +1960,118 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     while (!glfwWindowShouldClose(Window))
     {
         glfwPollEvents();
-        // Escape (EngineEscape at 00445b40) opens the game menu, or ends the game at once for a dead player; the menu's steps do not count as game time.
-        const bool bEscapePressed = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS && !bEscapeDown;
-        bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
-        // A playing demo ends on Escape (EngineRunLevel checks the key before DemoReplayStep).
-        if (bEscapePressed && Demo)
+        // EnginePause (0043b8d0): action-pause (P) closes an open map, or freezes the game (session +0x20 bit 0x1000000) under pause.gaf until P
+        // again; meanwhile only P is read and the clock's time is dropped.
+        const bool bPausePressed = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS && !bPauseKeyDown;
+        bPauseKeyDown = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS;
+        if (bPausePressed && Player && !Demo)
         {
-            return FLevelEnd{ .Kind = ELevelEnd::Menu };
-        }
-
-        if (bEscapePressed && bMapShown)
-        {
-            ToggleMap();
-        }
-        else if (bEscapePressed && DeathTimer)
-        {
-            *DeathTimer = 0;
-        }
-        else if (bEscapePressed && MenuArt)
-        {
-            if (!MenuSheets)
+            if (bMapShown)
             {
-                MenuSheets = CreateMenuSheets(Renderer, *MenuArt);
+                ToggleMap();
             }
-
-            FRandom MenuRandom;
-            const std::optional<ELevelEnd> End = RunGameMenu(Window, Renderer, *MenuArt, *MenuSheets, Combat ? Combat->Random : MenuRandom);
-            if (End)
+            else
             {
-                return FLevelEnd{ .Kind = *End };
+                bPaused = !bPaused;
             }
+        }
 
+        if (!bPaused)
+        {
+            // Escape (EngineEscape at 00445b40) opens the game menu, or ends the game at once for a dead player; the menu's steps do not count as game time.
+            const bool bEscapePressed = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS && !bEscapeDown;
             bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
-            Clock = FFrameClock(FramePeriod);
-            Clock.Poll(ClockMilliseconds());
-        }
-
-        const bool bNextPressed = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS && !bNextKeyDown;
-        bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
-        if (bNextPressed && !DebugLevels.empty())
-        {
-            const size_t Next = (CurrentIndex + 1) % DebugLevels.size();
-            std::printf("Debug: level %zu of %zu\n", Next + 1, DebugLevels.size());
-            Carried.reset();
-            return FLevelEnd{ .Kind = ELevelEnd::Lift, .NextLevel = DebugLevels[Next] };
-        }
-
-        // EngineReadActionKeys (0043b5c0) with the default keys of DAT_00509298: Backspace is action-next-weapon and 1 to 9 are action-weapon-1 to
-        // 9 (FUN_0043bad0 skips the slot in hand); Tab is action-cycle-panels, Left Shift stepping back, and M is action-map.
-        const bool bTabPressed = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS && !bTabDown;
-        bTabDown = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
-        if (bTabPressed && Panel && !Demo)
-        {
-            Panel->CyclePanels(glfwGetKey(Window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS);
-        }
-
-        const bool bMapPressed = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS && !bMapKeyDown;
-        bMapKeyDown = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS;
-        if (bMapPressed && Player && !Demo)
-        {
-            ToggleMap();
-        }
-
-        std::array<bool, WeaponKeyCount> WeaponKeysNow{};
-        WeaponKeysNow[0] = glfwGetKey(Window, GLFW_KEY_BACKSPACE) == GLFW_PRESS;
-        for (size_t Slot = 1; Slot < WeaponKeyCount; ++Slot)
-        {
-            WeaponKeysNow[Slot] = glfwGetKey(Window, GLFW_KEY_0 + int(Slot)) == GLFW_PRESS;
-        }
-
-        if (Combat && !Demo)
-        {
-            if (WeaponKeysNow[0] && !WeaponKeysDown[0])
+            // A playing demo ends on Escape (EngineRunLevel checks the key before DemoReplayStep).
+            if (bEscapePressed && Demo)
             {
-                SelectPlayerWeapon(*Combat, NextPlayerWeaponSlot(*Combat, Inventory), Inventory, Messages);
+                return FLevelEnd{ .Kind = ELevelEnd::Menu };
             }
 
-            for (size_t Slot = 1; Slot < WeaponKeysNow.size(); ++Slot)
+            if (bEscapePressed && bMapShown)
             {
-                if (WeaponKeysNow[Slot] && !WeaponKeysDown[Slot] && Combat->PlayerSlot != Slot)
+                ToggleMap();
+            }
+            else if (bEscapePressed && DeathTimer)
+            {
+                *DeathTimer = 0;
+            }
+            else if (bEscapePressed && MenuArt)
+            {
+                if (!MenuSheets)
                 {
-                    SelectPlayerWeapon(*Combat, Slot, Inventory, Messages);
+                    MenuSheets = CreateMenuSheets(Renderer, *MenuArt);
+                }
+
+                FRandom MenuRandom;
+                const std::optional<ELevelEnd> End = RunGameMenu(Window, Renderer, *MenuArt, *MenuSheets, Combat ? Combat->Random : MenuRandom);
+                if (End)
+                {
+                    return FLevelEnd{ .Kind = *End };
+                }
+
+                bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+                Clock = FFrameClock(FramePeriod);
+                Clock.Poll(ClockMilliseconds());
+            }
+
+            const bool bNextPressed = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS && !bNextKeyDown;
+            bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
+            if (bNextPressed && !DebugLevels.empty())
+            {
+                const size_t Next = (CurrentIndex + 1) % DebugLevels.size();
+                std::printf("Debug: level %zu of %zu\n", Next + 1, DebugLevels.size());
+                Carried.reset();
+                return FLevelEnd{ .Kind = ELevelEnd::Lift, .NextLevel = DebugLevels[Next] };
+            }
+
+            // EngineReadActionKeys (0043b5c0) with the default keys of DAT_00509298: Backspace is action-next-weapon and 1 to 9 are action-weapon-1 to
+            // 9 (FUN_0043bad0 skips the slot in hand); Tab is action-cycle-panels, Left Shift stepping back, and M is action-map.
+            const bool bTabPressed = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS && !bTabDown;
+            bTabDown = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
+            if (bTabPressed && Panel && !Demo)
+            {
+                Panel->CyclePanels(glfwGetKey(Window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS);
+            }
+
+            const bool bMapPressed = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS && !bMapKeyDown;
+            bMapKeyDown = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS;
+            if (bMapPressed && Player && !Demo)
+            {
+                ToggleMap();
+            }
+
+            std::array<bool, WeaponKeyCount> WeaponKeysNow{};
+            WeaponKeysNow[0] = glfwGetKey(Window, GLFW_KEY_BACKSPACE) == GLFW_PRESS;
+            for (size_t Slot = 1; Slot < WeaponKeyCount; ++Slot)
+            {
+                WeaponKeysNow[Slot] = glfwGetKey(Window, GLFW_KEY_0 + int(Slot)) == GLFW_PRESS;
+            }
+
+            if (Combat && !Demo)
+            {
+                if (WeaponKeysNow[0] && !WeaponKeysDown[0])
+                {
+                    SelectPlayerWeapon(*Combat, NextPlayerWeaponSlot(*Combat, Inventory), Inventory, Messages);
+                }
+
+                for (size_t Slot = 1; Slot < WeaponKeysNow.size(); ++Slot)
+                {
+                    if (WeaponKeysNow[Slot] && !WeaponKeysDown[Slot] && Combat->PlayerSlot != Slot)
+                    {
+                        SelectPlayerWeapon(*Combat, Slot, Inventory, Messages);
+                    }
                 }
             }
+
+            WeaponKeysDown = WeaponKeysNow;
         }
 
-        WeaponKeysDown = WeaponKeysNow;
         uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
+        if (bPaused)
+        {
+            RemainingMilliseconds = 0;
+        }
+
         while (RemainingMilliseconds != 0)
         {
             const uint32_t StepMilliseconds = NextGameStep(RemainingMilliseconds, FramePeriod, Demo != nullptr);
@@ -2526,6 +2556,25 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 {
                     Icon(SavingIcon, Level->Objects[*Area.Plot].X, Level->Objects[*Area.Plot].Y);
                 }
+            }
+        }
+
+        if (bPaused && PauseGaf && !PauseGaf->Animations.empty() && !PauseGaf->Animations.front().Frames.empty())
+        {
+            constexpr uint32_t PauseDrawMode = 7;
+            if (!PauseSheet)
+            {
+                PauseSheet = Renderer.CreateSpriteSheet(PauseGaf->Bitmaps);
+            }
+
+            Gaf::FAnimationFrame Frame = PauseGaf->Animations.front().Frames.front();
+            Frame.DrawFlags = PauseDrawMode;
+            if (Frame.BitmapIndex != 0 && Frame.BitmapIndex <= PauseGaf->Bitmaps.size())
+            {
+                const Gaf::FFrame& Bitmap = PauseGaf->Bitmaps[Frame.BitmapIndex - 1];
+                const float X = float((int32_t(ScreenWidth) - int32_t(Bitmap.Width)) / 2 - Bitmap.TrimX);
+                const float Y = float((int32_t(ScreenHeight) - int32_t(Bitmap.Height)) / 2 - Bitmap.TrimY);
+                Renderer.DrawSprite(*PauseSheet, Frame.BitmapIndex - 1, X, Y, false, false, FrameBlend(Frame));
             }
         }
 
