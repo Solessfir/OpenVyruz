@@ -5,6 +5,7 @@
 #include "Game/Panel.h"
 #include "Pg/File.h"
 #include "Pg/Font.h"
+#include "Pg/Tga.h"
 #include "Pg/Gaf.h"
 #include "Pg/ResourceArchive.h"
 #include "Render/Renderer.h"
@@ -145,8 +146,24 @@ int VerifyGafs(FResourceArchive& Archive)
     int Decoded = 0;
     int Failed = 0;
     size_t FrameCount = 0;
+    int Images = 0;
     for (const std::string& Name : Archive.GetNames())
     {
+        // The story and ending screens' Targa images decode as well.
+        if (Name.ends_with(".tga"))
+        {
+            const std::optional<std::vector<uint8_t>> File = Archive.Read(Name);
+            if (!File || !LoadTga(*File))
+            {
+                std::printf("FAIL %s\n", Name.c_str());
+                ++Failed;
+                continue;
+            }
+
+            ++Images;
+            continue;
+        }
+
         if (!Name.ends_with(".gaf"))
         {
             continue;
@@ -161,7 +178,7 @@ int VerifyGafs(FResourceArchive& Archive)
         ++Decoded;
         FrameCount += Gaf->Bitmaps.size();
     }
-    std::printf("GAF: %d decoded (%zu frames), %d failed\n", Decoded, FrameCount, Failed);
+    std::printf("GAF: %d decoded (%zu frames) and %d TGA images, %d failed\n", Decoded, FrameCount, Images, Failed);
     return Failed == 0 ? 0 : 1;
 }
 
@@ -763,6 +780,70 @@ void ShowImage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& 
     }
 }
 
+// The story and ending screens' text page (FUN_004027f0 with the callback at 00402640): a full-screen Targa image and a text in v-bonus.gaf font 4
+// with word wrap from Left, 100 to the screen's right edge, until a key or mouse button goes down (FUN_00401880).
+void ShowTextPage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FPanel& Panel, const std::string_view ImagePath,
+    const std::string_view TextPath, const int32_t Left)
+{
+    constexpr size_t PageFont = 4;
+    constexpr int32_t PageTop = 100;
+    const std::optional<std::vector<uint8_t>> ImageFile = Archive.Read(ImagePath);
+    const std::optional<std::vector<uint8_t>> TextFile = Archive.Read(TextPath);
+    const std::optional<Gaf::FFrame> Image = ImageFile ? LoadTga(*ImageFile) : std::nullopt;
+    if (!Image || !TextFile)
+    {
+        return;
+    }
+
+    const FSpriteSheet ImageSheet = Renderer.CreateSpriteSheet({ *Image });
+    const FSpriteSheet FontSheet = Renderer.CreateSpriteSheet(Panel.GetBitmaps(EHudSheet::Bonus));
+    const std::string Text(TextFile->begin(), TextFile->end());
+    const std::vector<FHudSprite> Glyphs = Panel.DrawPage(PageFont, Text, Left, PageTop, int32_t(ScreenWidth));
+    const auto Inputs = [Window]
+    {
+        std::vector<bool> Down;
+        for (int Key = GLFW_KEY_SPACE; Key <= GLFW_KEY_LAST; ++Key)
+        {
+            Down.push_back(glfwGetKey(Window, Key) == GLFW_PRESS);
+        }
+
+        Down.push_back(glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
+        Down.push_back(glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
+        return Down;
+    };
+
+    std::vector<bool> Previous = Inputs();
+    while (!glfwWindowShouldClose(Window))
+    {
+        glfwPollEvents();
+        const std::vector<bool> Now = Inputs();
+        bool bPressed = false;
+        for (size_t Index = 0; Index < Now.size(); ++Index)
+        {
+            bPressed = bPressed || (Now[Index] && !Previous[Index]);
+        }
+
+        if (bPressed)
+        {
+            break;
+        }
+
+        Previous = Now;
+        if (Renderer.BeginFrame())
+        {
+            Renderer.DrawSprite(ImageSheet, 0, 0.f, 0.f);
+            for (const FHudSprite& Glyph : Glyphs)
+            {
+                const Gaf::FAnimationFrame& Frame = Glyph.Frame;
+                Renderer.DrawSprite(FontSheet, Frame.BitmapIndex - 1, Glyph.X + float(Frame.OffsetX), Glyph.Y + float(Frame.OffsetY), false, false, FrameBlend(Frame),
+                    1.f, 1.f, UINT32_MAX, Glyph.Diffuse, Glyph.Specular);
+            }
+
+            Renderer.EndFrame();
+        }
+    }
+}
+
 // One level of LoopLevels: runs until the window closes or the player takes a lift, and then returns the next level's path with the player
 // in Carried.
 std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive,
@@ -1027,16 +1108,8 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                 const FPlayerTarget Rider{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
                 if (const FDoor* const Lift = StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds, Messages); Lift && !NextLevel && !DeathTimer)
                 {
-                    // ponytail: the end of a tower (a starred 3do-file) has no sequence yet; the player stays.
-                    if (Lift->NextLevel.starts_with('*'))
-                    {
-                        std::printf("Reached %s\n", Lift->NextLevel.c_str());
-                        std::fflush(stdout);
-                    }
-                    else
-                    {
-                        NextLevel = NextLevelPath(LevelPath, *Lift);
-                    }
+                    // A starred 3do-file (only "*End of Tower 3*" in the campaign) ends the game instead of loading a level.
+                    NextLevel = Lift->NextLevel.starts_with('*') ? Lift->NextLevel : NextLevelPath(LevelPath, *Lift);
                 }
                 if (Combat)
                 {
@@ -1354,6 +1427,22 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
             glfwSetWindowTitle(Window, Title.c_str());
             FpsWindowStart = Now;
             FpsFrames = 0;
+        }
+
+        // EngineRunLevel ends the game after a starred lift: the registered game's two ending pages over theend.tga (FUN_00402890), then the
+        // score table and the menu. ponytail: there is no menu yet, so a new game starts at the first level.
+        if (NextLevel && NextLevel->starts_with('*'))
+        {
+            constexpr int32_t FirstPageLeft = 0x46;
+            constexpr int32_t SecondPageLeft = 0x8c;
+            if (Panel)
+            {
+                ShowTextPage(Window, Renderer, Archive, *Panel, "common\\data\\extra\\theend.tga", "common\\data\\extra\\theend-en.txt", FirstPageLeft);
+                ShowTextPage(Window, Renderer, Archive, *Panel, "common\\data\\extra\\theend.tga", "common\\data\\extra\\theend-en-2.txt", SecondPageLeft);
+            }
+
+            Carried.reset();
+            return DebugLevels.empty() ? std::optional<std::string>() : std::optional(DebugLevels.front());
         }
 
         // The level ends after the frame in which the player took a lift.

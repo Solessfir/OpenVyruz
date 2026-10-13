@@ -121,24 +121,48 @@ Font::FColor Font::FColor::Combine(const FColor& Other) const
 }
 
 std::vector<Font::FPlacedGlyph> Font::LayoutText(const FFont& Font, const std::string_view Text, const int32_t X, const int32_t Y,
-    const std::span<const uint32_t> BitmapWidths)
+    const std::span<const uint32_t> BitmapWidths, const std::optional<int32_t> WrapRight)
 {
     constexpr char FirstPrintable = 0x20;
     constexpr char Space = ' ';
+    constexpr char Tab = '\t';
+    constexpr int32_t TabColumns = 8;
     // The format strings write a literal percent sign as a tilde.
     constexpr char PercentStandIn = '~';
     constexpr char NewLine = '\n';
     constexpr char CarriageReturn = '\r';
+    const bool bProportional = (Font.Flags & FontProportional) != 0;
+    const auto GlyphOf = [&](char Character) -> const FGlyph*
+    {
+        Character = Character == PercentStandIn ? '%' : Character;
+        const size_t Index = size_t(uint8_t(Character)) - 1;
+        const FGlyph* const Glyph = Character != Space && Index < Font.Glyphs.size() ? &Font.Glyphs[Index] : nullptr;
+        return Glyph && Glyph->Base.BitmapIndex != 0 ? Glyph : nullptr;
+    };
+    const auto WidthOf = [&](const FGlyph& Glyph) { return Glyph.Base.BitmapIndex <= BitmapWidths.size() ? int32_t(BitmapWidths[Glyph.Base.BitmapIndex - 1]) : 0; };
+    const auto AdvanceOf = [&](const FGlyph* const Glyph)
+    {
+        const int32_t Width = Glyph ? WidthOf(*Glyph) : 0;
+        return Width == 0 || !bProportional ? Font.Advance : Font.CharSpacing + Width;
+    };
+    const auto IsWordEnd = [](const char Character) { return Character == Space || Character == Tab || uint8_t(Character) < uint8_t(FirstPrintable); };
+
     std::vector<FPlacedGlyph> Placed;
     int32_t Cursor = X;
     int32_t Line = Y;
-    for (char Character : Text)
+    // In game word wrap is off (FUN_0043be00 calls PgFontSetWordWrap), so a new line goes back to the starting column; with it on, a new line
+    // starts at the clip's left edge, which callers pass as X.
+    const auto BreakLine = [&]
     {
-        // The level start turns word wrap off (FUN_0043be00 calls PgFontSetWordWrap), so a new line goes back to the starting column.
+        Cursor = X;
+        Line += Font.LineHeight + (bProportional ? Font.LineGap : 0);
+    };
+    for (size_t Index = 0; Index < Text.size(); ++Index)
+    {
+        const char Character = Text[Index];
         if (Character == NewLine)
         {
-            Cursor = X;
-            Line += Font.LineHeight + ((Font.Flags & FontProportional) != 0 ? Font.LineGap : 0);
+            BreakLine();
             continue;
         }
 
@@ -147,15 +171,40 @@ std::vector<Font::FPlacedGlyph> Font::LayoutText(const FFont& Font, const std::s
             continue;
         }
 
+        // A tab moves to the next multiple of eight advances.
+        if (Character == Tab)
+        {
+            const int32_t Stop = TabColumns * Font.Advance;
+            Cursor += Stop == 0 ? 0 : Stop - Cursor % Stop;
+            continue;
+        }
+
         if (uint8_t(Character) < uint8_t(FirstPrintable))
         {
             break;
         }
 
-        Character = Character == PercentStandIn ? '%' : Character;
-        const size_t Index = size_t(uint8_t(Character)) - 1;
-        const FGlyph* const Glyph = Character != Space && Index < Font.Glyphs.size() ? &Font.Glyphs[Index] : nullptr;
-        if (!Glyph || Glyph->Base.BitmapIndex == 0)
+        // PgFontPrint measures each word before printing it and moves it to a new line when one of its bitmaps would cross the clip's right edge.
+        if (WrapRight && Character != Space && (Index == 0 || IsWordEnd(Text[Index - 1])) && Cursor != X)
+        {
+            int32_t Measure = Cursor - 1;
+            for (size_t Next = Index; Next < Text.size() && !IsWordEnd(Text[Next]); ++Next)
+            {
+                if (const FGlyph* const Glyph = GlyphOf(Text[Next]))
+                {
+                    if (*WrapRight < Glyph->Base.OffsetX + WidthOf(*Glyph) + Measure)
+                    {
+                        BreakLine();
+                        break;
+                    }
+
+                    Measure += AdvanceOf(Glyph);
+                }
+            }
+        }
+
+        const FGlyph* const Glyph = GlyphOf(Character);
+        if (!Glyph)
         {
             Cursor += Font.Advance;
             continue;
@@ -167,8 +216,7 @@ std::vector<Font::FPlacedGlyph> Font::LayoutText(const FFont& Font, const std::s
             Placed.push_back({ .BitmapIndex = Glyph->Overlay.BitmapIndex, .X = Cursor + Glyph->Overlay.OffsetX, .Y = Line + Glyph->Overlay.OffsetY });
         }
 
-        const uint32_t Width = Glyph->Base.BitmapIndex <= BitmapWidths.size() ? BitmapWidths[Glyph->Base.BitmapIndex - 1] : 0;
-        Cursor += Width == 0 || (Font.Flags & FontProportional) == 0 ? Font.Advance : Font.CharSpacing + int32_t(Width);
+        Cursor += AdvanceOf(Glyph);
     }
 
     return Placed;

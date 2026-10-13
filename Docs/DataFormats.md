@@ -194,6 +194,10 @@ All three draw in mode 1 and white. `Common\Data\Extra\v-bonus.gaf` has six font
 
 The colour is a pgbmp colour: an alpha, a diffuse RGB and a specular RGB. See [Hud.md](Hud.md#fonts) for how text is laid out.
 
+## .TGA - Story and Ending Images
+
+`Common\Data\Extra\story.tga` and `theend.tga` are uncompressed true-colour Targa files (image type 2, no colour map) of 640x480 at 24 bits, stored bottom row first. `FUN_00453590` loads them for the text pages. The port converts them to RGB555 like the 16-bit display did.
+
 ## .3DG - Level Tile Bitmap Sheet
 
 Depends on: Generic GAF Record Format, LZSS, BMP_ Chunk Format.

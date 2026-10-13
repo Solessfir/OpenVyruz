@@ -204,7 +204,7 @@ const std::vector<Gaf::FFrame>& FPanel::GetBitmaps(const EHudSheet Sheet) const
 
 // Selecting a font (PgFontSelect at 0044c3c0) takes its draw mode and colour, and PgFontSetColor (0044cc30) combines the caller's colour into that.
 void FPanel::DrawText(std::vector<FHudSprite>& Out, const EHudSheet Sheet, const size_t Font, const int32_t X, const int32_t Y, const std::string_view Text,
-    const Font::FColor& Color) const
+    const Font::FColor& Color, const std::optional<int32_t> WrapRight) const
 {
     const bool bBonus = Sheet == EHudSheet::Bonus;
     const std::vector<Font::FFont>& SheetFonts = bBonus ? BonusFonts : Fonts;
@@ -216,7 +216,7 @@ void FPanel::DrawText(std::vector<FHudSprite>& Out, const EHudSheet Sheet, const
 
     const Font::FFont& Selected = SheetFonts[Font - 1];
     const Font::FColor Combined = Selected.Color.Combine(Color);
-    for (const Font::FPlacedGlyph& Glyph : Font::LayoutText(Selected, Text, X, Y, bBonus ? BonusBitmapWidths : BitmapWidths))
+    for (const Font::FPlacedGlyph& Glyph : Font::LayoutText(Selected, Text, X, Y, bBonus ? BonusBitmapWidths : BitmapWidths, WrapRight))
     {
         if (Glyph.BitmapIndex == 0 || Glyph.BitmapIndex > SheetBitmaps.size())
         {
@@ -239,6 +239,13 @@ void FPanel::DrawText(std::vector<FHudSprite>& Out, const EHudSheet Sheet, const
 void FPanel::DrawMessage(std::vector<FHudSprite>& Out, const FMessage& Message, const int32_t X, const int32_t Y, const std::string_view Text) const
 {
     DrawText(Out, Message.Gaf == EMessageGaf::Bonus ? EHudSheet::Bonus : EHudSheet::Panel, Message.Font, X, Y, Text, Message.Color);
+}
+
+std::vector<FHudSprite> FPanel::DrawPage(const size_t Font, const std::string_view Text, const int32_t Left, const int32_t Top, const int32_t Right) const
+{
+    std::vector<FHudSprite> Out;
+    DrawText(Out, EHudSheet::Bonus, Font, Left, Top, Text, {}, Right);
+    return Out;
 }
 
 void FPanel::PostWarnings(const FPanelValues& Values, FMessages& Messages)

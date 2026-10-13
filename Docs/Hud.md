@@ -36,6 +36,7 @@ Every part is placed from a screen corner (session `+0xf84` and `+0xf88`), so th
 `FNT_` entries hold bitmap fonts whose glyphs are the GAF's GOB bitmaps. See [DataFormats.md](DataFormats.md#fnt_---fonts). `PgFontSelect` (`0044c3c0`) selects font N (1-based) of a GAF and takes its draw mode and colour, `PgFontSetCursor` (`0044db70`) sets the cursor and `PgFontPrintf` (`0044b0e0`) prints a formatted string through `PgFontPrint` (`0044bd70`).
 
 - A tilde prints as a percent sign. A space advances by the font's advance.
+- With word wrap on (the story and ending pages), `PgFontPrint` measures each word first: when one of its bitmaps would pass the clip's right edge, measured from the cursor minus one with each glyph's X offset, the word starts a new line at the clip's left edge.
 - A line break goes back to the starting column and down by the line height, plus the line gap for a proportional font. Word wrap at the clip edge would start the line at the clip's left instead, but `FUN_0043be00` turns it off when a level starts.
 - `PgFontSetColor` (`0044cc30`) combines a colour into the font's with `ColorCombine` (`0044f310`): each diffuse channel becomes `c - (256 - m) * c / 256`, the speculars add with saturation and the alphas multiply. A draw mode set before `PgFontSelect` is overwritten by the font's.
 - Each glyph's bitmap is placed so that its trimmed top-left lands at the cursor plus the glyph's offset. Its overlay bitmap follows.

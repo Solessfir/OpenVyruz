@@ -92,6 +92,8 @@ public:
     static void PostWarnings(const FPanelValues& Values, FMessages& Messages);
     // A message's visible text in its font, as MessagesUpdate prints it.
     void DrawMessage(std::vector<FHudSprite>& Out, const FMessage& Message, int32_t X, int32_t Y, std::string_view Text) const;
+    // A text page in a v-bonus.gaf font with word wrap inside Left, Top to Right, as the story and ending screens print it (FUN_004025b0).
+    std::vector<FHudSprite> DrawPage(size_t Font, std::string_view Text, int32_t Left, int32_t Top, int32_t Right) const;
 
     const std::vector<Gaf::FFrame>& GetBitmaps(EHudSheet Sheet) const;
 
@@ -107,7 +109,8 @@ private:
     };
 
     void DrawSlot(std::vector<FHudSprite>& Out, size_t Slot, float X, float Y, uint32_t Frame, uint32_t VisibleColumns = UINT32_MAX) const;
-    void DrawText(std::vector<FHudSprite>& Out, EHudSheet Sheet, size_t Font, int32_t X, int32_t Y, std::string_view Text, const Font::FColor& Color = {}) const;
+    void DrawText(std::vector<FHudSprite>& Out, EHudSheet Sheet, size_t Font, int32_t X, int32_t Y, std::string_view Text, const Font::FColor& Color = {},
+        std::optional<int32_t> WrapRight = std::nullopt) const;
 
     std::vector<Gaf::FFrame> Bitmaps;
     std::vector<Gaf::FFrame> VBitmaps;

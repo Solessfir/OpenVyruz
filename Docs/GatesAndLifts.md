@@ -58,7 +58,18 @@ Touching a lift or gate without the key shows "Lift needs key", "Wait, lift will
 
 ## Level changes
 
-`ObjectUpdateLevelExit` stores the lift's `3do-file` as the next level and sets the level-end flag. Without `Scenery` the level stays in the current zone. With it, the zone changes, which takes the fuller reload (session flags `0x400000` and `0x800000`). A starred name such as `*End of Tower 2*` ends a tower.
+`ObjectUpdateLevelExit` stores the lift's `3do-file` as the next level and sets the level-end flag. Without `Scenery` the level stays in the current zone. With it, the zone changes, which takes the fuller reload (session flags `0x400000` and `0x800000`). A starred name ends the game: in the campaign only `CPU\T3P2`'s last lift has one, `*End of Tower 3*` (the line `*End of Tower 2*` in `T2P1` is commented out), and the demo level's lift leads to `*End*`.
+
+### The ending
+
+When the level ends on a starred name, `EngineRunLevel` clears the level-change flags, so `LoopLevels` stops, and saves the session. `FUN_0042f130` tells a registered copy from the shareware one (session flag `0x40000`):
+
+- Registered: `FUN_00402890` shows `Common\Data\Extra\theend-en.txt` and then `theend-en-2.txt` (`-fr` in French) over `theend.tga`, and the score table is saved.
+- Shareware: `FUN_00402930` shows `register-en.txt` over the same image. The shareware copy also turns every lift that changes the zone into a starred one, so its game ends at the first zone change.
+
+Each page (`FUN_004027f0` with the callback at `00402640`) draws the 640x480 Targa image and the text in `v-bonus.gaf` font 4 with word wrap on, inside the clip from x 70 (140 for the second ending page), y 100 to the screen's right edge, until a key or mouse button goes down. The level name is then cleared, which leads back to the menu.
+
+The port plays the registered game. With no menu yet, a new game starts at the first level after the pages.
 
 `LoopLevels` (`004467d0`) runs `VzPlayLevel`, then keeps the player object if it is still alive. `LevelReload` (`00420430`) loads the next level from scratch through `VzLoadLevel`, so a level left and entered again starts over. Before the next `VzPlayLevel`, `LoopLevels` replaces the new level's player object with the kept one:
 
@@ -84,7 +95,6 @@ The player arrives on the next level's lift. That lift is present, so it carries
 
 Not ported yet:
 
-- The end-of-tower sequence for starred names.
 - Putting the carried player first in its grid cell when the activation phases are drawn.
 - The messages, which wait for the HUD.
 - Invisibility, the key cheat and code timeouts.
