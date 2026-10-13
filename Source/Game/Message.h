@@ -1,6 +1,8 @@
 #pragma once
 
+#include "Game/Animation.h"
 #include "Pg/Font.h"
+#include "Pg/Gaf.h"
 
 #include <cstdint>
 #include <functional>
@@ -16,6 +18,8 @@ enum class EMessageGaf : uint8_t
     Bonus,
     // Common\Data\Panel\panel.gaf, session +0x20a4.
     Panel,
+    // Common\Data\Object\Item\surprise.gaf, session +0x20bc: the icons of animation messages.
+    Surprise,
 };
 
 // How a new message treats one already at the same whole-pixel position (the mode of MessageCreate at 004311a0).
@@ -46,6 +50,19 @@ struct FMessage
     Font::FColor Color;
     size_t Typed = 0;
     int32_t TypeTimer = 0;
+    // Type 2 (FUN_004310b0) plays this animation of the GAF instead of printing Text.
+    std::optional<Gaf::FAnimation> Animation;
+    FAnimationPlayback Playback;
+    // FUN_00431530: every BlinkPeriod milliseconds the message hides or shows, or with bFade steps its alpha (FUN_00431970).
+    int32_t BlinkPeriod = 0;
+    int32_t BlinkTimer = 0;
+    bool bFade = false;
+    bool bHidden = false;
+    // Draw mode 3's alpha, 0 to 254, and its step; a fading message draws with it.
+    int32_t FadeAlpha = 0;
+    int32_t FadeStep = 0;
+    bool bFading = false;
+    uint32_t Id = 0;
 };
 
 // The message list: MessageAddText (004312e0) adds a text, MessagesUpdate (004315f0) updates and draws them all.
@@ -54,7 +71,10 @@ class FMessages
 public:
     using FDraw = std::function<void(const FMessage& Message, int32_t X, int32_t Y, std::string_view Text)>;
 
-    void Add(FMessage Message, EMessagePlacement Placement);
+    // Returns the message's id, or 0 when it was not added.
+    uint32_t Add(FMessage Message, EMessagePlacement Placement);
+    // FUN_00431aa0 removes one message.
+    void Remove(uint32_t Id);
     // MessageExists (00431050) and MessageSetLife (004319f0) find messages by their whole-pixel position.
     bool Exists(int32_t X, int32_t Y) const;
     void SetLife(int32_t X, int32_t Y, uint32_t LifeMilliseconds);
@@ -65,4 +85,5 @@ private:
     // Removed messages leave an empty slot, which the next message takes when it is the last one freed or visited (g_MessageFreeSlot).
     std::vector<std::optional<FMessage>> Slots;
     std::optional<size_t> FreeSlot;
+    uint32_t NextId = 1;
 };

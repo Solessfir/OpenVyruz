@@ -35,6 +35,8 @@ enum class ESpriteBlend : uint8_t
     Opaque,
     Additive,
     InverseSourceColor,
+    // Draw modes 2 and 3 blend by an alpha the caller gives.
+    Alpha,
     Count,
 };
 
@@ -55,7 +57,7 @@ public:
     // Specular is added to it, both as 0xRRGGBB.
     void DrawSprite(const FSpriteSheet& Sheet, size_t FrameIndex, float X, float Y, bool bMirrorX = false, bool bMirrorY = false,
         ESpriteBlend Blend = ESpriteBlend::Opaque, float ScaleX = 1.f, float ScaleY = 1.f, uint32_t VisibleColumns = UINT32_MAX,
-        uint32_t Diffuse = 0xffffff, uint32_t Specular = 0);
+        uint32_t Diffuse = 0xffffff, uint32_t Specular = 0, float Alpha = 1.f);
     void EndFrame();
 
 private:

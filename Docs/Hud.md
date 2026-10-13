@@ -19,7 +19,7 @@ Every part is placed from a screen corner (session `+0xf84` and `+0xf88`), so th
 | Bars | width / 2, 0 | `NRJ1` frame 1, plus its current frame while shield / max is at most 0.01; `shield` and `armor` clipped to `trunc(width * value / max)` as the inclusive right edge of the bitmap (pgbmp `FUN_0044ed60`) |
 | Weapons | width - 1, 0 | `Weapons1` frame 1; `Weapons3`, or `Weapons4` while the player's acceleration (`+0x1a4`) differs from its class value; `Weapons2`, flickering with its own random stream while firing; the selected weapon's icon (session `+0x22b8`) at -60, 70; ammo as `%08d` in font 1 at -107, 9 |
 | Speed | 0, height - 1 | `speed2`, `speedtop`, `speedside`; the radar dots; speed as `%03d` in font 2 at 105, -4 |
-| Screen | width - 1, height - 1 | `screen` in draw mode 1 (5 with option flag `0x10`); in font 3, the player's X and Y as `%04d` at -107 and -72, -70, `KILLED %d` at -60, `ENEMY %d` at -50, and the time as `%02d:%02d:%02d` at -40, all from x -107; `infos` frame 1 (its current frame while locked), `infosbas` |
+| Screen | width - 1, height - 1 | `screen` in draw mode 1 (5, half translucent, with option flag `0x10`, which the port keeps on); in font 3, the player's X and Y as `%04d` at -107 and -72, -70, `KILLED %d` at -60, `ENEMY %d` at -50, and the time as `%02d:%02d:%02d` at -40, all from x -107; `infos` frame 1 (its current frame while locked), `infosbas` |
 
 - **Speed** is the player's speed magnitude clamped to ±999, multiplied by 100 and taken modulo 1000.
 - **Kills** are object `+0x26c`. `AreaDamage` and `AmmoHit` count an object there when the player's shot finishes it off.
@@ -79,7 +79,7 @@ Every one replaces a message at its position. The lift and gate texts come from 
 Not ported yet:
 
 - The weapon light flicker and the acceleration light.
-- The locked warning, the invisibility texts, the fast kill bonus, and the bitmap, animation, fading and blinking message types.
+- The locked warning, the fast kill bonus, and the bitmap message type.
 - The big radar and its money drain.
 - The border bars.
 - The other panel modes, and the key that switches them.

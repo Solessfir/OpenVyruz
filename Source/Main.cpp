@@ -915,6 +915,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
     const FSpriteSheet VPanelSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::VPanel)) : FSpriteSheet{};
     const FSpriteSheet BonusSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Bonus)) : FSpriteSheet{};
     const FSpriteSheet IconSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Icons)) : FSpriteSheet{};
+    const FSpriteSheet SurpriseSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Surprise)) : FSpriteSheet{};
     FMessages Messages;
     constexpr std::array<uint16_t, 4> RadarColors = { 0x7c00, 0x03e0, 0x7fe0, 0x001f };
     std::vector<Gaf::FFrame> RadarPixels;
@@ -1035,6 +1036,9 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
     // Tab, then the digits 1 to 9.
     constexpr size_t WeaponKeyCount = 10;
     std::array<bool, WeaponKeyCount> WeaponKeysDown{};
+    // Object +0x170, which 3do::CreateObject starts at 50; ObjectDraw counts it up to 49 for a visible object and draws it opaque from there.
+    constexpr int FullFade = 49;
+    int PlayerFade = FullFade + 1;
     // Object +0xcc of the dead player: EngineUpdateObjects ends the game when it runs out.
     constexpr int32_t DeathMilliseconds = 10000;
     std::optional<int32_t> DeathTimer;
@@ -1102,11 +1106,23 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                 }
                 else
                 {
-                    const FPlayerCommand Command = PlayerCommandFromKeys(Pressed(GLFW_KEY_UP), Pressed(GLFW_KEY_DOWN), Pressed(GLFW_KEY_LEFT), Pressed(GLFW_KEY_RIGHT),
-                        Pressed(GLFW_KEY_A), Pressed(GLFW_KEY_D));
+                    // The player's update starts with its surprises (FUN_0041d290).
+                    if (Combat)
+                    {
+                        StepSurprises(*Combat, *Level, Bodies, *Player, *PlayerClass, Inventory, Messages, StepMilliseconds);
+                    }
+
+                    // ReadPlayerInput: Reversed-commands swaps left with right and the two strafes; Blocked-motor ignores every command.
+                    const FSurpriseState& Surprises = Inventory.Surprises;
+                    const bool bLeft = Pressed(Surprises.bReversed ? GLFW_KEY_RIGHT : GLFW_KEY_LEFT);
+                    const bool bRight = Pressed(Surprises.bReversed ? GLFW_KEY_LEFT : GLFW_KEY_RIGHT);
+                    const bool bStrafeLeft = Pressed(Surprises.bReversed ? GLFW_KEY_D : GLFW_KEY_A);
+                    const bool bStrafeRight = Pressed(Surprises.bReversed ? GLFW_KEY_A : GLFW_KEY_D);
+                    const FPlayerCommand Command = Surprises.bBlockedMotor ? FPlayerCommand{}
+                                                                            : PlayerCommandFromKeys(Pressed(GLFW_KEY_UP), Pressed(GLFW_KEY_DOWN), bLeft, bRight, bStrafeLeft, bStrafeRight);
                     if (const FObjectBody* const Struck = StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies))
                     {
-                        ReportDoorContact(*Doors, *Struck, Inventory, Messages);
+                        ReportDoorContact(*Doors, *Struck, *Player, Inventory, Messages);
                     }
                 }
 
@@ -1125,7 +1141,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                     const float EnergyBefore = Inventory.Energy;
                     const float ShieldBefore = Inventory.Shield;
                     StepGenerators(*Combat, *Level, Bodies, Rider, StepMilliseconds);
-                    const bool bFire = bAutoFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL);
+                    const bool bFire = !Inventory.Surprises.bBlockedMotor && (bAutoFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL));
                     if (!DeathTimer)
                     {
                         StepPlayerWeapon(*Combat, bFire, *Player, *PlayerObject, PlayerIndex, PlayerSpriteSize, Inventory, Messages);
@@ -1174,7 +1190,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                     Combat->CreatedObjects.clear();
                 }
 
-                if (!DeathTimer && CollectPickups(*Player, *PlayerClass, Inventory, Pickups, *Level, Messages) != 0)
+                if (!DeathTimer && CollectPickups(*Player, *PlayerClass, Inventory, Pickups, *Level, Messages, Combat ? &*Combat : nullptr) != 0)
                 {
                     std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
                     std::fflush(stdout);
@@ -1312,6 +1328,20 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
             std::stable_sort(Sprites.begin(), Sprites.end(), [](const FObjectSprite& A, const FObjectSprite& B) { return SpriteDrawsBefore(A.Depth, B.Depth); });
         }
 
+        // ObjectDraw's fade (object +0x170): an invisible player fades out by one step a frame, down to a quarter of full alpha, and back in once
+        // visible again, drawing in mode 3 until the counter is full.
+        constexpr float FadeAlphaStep = 0.02f;
+        constexpr float MinPlayerAlpha = 0.25f;
+        if (Player && Player->bInvisible)
+        {
+            PlayerFade = std::max(0, PlayerFade - 1);
+        }
+        else if (PlayerFade < FullFade)
+        {
+            ++PlayerFade;
+        }
+
+        const float PlayerAlpha = std::max(MinPlayerAlpha, float(PlayerFade) * FadeAlphaStep);
         const auto DrawObject = [&](const FObjectSprite& Sprite)
         {
             const Gaf::FAnimationFrame& Frame = Sprite.Frame;
@@ -1324,8 +1354,10 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
             const FSpriteScale Scale = FrameScale(Frame, Sprite.Stretch);
             const float OffsetX = Scale.X != 1.f ? std::trunc(float(Frame.OffsetX) * Scale.X) : float(Frame.OffsetX);
             const float OffsetY = Scale.Y != 1.f ? std::trunc(float(Frame.OffsetY) * Scale.Y) : float(Frame.OffsetY);
+            const bool bFadingPlayer = Sprite.ObjectIndex == PlayerIndex && PlayerFade < FullFade;
             Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + OffsetX - OriginX, Sprite.Y + OffsetY - OriginY,
-                Frame.bMirrorX, Frame.bMirrorY, Sprite.Blend, Scale.X, Scale.Y);
+                Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, 0xffffff, 0,
+                bFadingPlayer ? PlayerAlpha : 1.f);
         };
         const auto DrawMapRow = [&](const int64_t Row, const std::optional<int32_t> Depth)
         {
@@ -1403,12 +1435,13 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                                             : Hud.Sheet == EHudSheet::VPanel ? VPanelSheet
                                             : Hud.Sheet == EHudSheet::Bonus  ? BonusSheet
                                             : Hud.Sheet == EHudSheet::Icons  ? IconSheet
+                                            : Hud.Sheet == EHudSheet::Surprise ? SurpriseSheet
                                                                              : ColorSheet;
                 const Gaf::FAnimationFrame& Frame = Hud.Frame;
                 if (Frame.BitmapIndex != 0)
                 {
                     Renderer.DrawSprite(Sheet, Frame.BitmapIndex - 1, Hud.X + float(Frame.OffsetX), Hud.Y + float(Frame.OffsetY), Frame.bMirrorX, Frame.bMirrorY,
-                        FrameBlend(Frame), 1.f, 1.f, Hud.VisibleColumns, Hud.Diffuse, Hud.Specular);
+                        Hud.Alpha < 1.f ? ESpriteBlend::Alpha : FrameBlend(Frame), 1.f, 1.f, Hud.VisibleColumns, Hud.Diffuse, Hud.Specular, Hud.Alpha);
                 }
             }
         };

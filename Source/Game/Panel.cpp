@@ -24,6 +24,9 @@ constexpr std::array<std::string_view, 9> WeaponIconPaths = {
     "common\\data\\object\\item\\icon-mine.gaf",
 };
 
+// FUN_0041b830 loads the surprise icons.
+constexpr std::string_view SurprisePath = "common\\data\\object\\item\\surprise.gaf";
+
 // MessageLoadFonts at 00430d80 loads the message fonts; Data\Extra\v-bonus.gaf falls back to Common's, the only one there is.
 constexpr std::string_view BonusPath = "common\\data\\extra\\v-bonus.gaf";
 
@@ -53,8 +56,10 @@ constexpr size_t ScreenFont = 3;
 
 // "DANGER: SHIELD IS LOW" and the blinking warning start at 1 percent shield.
 constexpr float ShieldLowRatio = 0.01f;
-// The screen slot is drawn with draw mode 1 unless option flag 0x10 picks 5.
-constexpr uint32_t ScreenDrawMode = 1;
+// The screen slot is drawn with draw mode 1, or 5 with option flag 0x10 ("Translucent Panel"), which the highest detail preset turns on and
+// the port keeps on: DrawTexturedPolygon gives mode 5 a fixed alpha of 0x80.
+constexpr uint32_t ScreenDrawMode = 5;
+constexpr float ScreenAlpha = float(0x80) / 255.f;
 
 bool ShieldLow(const FPanelValues& Values)
 {
@@ -127,6 +132,11 @@ std::expected<FPanel, std::string> FPanel::Load(FResourceArchive& Archive)
     Result.BonusFonts = std::move(*BonusFonts);
     Result.BitmapWidths = BitmapWidthsOf(Result.Bitmaps);
     Result.BonusBitmapWidths = BitmapWidthsOf(Result.BonusBitmaps);
+    if (auto Surprise = LoadGaf(Archive, SurprisePath))
+    {
+        Result.SurpriseBitmaps = std::move(Surprise->first);
+    }
+
     static_assert(WeaponIconPaths.size() == WeaponIconCount);
     for (size_t Icon = 0; Icon < WeaponIconCount; ++Icon)
     {
@@ -199,7 +209,11 @@ void FPanel::DrawSlot(std::vector<FHudSprite>& Out, const size_t Slot, const flo
 
 const std::vector<Gaf::FFrame>& FPanel::GetBitmaps(const EHudSheet Sheet) const
 {
-    return Sheet == EHudSheet::VPanel ? VBitmaps : Sheet == EHudSheet::Bonus ? BonusBitmaps : Sheet == EHudSheet::Icons ? IconBitmaps : Bitmaps;
+    return Sheet == EHudSheet::VPanel    ? VBitmaps
+           : Sheet == EHudSheet::Bonus   ? BonusBitmaps
+           : Sheet == EHudSheet::Icons   ? IconBitmaps
+           : Sheet == EHudSheet::Surprise ? SurpriseBitmaps
+                                          : Bitmaps;
 }
 
 // Selecting a font (PgFontSelect at 0044c3c0) takes its draw mode and colour, and PgFontSetColor (0044cc30) combines the caller's colour into that.
@@ -238,6 +252,25 @@ void FPanel::DrawText(std::vector<FHudSprite>& Out, const EHudSheet Sheet, const
 
 void FPanel::DrawMessage(std::vector<FHudSprite>& Out, const FMessage& Message, const int32_t X, const int32_t Y, const std::string_view Text) const
 {
+    // An animation message draws its frame in the frame's own mode, or in mode 3 by its fading alpha.
+    if (Message.Animation)
+    {
+        constexpr float MaxAlpha = 255.f;
+        const uint32_t Frame = Message.Playback.bEnded ? 0 : Message.Playback.Frame;
+        if (Frame >= 1 && Frame <= Message.Animation->Frames.size())
+        {
+            Out.push_back({
+                .Sheet = EHudSheet::Surprise,
+                .Frame = Message.Animation->Frames[Frame - 1],
+                .X = float(X),
+                .Y = float(Y),
+                .Alpha = Message.bFading ? float(Message.FadeAlpha) / MaxAlpha : 1.f,
+            });
+        }
+
+        return;
+    }
+
     DrawText(Out, Message.Gaf == EMessageGaf::Bonus ? EHudSheet::Bonus : EHudSheet::Panel, Message.Font, X, Y, Text, Message.Color);
 }
 
@@ -352,7 +385,7 @@ std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span
     // Screen, bottom right: position, kills, enemies left and the level time.
     Gaf::FAnimationFrame Screen = Slots[ScreenSlot].Animation.Frames.empty() ? Gaf::FAnimationFrame{} : Slots[ScreenSlot].Animation.Frames.front();
     Screen.DrawFlags = ScreenDrawMode;
-    Out.push_back({ .Sheet = Slots[ScreenSlot].Sheet, .Frame = Screen, .X = Right, .Y = Bottom });
+    Out.push_back({ .Sheet = Slots[ScreenSlot].Sheet, .Frame = Screen, .X = Right, .Y = Bottom, .Alpha = ScreenAlpha });
     constexpr int32_t ScreenTextX = -0x6b;
     constexpr int32_t ScreenTextSecondX = -0x48;
     constexpr int32_t PositionY = -0x46;

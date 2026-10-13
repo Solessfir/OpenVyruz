@@ -39,5 +39,5 @@ float4 fragmentMain(VertexOutput Input) : SV_Target
     {
         discard;
     }
-    return float4(Color.rgb * Push.Diffuse.rgb + Push.Specular.rgb, Color.a);
+    return float4(Color.rgb * Push.Diffuse.rgb + Push.Specular.rgb, Push.Diffuse.a);
 }

@@ -1349,6 +1349,218 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
     return Summary;
 }
 
+namespace
+{
+// FUN_0041ba80 maps the Surprise-type keywords; any other word is no surprise.
+ESurprise SurpriseFromName(const std::string_view Name)
+{
+    static constexpr std::array<std::pair<std::string_view, ESurprise>, 20> Names = { {
+        { "random", ESurprise::Random },
+        { "bonus-auto-shield-up", ESurprise::AutoShieldUp },
+        { "bonus-circular-fire", ESurprise::CircularFire },
+        { "bonus-destroy-around", ESurprise::DestroyAround },
+        { "bonus-invisible", ESurprise::Invisible },
+        { "bonus-invulnerability", ESurprise::Invulnerability },
+        { "bonus-nop", ESurprise::Nop },
+        { "bonus-reload-weapons", ESurprise::ReloadWeapons },
+        { "bonus-time-warp", ESurprise::TimeWarp },
+        { "bonus-touch-and-destroy", ESurprise::TouchAndDestroy },
+        { "bonus-triple-fire", ESurprise::TripleFire },
+        { "malus-banana", ESurprise::Banana },
+        { "malus-blocked-motor", ESurprise::BlockedMotor },
+        { "malus-darken", ESurprise::Darken },
+        { "malus-extasy", ESurprise::Extasy },
+        { "malus-low-speed", ESurprise::LowSpeed },
+        { "malus-pinball", ESurprise::Pinball },
+        { "malus-reverse-commands", ESurprise::ReverseCommands },
+        { "malus-trap", ESurprise::Trap },
+        { "malus-weapon-jam", ESurprise::WeaponJam },
+    } };
+    const std::string Lower = ToLowerName(Name);
+    const auto Found = std::ranges::find(Names, std::string_view(Lower), &std::pair<std::string_view, ESurprise>::first);
+    return Found == Names.end() ? ESurprise::None : Found->second;
+}
+
+// FUN_0041ba00: the weights of DAT_0050d5d0, summed at load by FUN_0041b830, choose the type of a random surprise.
+ESurprise DrawSurprise(FRandom& Random)
+{
+    static constexpr std::array<int, 21> Weights = { 0, 0, 10, 10, 5, 10, 5, 10, 0, 10, 1, 5, 5, 10, 10, 5, 5, 5, 10, 10, 10 };
+    static constexpr std::array<int, 21> Cumulative = []
+    {
+        std::array<int, 21> Sums{};
+        int Sum = 0;
+        for (size_t Index = 0; Index < Weights.size(); ++Index)
+        {
+            Sum += Weights[Index];
+            Sums[Index] = Sum;
+        }
+
+        return Sums;
+    }();
+    constexpr int FallbackLow = 2;
+    constexpr int FallbackHigh = 0x14;
+    const int Draw = Random.Range(0, Cumulative.back() - 1);
+    for (size_t Index = 0; Index < Cumulative.size(); ++Index)
+    {
+        if (Draw < Cumulative[Index])
+        {
+            return ESurprise(Index);
+        }
+    }
+
+    return ESurprise(Random.Range(FallbackLow, FallbackHigh));
+}
+
+// FUN_0041bfe0: how long each surprise lasts, in milliseconds.
+int32_t SurpriseTimeout(const ESurprise Type)
+{
+    switch (Type)
+    {
+    case ESurprise::ReverseCommands:
+    case ESurprise::WeaponJam:
+    case ESurprise::Extasy:
+    case ESurprise::CircularFire:
+    case ESurprise::Invulnerability:
+        return 10000;
+    case ESurprise::Trap:
+    case ESurprise::DestroyAround:
+    case ESurprise::Nop:
+        return 1;
+    case ESurprise::Darken:
+    case ESurprise::LowSpeed:
+    case ESurprise::Pinball:
+    case ESurprise::TripleFire:
+        return 20000;
+    case ESurprise::Banana:
+    case ESurprise::AutoShieldUp:
+    case ESurprise::ReloadWeapons:
+        return 15000;
+    case ESurprise::BlockedMotor:
+        return 5000;
+    case ESurprise::TouchAndDestroy:
+        return 8000;
+    case ESurprise::Invisible:
+        return 16000;
+    case ESurprise::TimeWarp:
+        return 12000;
+    default:
+        return 0;
+    }
+}
+
+// FUN_0041bd20: the text that announces a surprise.
+std::string_view SurpriseText(const ESurprise Type)
+{
+    switch (Type)
+    {
+    case ESurprise::ReverseCommands: return "Reversed Commands !";
+    case ESurprise::Trap: return "Trap !!!!";
+    case ESurprise::WeaponJam: return "Weapon Jam !";
+    case ESurprise::Darken: return "No Light !!!!";
+    case ESurprise::Extasy: return "XTC !!!!";
+    case ESurprise::LowSpeed: return "Thrust loss !!!!";
+    case ESurprise::Pinball: return "Pinball Effect !";
+    case ESurprise::Banana: return "No Inertia Control !";
+    case ESurprise::BlockedMotor: return "Blocked Motor !!!!";
+    case ESurprise::DestroyAround: return "Destroy Around !!!!";
+    case ESurprise::TouchAndDestroy: return "Touch & Destroy !";
+    case ESurprise::AutoShieldUp: return "Auto Shield Up";
+    case ESurprise::Invisible: return "Invisible Drone !";
+    case ESurprise::CircularFire: return "Circular Fire !";
+    case ESurprise::TimeWarp: return "Time Warp !";
+    case ESurprise::ReloadWeapons: return "All Weapons Available !!!";
+    case ESurprise::Invulnerability: return "Invulnerability !";
+    case ESurprise::TripleFire: return "Triple Fire !!!";
+    default: return "";
+    }
+}
+
+// FUN_0041d180: the 1-based animation of surprise.gaf that shows the surprise, or 0 for none.
+uint32_t SurpriseIcon(const ESurprise Type)
+{
+    switch (Type)
+    {
+    case ESurprise::None:
+    case ESurprise::Random:
+    case ESurprise::Nop:
+        return 0;
+    case ESurprise::DestroyAround:
+    case ESurprise::TouchAndDestroy:
+    case ESurprise::AutoShieldUp:
+    case ESurprise::Invisible:
+    case ESurprise::CircularFire:
+    case ESurprise::TimeWarp:
+    case ESurprise::ReloadWeapons:
+    case ESurprise::Invulnerability:
+    case ESurprise::TripleFire:
+        return uint32_t(Type);
+    default:
+        // The maluses take the icon before their own number.
+        return uint32_t(Type) - 1;
+    }
+}
+
+// surprise::FUN_0041ca90: undoes the surprise in effect when it is of this type.
+void EndSurprise(FSurpriseState& State, const ESurprise Type, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory)
+{
+    if (State.Active != Type)
+    {
+        return;
+    }
+
+    switch (Type)
+    {
+    case ESurprise::ReverseCommands:
+        State.bReversed = false;
+        break;
+    case ESurprise::WeaponJam:
+        State.JammedWeapon.reset();
+        break;
+    case ESurprise::Extasy:
+    case ESurprise::LowSpeed:
+        Class.AccelerationStep = State.AccelerationStep;
+        Class.DecelerationStep = State.DecelerationStep;
+        break;
+    case ESurprise::Pinball:
+        Class.Elasticity = State.Elasticity;
+        break;
+    case ESurprise::Banana:
+        Class.Friction = State.Friction;
+        break;
+    case ESurprise::BlockedMotor:
+        State.bBlockedMotor = false;
+        break;
+    case ESurprise::Invisible:
+        // The drone is back on its body.
+        Player.Position = Player.PreviousPosition = State.Body;
+        Player.Center = CollisionFromWorld(State.Body);
+        Player.bInvisible = false;
+        break;
+    case ESurprise::CircularFire:
+        State.bCircularFire = false;
+        break;
+    case ESurprise::ReloadWeapons:
+        for (size_t Index = 0; Index < Inventory.Ammo.size() && Index < State.SavedAmmo.size(); ++Index)
+        {
+            Inventory.Ammo[Index].Count = State.SavedAmmo[Index];
+        }
+
+        State.SavedAmmo.clear();
+        break;
+    case ESurprise::Invulnerability:
+        State.bInvulnerable = false;
+        break;
+    case ESurprise::TripleFire:
+        State.bTripleFire = false;
+        break;
+    default:
+        break;
+    }
+
+    State.Active = ESurprise::None;
+}
+}
+
 std::vector<FPickup> CreatePickups(const FLevel& Level)
 {
     std::vector<FPickup> Pickups;
@@ -1387,6 +1599,7 @@ std::optional<FPickup> CreatePickup(const FLevel& Level, const size_t Index)
             .Key = Key ? std::optional(FCarriedKey{ .Id = KeyNumber("Id"), .bCode = KeyNumber("Is-code") != 0, .PartId = KeyNumber("Code-part-id"),
                                                     .PartCount = KeyNumber("Code-part-count") })
                        : std::nullopt,
+            .Surprise = SurpriseFromName(Item->Find("Surprise-type")),
         };
     }
 }
@@ -1477,8 +1690,73 @@ void AddCentreMessage(FMessages& Messages, std::string Text, const uint32_t Diff
 }
 }
 
+
+// FUN_0041cf40 for a newly collected surprise: the surprise in effect ends, the new one waits half a second, and its text and blinking icon
+// appear for as long as it lasts.
+namespace
+{
+void CollectSurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Type, FMessages& Messages)
+{
+    FSurpriseState& State = Inventory.Surprises;
+    std::erase_if(State.Carried, [&](const FCarriedSurprise& Carried)
+    {
+        if (Carried.Type != State.Active)
+        {
+            return false;
+        }
+
+        Messages.Remove(Carried.IconMessage);
+        return true;
+    });
+
+    if (Type == ESurprise::Random)
+    {
+        Type = DrawSurprise(Combat.Random);
+    }
+
+    // FUN_0041bfb0 gives every surprise a 500 ms delay.
+    constexpr int32_t StartDelay = 500;
+    constexpr int32_t ShortTimeout = 2;
+    constexpr int32_t ShortTimeoutShown = 3000;
+    constexpr int32_t MinShown = 5000;
+    constexpr int32_t TextOffset = -0x84;
+    constexpr uint32_t TextColor = 0xff2010;
+    constexpr uint32_t Font = 6;
+    constexpr int32_t IconX = -0x50;
+    constexpr int32_t IconY = -0x36;
+    constexpr int32_t IconBlinkPeriod = 10;
+    const int32_t Timeout = SurpriseTimeout(Type);
+    const int32_t Shown = std::max(MinShown, (Timeout < ShortTimeout ? ShortTimeoutShown : Timeout) + StartDelay);
+    Messages.Add({
+        .Text = std::string(SurpriseText(Type)),
+        .X = float((MessageViewWidth >> 1) + TextOffset),
+        .Y = float((MessageViewHeight >> 1) + TextOffset),
+        .LifeMilliseconds = uint32_t(Shown),
+        .Font = Font,
+        .Color = { .Diffuse = TextColor },
+    }, EMessagePlacement::Replace);
+
+    FCarriedSurprise Carried{ .Type = Type, .Delay = StartDelay, .Timeout = Timeout };
+    if (const uint32_t Icon = SurpriseIcon(Type); Icon != 0 && Icon <= Combat.SurpriseIcons.size())
+    {
+        Carried.IconMessage = Messages.Add({
+            .X = float(MessageViewWidth + IconX),
+            .Y = float(MessageViewHeight + IconY),
+            .LifeMilliseconds = uint32_t(Shown),
+            .Gaf = EMessageGaf::Surprise,
+            .Animation = Combat.SurpriseIcons[Icon - 1],
+            .BlinkPeriod = IconBlinkPeriod,
+            .BlinkTimer = IconBlinkPeriod,
+            .bFade = true,
+        }, EMessagePlacement::Always);
+    }
+
+    State.Carried.insert(State.Carried.begin(), Carried);
+}
+}
+
 size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level,
-    FMessages& Messages)
+    FMessages& Messages, FCombat* const Combat)
 {
     // Energy is only topped up below 95% of its maximum; shield below its maximum; money always.
     constexpr float EnergyRefillLimit = 0.95f;
@@ -1548,6 +1826,18 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
                 AddCentreMessage(Messages, Text, KeyColor);
             }
 
+            bUsed = true;
+        }
+
+        // The update leaves a surprise lying while the player carries one; ConsumeItem hands it to FUN_0041cf40.
+        if (Pickup.Surprise != ESurprise::None && (!Combat || !Inventory.Surprises.Carried.empty()))
+        {
+            continue;
+        }
+
+        if (Pickup.Surprise != ESurprise::None)
+        {
+            CollectSurprise(*Combat, Inventory, Pickup.Surprise, Messages);
             bUsed = true;
         }
 
@@ -1779,13 +2069,14 @@ EHolder FindHolder(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf,
 
     if (Id != 0)
     {
-        return Near(Player.State.Position) && CarriesKey(Player.Inventory.Keys, Id) ? EHolder::Player : EHolder::None;
+        return !Player.State.bInvisible && Near(Player.State.Position) && CarriesKey(Player.Inventory.Keys, Id) ? EHolder::Player : EHolder::None;
     }
 
     for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
     {
         const FLevelObject& Object = Level.Objects[Index];
-        if (!Object.bRemoved && !std::ranges::contains(NonSensingKinds, Object.SubType) && Near(ObjectPosition(Level, BodyOf, Player, Index)))
+        if (!Object.bRemoved && !std::ranges::contains(NonSensingKinds, Object.SubType) && !(Index == Player.ObjectIndex && Player.State.bInvisible) &&
+            Near(ObjectPosition(Level, BodyOf, Player, Index)))
         {
             return Index == Player.ObjectIndex ? EHolder::Player : EHolder::Other;
         }
@@ -2023,7 +2314,8 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
 
     const FBox Lift = CircleBox(Body.State.Center, Body.Class.Radius);
     const FBox Rider = CircleBox(Player.State.Center, Player.Radius);
-    if (!bAccess || Rider.MinX < Lift.MinX || Lift.MaxX < Rider.MaxX || Rider.MinY < Lift.MinY || Lift.MaxY < Rider.MaxY)
+    // ObjectUpdateLevelExit leaves an invisible player behind.
+    if (!bAccess || Player.State.bInvisible || Rider.MinX < Lift.MinX || Lift.MaxX < Rider.MaxX || Rider.MinY < Lift.MinY || Lift.MaxY < Rider.MaxY)
     {
         return false;
     }
@@ -2090,7 +2382,10 @@ void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float
     {
         if (const std::optional<float> Amount = Falloff(Player.State.Position, Player.State.Center))
         {
-            ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield, *Amount);
+            if (!Player.State.bInvisible && !Player.Inventory.Surprises.bInvulnerable)
+            {
+                ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield, *Amount);
+            }
         }
     }
 }
@@ -2272,6 +2567,7 @@ std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Lev
             .HitEffect = ToLowerName(AmmoBlock->Find("Hit-fx")),
             .ListedDamage = ListedDamage,
             .ListedArea = ListedArea,
+            .bUsableWhenInvisible = ClassNumber(*AmmoBlock, "Usable-when-invisible") != 0.f,
         });
     }
 
@@ -2648,10 +2944,11 @@ const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std
     return Exit;
 }
 
-void ReportDoorContact(const std::span<const FDoor> Doors, const FObjectBody& Body, const FPlayerInventory& Inventory, FMessages& Messages)
+void ReportDoorContact(const std::span<const FDoor> Doors, const FObjectBody& Body, const FPlayerState& Player, const FPlayerInventory& Inventory,
+    FMessages& Messages)
 {
-    // ponytail: "Cannot take lift while invisible !" and "Cannot open gates while invisible !" wait for invisibility.
     constexpr int32_t TextX = -0x96;
+    constexpr int32_t InvisibleTextX = -0xfa;
     constexpr int32_t TextY = -0x20;
     constexpr int32_t KeyTextX = -0x32;
     constexpr uint32_t LifeMilliseconds = 2000;
@@ -2665,6 +2962,19 @@ void ReportDoorContact(const std::span<const FDoor> Doors, const FObjectBody& Bo
     const bool bNeedsKey = Door->Id != 0 && !CarriesKey(Inventory.Keys, Door->Id);
     const bool bCode = (Door->Flags & DoorNeedsCode) != 0;
     std::string Text;
+    if (Player.bInvisible)
+    {
+        Messages.Add({
+            .Text = Door->bLift ? "Cannot take lift while invisible !" : "Cannot open gates while invisible !",
+            .X = float(TruncateLow(Body.State.Position.X) + InvisibleTextX),
+            .Y = float(TruncateLow(Body.State.Position.Y) + TextY),
+            .LifeMilliseconds = LifeMilliseconds,
+            .bWorld = true,
+            .Font = Font,
+        }, EMessagePlacement::Replace);
+        return;
+    }
+
     if (Door->bLift)
     {
         Text = !bNeedsKey ? "Wait, lift will come." : bCode ? "Lift needs full code !" : std::format("Lift needs key #{} !", Door->Id);
@@ -2692,6 +3002,191 @@ void ReportDoorContact(const std::span<const FDoor> Doors, const FObjectBody& Bo
 namespace
 {
 std::expected<void, std::string> ArmSeeker(FCombat& Combat, const FLevel& Level, const FLevelObject& Object, FObjectBody& Body);
+}
+
+namespace
+{
+// surprise::FUN_0041c390: what a surprise does when it starts, unless another is in effect.
+// ponytail: the screen effects (darkness, extasy, gamma flashes, screen shake), Touch-and-destroy's and Invulnerability's attached FX, Time-warp's
+// trails, and how Triple-fire and Circular-fire change a shot are not ported; their flags are kept for when they are.
+void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
+    const ESurprise Type)
+{
+    FSurpriseState& State = Inventory.Surprises;
+    if (State.Active != ESurprise::None)
+    {
+        return;
+    }
+
+    switch (Type)
+    {
+    case ESurprise::ReverseCommands:
+        State.bReversed = true;
+        break;
+    case ESurprise::Trap:
+    {
+        // CreateObjectAtByName finds Explosion but no "Shock Wave" class, so only the explosion appears.
+        constexpr float TrapScale = 0.75f;
+        constexpr int ShakeRange = 0x10;
+        SpawnEffect(Combat, "explosion", Player.Position, 0.f);
+        Inventory.Energy = float(double(Inventory.Energy) * double(TrapScale));
+        Inventory.Shield = float(double(Inventory.Shield) * double(TrapScale));
+        State.ShakeX = Combat.Random.Range(-ShakeRange, ShakeRange);
+        State.ShakeY = Combat.Random.Range(-ShakeRange, ShakeRange);
+        break;
+    }
+    case ESurprise::WeaponJam:
+        State.JammedWeapon = Combat.PlayerWeapon.Weapon;
+        break;
+    case ESurprise::Extasy:
+        State.AccelerationStep = Class.AccelerationStep;
+        State.DecelerationStep = Class.DecelerationStep;
+        Class.AccelerationStep = Class.AccelerationStep + Class.AccelerationStep;
+        Class.DecelerationStep = Class.DecelerationStep + Class.DecelerationStep;
+        break;
+    case ESurprise::LowSpeed:
+    {
+        constexpr float LowSpeedScale = 0.25f;
+        State.AccelerationStep = Class.AccelerationStep;
+        State.DecelerationStep = Class.DecelerationStep;
+        Class.AccelerationStep *= LowSpeedScale;
+        Class.DecelerationStep *= LowSpeedScale;
+        break;
+    }
+    case ESurprise::Pinball:
+    {
+        constexpr float PinballElasticity = 1.5f;
+        State.Elasticity = Class.Elasticity;
+        Class.Elasticity = PinballElasticity;
+        break;
+    }
+    case ESurprise::Banana:
+    {
+        // Friction 0.999 (0x3f7fbe77) and grip 1; the end gives the friction back but not the grip.
+        constexpr float BananaFriction = 0.999f;
+        State.Friction = Class.Friction;
+        Class.Friction = { .X = BananaFriction, .Y = BananaFriction };
+        Class.Grip = 1.f;
+        break;
+    }
+    case ESurprise::BlockedMotor:
+        State.bBlockedMotor = true;
+        break;
+    case ESurprise::DestroyAround:
+    {
+        // FUN_0043d980: everything destructible within six cells loses its energy, and the screen shakes.
+        constexpr int AroundCells = 6;
+        constexpr int ShakeRange = 0x20;
+        const FWorldCell Centre = CellOf(Player.Position);
+        for (FObjectBody& Body : Bodies)
+        {
+            const FWorldCell Cell = CellOf(Body.State.Position);
+            if (!Body.bIndestructible && !Level.Objects[Body.ObjectIndex].bRemoved && std::abs(Cell.X - Centre.X) <= AroundCells &&
+                std::abs(Cell.Y - Centre.Y) <= AroundCells)
+            {
+                Body.Energy = 0.f;
+                Body.bDamaged = true;
+            }
+        }
+
+        State.ShakeX = Combat.Random.Range(-ShakeRange, ShakeRange);
+        State.ShakeY = Combat.Random.Range(-ShakeRange, ShakeRange);
+        break;
+    }
+    case ESurprise::Invisible:
+        Player.bInvisible = true;
+        State.Body = Player.Position;
+        State.InvisibleTimer = SurpriseTimeout(ESurprise::Invisible);
+        State.ReturnStart.reset();
+        break;
+    case ESurprise::CircularFire:
+        State.bCircularFire = true;
+        break;
+    case ESurprise::ReloadWeapons:
+        State.SavedAmmo.clear();
+        for (FAmmoStock& Stock : Inventory.Ammo)
+        {
+            State.SavedAmmo.push_back(Stock.Count);
+            Stock.Count = Stock.Max;
+        }
+
+        break;
+    case ESurprise::Invulnerability:
+        State.bInvulnerable = true;
+        break;
+    case ESurprise::TripleFire:
+        State.bTripleFire = true;
+        break;
+    default:
+        break;
+    }
+
+    State.Active = Type;
+}
+}
+
+void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
+    FMessages& Messages, const uint32_t StepMilliseconds)
+{
+    FSurpriseState& State = Inventory.Surprises;
+    const int32_t Step = int32_t(StepMilliseconds);
+    bool bInEffect = false;
+    for (auto Carried = State.Carried.begin(); Carried != State.Carried.end();)
+    {
+        if (0 < Carried->Delay)
+        {
+            Carried->Delay -= Step;
+            ++Carried;
+            continue;
+        }
+
+        if (0 < Carried->Timeout)
+        {
+            Carried->Timeout -= Step;
+            if (!Carried->bStarted)
+            {
+                StartSurprise(Combat, Level, Bodies, Player, Class, Inventory, Carried->Type);
+                Carried->bStarted = true;
+            }
+
+            bInEffect = true;
+            ++Carried;
+            continue;
+        }
+
+        EndSurprise(State, Carried->Type, Player, Class, Inventory);
+        Messages.Remove(Carried->IconMessage);
+        Carried = State.Carried.erase(Carried);
+    }
+
+    if (!bInEffect)
+    {
+        State.Active = ESurprise::None;
+    }
+
+    // FUN_00445380: in its last second the invisible drone flies back to its body, passable and without speed.
+    if (Player.bInvisible && 0 < State.InvisibleTimer)
+    {
+        constexpr int32_t ReturnMilliseconds = 1000;
+        constexpr float PerMillisecond = 0.001f;
+        State.InvisibleTimer -= Step;
+        if (State.InvisibleTimer < ReturnMilliseconds)
+        {
+            if (!State.ReturnStart)
+            {
+                State.ReturnStart = Player.Position;
+            }
+
+            const float Along = 1.f - float(State.InvisibleTimer) * PerMillisecond;
+            Player.Velocity = {};
+            Player.Position = {
+                .X = Along * (State.Body.X - State.ReturnStart->X) + State.ReturnStart->X,
+                .Y = Along * (State.Body.Y - State.ReturnStart->Y) + State.ReturnStart->Y,
+            };
+            Player.PreviousPosition = Player.Position;
+            Player.Center = CollisionFromWorld(Player.Position);
+        }
+    }
 }
 
 void StepGenerators(FCombat& Combat, FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTarget& Player, const uint32_t StepMilliseconds)
@@ -2956,6 +3451,14 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
     }
 
     EffectNames.insert(EffectNames.end(), ProductEffects.begin(), ProductEffects.end());
+    // A trap surprise sets off an Explosion FX.
+    EffectNames.push_back("explosion");
+    if (const std::optional<std::vector<uint8_t>> File = Archive.Read("common\\data\\object\\item\\surprise.gaf"))
+    {
+        const std::optional<std::vector<Gaf::FFrame>> Bitmaps = Gaf::LoadFrames(*File);
+        std::optional<std::vector<Gaf::FAnimation>> Animations = Bitmaps ? Gaf::LoadAnimations(*File, Bitmaps->size()) : std::nullopt;
+        Combat.SurpriseIcons = Animations ? std::move(*Animations) : std::vector<Gaf::FAnimation>{};
+    }
 
     for (const std::string& Name : EffectNames)
     {
@@ -3115,8 +3618,35 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
     FWeaponState& State = Combat.PlayerWeapon;
     const FWeaponClass& Weapon = Combat.Weapons[State.Weapon];
     UpdateSlope(State, Weapon, bFire);
-    if (!bFire)
+    // WeaponFire holds back the jammed weapon (session +0x220c).
+    if (!bFire || Inventory.Surprises.JammedWeapon == State.Weapon)
     {
+        return;
+    }
+
+    // ObjectUpdateWeapon fires only Usable-when-invisible ammo while the player is invisible, and says so with option flag 8.
+    const auto AmmoClass = std::ranges::find(Combat.AmmoClasses, Weapon.Ammo, &FAmmoClass::Name);
+    if (Player.bInvisible && (AmmoClass == Combat.AmmoClasses.end() || !AmmoClass->bUsableWhenInvisible))
+    {
+        constexpr int32_t NoteX = 100;
+        constexpr int32_t NoteY = 0x6e;
+        constexpr uint32_t NoteLifeMilliseconds = 2000;
+        constexpr uint32_t PanelScreenFont = 3;
+        if (Messages.Exists(NoteX, NoteY))
+        {
+            Messages.SetLife(NoteX, NoteY, NoteLifeMilliseconds);
+            return;
+        }
+
+        Messages.Add({
+            .Text = "NOTE : ONLY MINES CAN BE USED WHILE INVISIBLE",
+            .X = float(NoteX),
+            .Y = float(NoteY),
+            .LifeMilliseconds = NoteLifeMilliseconds,
+            .bTypewriter = true,
+            .Gaf = EMessageGaf::Panel,
+            .Font = PanelScreenFont,
+        }, EMessagePlacement::Replace);
         return;
     }
 
@@ -3506,6 +4036,11 @@ EPathStatus AdvanceRoute(FObjectBody& Body, FRouteWork& Work, std::optional<std:
 // A guardian searches its Guardian Range in every direction instead.
 bool FindTarget(const FObjectBody& Body, const FSeeker& Seeker, const FPlayerState& Player)
 {
+    if (Player.bInvisible)
+    {
+        return false;
+    }
+
     const FCollisionPoint Delta{ .X = Player.Center.X - Body.State.Center.X, .Y = Player.Center.Y - Body.State.Center.Y };
     const int Range = int(Seeker.bGuardian ? Seeker.GuardRange : Seeker.SensorRange);
     constexpr int AllAround = DirectionCount / 2;
@@ -3951,7 +4486,7 @@ void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrai
                 Turret.ScanTimer += Turret.ScanDelay;
                 const bool bInRange = DistanceSquared <= float(int(Turret.SensorRange) * int(Turret.SensorRange));
                 const bool bInView = DirectionDistance(FindDirection(ToTarget), Turret.BaseDirection) <= Turret.VisionDirections;
-                if (bInRange && bInView && Turret.Search.Start(Body.State.Center, Player.Center))
+                if (bInRange && bInView && !Player.bInvisible && Turret.Search.Start(Body.State.Center, Player.Center))
                 {
                     Turret.bSearching = true;
                     Turret.SearchTimer = 0;
@@ -4163,7 +4698,11 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             // ponytail: the player's own shove and absorption blocks are not ported.
             if (bPlayer)
             {
-                ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield, Ammo.Damage);
+                // ApplyDamage spares an invisible player and an invulnerable object (flags 8 and 0x800000).
+                if (!Player.State.bInvisible && !Player.Inventory.Surprises.bInvulnerable)
+                {
+                    ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield, Ammo.Damage);
+                }
             }
 
             for (size_t Index = 0; Index < WasAlive.size(); ++Index)
@@ -4902,6 +5441,50 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     if (Dropped == 0 || Wrecks == 0)
     {
         return std::unexpected(std::format("{} objects dropped, {} wrecks", Dropped, Wrecks));
+    }
+
+    // Every surprise starts after its half-second delay and is gone once its time is up; an invisible player takes no damage.
+    {
+        FCombat Check;
+        FLevel Level;
+        std::vector<FObjectBody> Bodies;
+        FMessages SurpriseMessages;
+        constexpr uint32_t SurpriseStep = 10;
+        constexpr uint32_t StartMilliseconds = 600;
+        constexpr int32_t EndMilliseconds = 21000;
+        for (int Type = int(ESurprise::ReverseCommands); Type < int(ESurprise::Nop); ++Type)
+        {
+            FPlayerState Player;
+            FMovementClass Class;
+            FPlayerInventory Surprised{ .Energy = 100.f, .Shield = 100.f };
+            CollectSurprise(Check, Surprised, ESurprise(Type), SurpriseMessages);
+            for (uint32_t Time = 0; Time < StartMilliseconds; Time += SurpriseStep)
+            {
+                StepSurprises(Check, Level, Bodies, Player, Class, Surprised, SurpriseMessages, SurpriseStep);
+            }
+
+            // Trap and Destroy-around last one millisecond and are over by now.
+            constexpr int32_t Momentary = 1;
+            if (SurpriseTimeout(ESurprise(Type)) > Momentary && Surprised.Surprises.Active != ESurprise(Type))
+            {
+                return std::unexpected(std::format("surprise {} did not start", Type));
+            }
+
+            if (ESurprise(Type) == ESurprise::Invisible && !Player.bInvisible)
+            {
+                return std::unexpected("the invisible surprise left the player visible");
+            }
+
+            for (int32_t Time = 0; Time < EndMilliseconds; Time += int32_t(SurpriseStep))
+            {
+                StepSurprises(Check, Level, Bodies, Player, Class, Surprised, SurpriseMessages, SurpriseStep);
+            }
+
+            if (Surprised.Surprises.Active != ESurprise::None || !Surprised.Surprises.Carried.empty() || Player.bInvisible)
+            {
+                return std::unexpected(std::format("surprise {} did not end", Type));
+            }
+        }
     }
 
     if (GeneratorsBirthing * 10 < Generators * 9)

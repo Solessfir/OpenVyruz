@@ -26,6 +26,8 @@ enum class EHudSheet : uint8_t
     Bonus,
     // The nine weapon icons of Common\Data\Object\Item, packed together.
     Icons,
+    // Common\Data\Object\Item\surprise.gaf, the surprise icons.
+    Surprise,
 };
 
 // Radar dot colours, as the indices PanelDrawRadar at 00436080 plots.
@@ -49,6 +51,8 @@ struct FHudSprite
     // 0xRRGGBB colours that modulate the bitmap and are added to it.
     uint32_t Diffuse = 0xffffff;
     uint32_t Specular = 0;
+    // Below one the sprite blends by this alpha (draw mode 3).
+    float Alpha = 1.f;
 };
 
 // What the panel shows of the player and the level.
@@ -120,6 +124,7 @@ private:
     std::vector<Font::FFont> Fonts;
     std::vector<Font::FFont> BonusFonts;
     std::vector<Gaf::FFrame> IconBitmaps;
+    std::vector<Gaf::FFrame> SurpriseBitmaps;
     std::array<FSlot, SlotCount> Slots;
     // Session +0x22b8, one per weapon slot.
     std::array<FSlot, WeaponIconCount> Icons;

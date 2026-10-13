@@ -37,8 +37,8 @@ struct FSpritePush
     float Specular[4];
 };
 
-// Unpacks a D3DCOLOR's red, green and blue bytes.
-void UnpackColor(const uint32_t Color, float (&Out)[4])
+// Unpacks a D3DCOLOR's red, green and blue bytes; the fourth channel carries the sprite's alpha.
+void UnpackColor(const uint32_t Color, float (&Out)[4], const float Alpha = 1.f)
 {
     constexpr float ChannelMax = 255.f;
     constexpr int RedShift = 16;
@@ -47,7 +47,7 @@ void UnpackColor(const uint32_t Color, float (&Out)[4])
     Out[0] = float((Color >> RedShift) & ChannelMask) / ChannelMax;
     Out[1] = float((Color >> GreenShift) & ChannelMask) / ChannelMax;
     Out[2] = float(Color & ChannelMask) / ChannelMax;
-    Out[3] = 1.f;
+    Out[3] = Alpha;
 }
 
 // Expands 5-bit channels to 8 bits the same way most D3D drivers did: replicate the top bits into the low bits.
@@ -353,11 +353,12 @@ void FRenderer::CreatePipeline()
     };
     for (size_t Index = 0; Index < std::size(SpritePipelines); ++Index)
     {
-        // Original hardware blend states at 00496280: mode 6 adds light, mode 8 darkens with inverse source RGB.
+        // Original hardware blend states at 00496280: mode 6 adds light, mode 8 darkens with inverse source RGB, modes 2 and 4 blend by alpha.
         const bool bAdditive = Index == static_cast<size_t>(ESpriteBlend::Additive);
+        const bool bAlpha = Index == static_cast<size_t>(ESpriteBlend::Alpha);
         BlendAttachment.blendEnable = Index != static_cast<size_t>(ESpriteBlend::Opaque);
-        BlendAttachment.srcColorBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO;
-        BlendAttachment.dstColorBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        BlendAttachment.srcColorBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE : bAlpha ? VK_BLEND_FACTOR_SRC_ALPHA : VK_BLEND_FACTOR_ZERO;
+        BlendAttachment.dstColorBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE : bAlpha ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
         BlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
         BlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &PipelineInfo, nullptr, &SpritePipelines[Index]), "vkCreateGraphicsPipelines");
@@ -762,7 +763,8 @@ bool FRenderer::BeginFrame()
 }
 
 void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInSheet, const float X, const float Y, const bool bMirrorX, const bool bMirrorY,
-    const ESpriteBlend Blend, const float ScaleX, const float ScaleY, const uint32_t VisibleColumns, const uint32_t Diffuse, const uint32_t Specular)
+    const ESpriteBlend Blend, const float ScaleX, const float ScaleY, const uint32_t VisibleColumns, const uint32_t Diffuse, const uint32_t Specular,
+    const float Alpha)
 {
     if (Sheet.Texture >= Textures.size() || FrameIndexInSheet >= Sheet.Frames.size())
     {
@@ -793,7 +795,7 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
         .UvRect = { bMirrorX ? U1 : Frame.U0, bMirrorY ? Frame.V1 : Frame.V0, bMirrorX ? Frame.U0 : U1, bMirrorY ? Frame.V0 : Frame.V1 },
         .ScreenSize = { ScreenWidth, ScreenHeight },
     };
-    UnpackColor(Diffuse, Push.Diffuse);
+    UnpackColor(Diffuse, Push.Diffuse, Alpha);
     UnpackColor(Specular, Push.Specular);
     vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, SpritePipelines[static_cast<size_t>(Blend)]);
     vkCmdBindDescriptorSets(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, PipelineLayout, 0, 1, &Textures[Sheet.Texture].DescriptorSet, 0, nullptr);

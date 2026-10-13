@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Game/Animation.h"
 #include "Game/Collision.h"
 #include "Game/Message.h"
 #include "Game/Path.h"
@@ -17,31 +18,6 @@ class FResourceArchive;
 struct FLevel;
 struct FLevelObject;
 
-// UpdateAnimation at 0045e7e0 holds each frame for its duration in ticks; VzRun fixes the tick at 14 ms through AnimationSetFixedPeriod
-// (0045e4c0), so the display period never applies.
-inline constexpr int32_t AnimationPeriodMilliseconds = 14;
-
-// __ftol truncates into 64 bits and its callers keep the low half; NaN and out-of-range values give the integer indefinite, whose low half is zero.
-constexpr int32_t TruncateLow(const double Value)
-{
-    constexpr double Limit = 9223372036854775808.0;
-    return Value > -Limit && Value < Limit ? int32_t(uint32_t(uint64_t(int64_t(Value)))) : 0;
-}
-
-// An animation instance's frame and timer, as StartAnimation (0045e770) resets them and UpdateAnimation (0045e7e0) advances them.
-struct FAnimationPlayback
-{
-    // 1-based.
-    uint32_t Frame = 0;
-    int32_t Timer = 0;
-    bool bEnded = false;
-};
-
-// UpdateAnimation at 0045e7e0. Object animations neither run backwards nor play back and forth, so only looping is handled.
-void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, int32_t Milliseconds);
-FAnimationPlayback StartAnimation(const Gaf::FAnimation& Animation);
-// ObjectDraw at 00431ae0 shows a chosen frame by stepping back to the one before it and replaying the time left, which lands on it.
-void ShowFrame(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, uint32_t Frame);
 
 // The grid cells that the object passes of EngineRunLevel (EngineVisitViewObjects at 00433b30) visit around the view, as half-open ranges.
 struct FViewCells
@@ -148,6 +124,8 @@ struct FPlayerState
     int TurnTimer = 0;
     // Object flag 0x100: set on objects that were hit, so their velocity carries them until it drops below 1.
     bool bPushed = false;
+    // Object flag 8: seekers and gates do not find the object, and the player takes no damage.
+    bool bInvisible = false;
 };
 
 struct FAmmoStock
@@ -155,6 +133,73 @@ struct FAmmoStock
     std::string Name;
     float Count = 0.f;
     float Max = 0.f;
+};
+
+// The surprise types of surprise.cpp, in the order of their probability table (DAT_0050d5d0) and of FUN_0041bc10's names.
+enum class ESurprise : int32_t
+{
+    None,
+    Random,
+    ReverseCommands,
+    Trap,
+    WeaponJam,
+    Darken,
+    Extasy,
+    LowSpeed,
+    Pinball,
+    Banana,
+    BlockedMotor,
+    DestroyAround,
+    TouchAndDestroy,
+    AutoShieldUp,
+    Invisible,
+    CircularFire,
+    TimeWarp,
+    ReloadWeapons,
+    Invulnerability,
+    TripleFire,
+    Nop,
+};
+
+// A collected surprise item the player carries (object +0x11c): its delay before it starts and the time it lasts (item attribute +0x2c, +0x30).
+struct FCarriedSurprise
+{
+    ESurprise Type = ESurprise::None;
+    int32_t Delay = 0;
+    int32_t Timeout = 0;
+    bool bStarted = false;
+    // The blinking icon message at the screen's corner.
+    uint32_t IconMessage = 0;
+};
+
+// What the surprise in effect changes on the player and the session.
+struct FSurpriseState
+{
+    // Newest first, as ConsumeItem prepends them.
+    std::vector<FCarriedSurprise> Carried;
+    // Object +0xd4: only one surprise acts at a time.
+    ESurprise Active = ESurprise::None;
+    bool bReversed = false;
+    bool bBlockedMotor = false;
+    bool bInvulnerable = false;
+    bool bTripleFire = false;
+    bool bCircularFire = false;
+    // Session +0x220c: the weapon that will not fire.
+    std::optional<size_t> JammedWeapon;
+    // The movement values the surprise replaced (kept at session +0x2208).
+    float AccelerationStep = 0.f;
+    float DecelerationStep = 0.f;
+    float Elasticity = 0.f;
+    FCollisionPoint Friction;
+    // Reload-weapons gives back the stocks it found when it ends.
+    std::vector<float> SavedAmmo;
+    // Invisible: the drone's body stays where it was (session +0x26ac) and the drone flies back to it in the last second (FUN_00445380).
+    FCollisionPoint Body;
+    int32_t InvisibleTimer = 0;
+    std::optional<FCollisionPoint> ReturnStart;
+    // Session +0x2200 and +0x2204: the screen shake a trap or Destroy-around starts.
+    int ShakeX = 0;
+    int ShakeY = 0;
 };
 
 // One weapon's firing state (the weapon instance at object +0x24c).
@@ -382,6 +427,8 @@ struct FPickup
     std::string AmmoType;
     float AddAmmo = 0.f;
     std::optional<FCarriedKey> Key;
+    // The TYPE Item's Surprise-type.
+    ESurprise Surprise = ESurprise::None;
 };
 
 // The player's Energy, Shield, money and ammo, as the item pickup branch of EngineUpdateObjects (004406e0) changes them.
@@ -397,6 +444,7 @@ struct FPlayerInventory
     std::vector<FCarriedKey> Keys;
     // Object +0x26c: the objects the player's shots finished off.
     int Kills = 0;
+    FSurpriseState Surprises;
 };
 
 // TYPE Gate and TYPE Lift flags (attribute +0x10) as LoadObjectClassLibrary packs them.
@@ -469,6 +517,8 @@ struct FAmmoClass
     // when either is zero.
     int ListedDamage = 0;
     int ListedArea = 0;
+    // Usable-when-invisible (the ammo attribute's flag 8): only such ammo fires while the player is invisible.
+    bool bUsableWhenInvisible = false;
 };
 
 // An FX class (fx.3dc) and the animation it plays.
@@ -528,6 +578,8 @@ struct FCombat
     std::vector<FWeaponState> PlayerSlotStates;
     // The player class's TYPE Explosion blocks, set off when it dies.
     std::vector<FExplosionBlock> PlayerExplosions;
+    // Common\Data\Object\Item\surprise.gaf's animations, one per surprise icon.
+    std::vector<Gaf::FAnimation> SurpriseIcons;
     std::vector<FProjectile> Projectiles;
     std::vector<FEffectClass> EffectClasses;
     std::vector<FEffect> Effects;
@@ -592,7 +644,10 @@ std::optional<FPickup> CreatePickup(const FLevel& Level, size_t ObjectIndex);
 FPlayerInventory CreateInventory(const FLevelObject& Player);
 // Collects every pickup the player's circle touches; returns how many were taken and marks them removed in the level.
 size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level,
-    FMessages& Messages);
+    FMessages& Messages, FCombat* Combat = nullptr);
+// FUN_0041d290 for the player once a step, before it moves: surprises wait, start, and end. Then the invisible drone's return (FUN_00445380).
+void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
+    FMessages& Messages, uint32_t StepMilliseconds);
 // One game step of the player's part of EngineUpdateObjects (004406e0). Bodies are the other collidable objects; Self skips one of them. Returns
 // the body the move ran into, if any.
 const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
@@ -610,7 +665,7 @@ std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, 
 const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, std::span<FObjectBody> Bodies, const FPlayerTarget& Player,
     uint32_t StepMilliseconds, FMessages& Messages);
 // The player's contact with a closed lift or gate tells it what the door is waiting for.
-void ReportDoorContact(std::span<const FDoor> Doors, const FObjectBody& Body, const FPlayerInventory& Inventory, FMessages& Messages);
+void ReportDoorContact(std::span<const FDoor> Doors, const FObjectBody& Body, const FPlayerState& Player, const FPlayerInventory& Inventory, FMessages& Messages);
 // ObjectUpdateLevelExit names the next level within the current zone, or within the lift's Scenery when the zone changes.
 std::string NextLevelPath(std::string_view CurrentPath, const FDoor& Lift);
 // Activates the level's objects, which draws each bob's phase and sets its first altitude, then loads the player's weapons, arms the level's
