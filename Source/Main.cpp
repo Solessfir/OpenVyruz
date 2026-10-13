@@ -388,24 +388,31 @@ const std::vector<Gaf::FAnimation>* FindAnimations(const FObjectSprites& Sprites
     return Sheet == Sprites.SheetIndices.end() ? nullptr : &Sprites.Animations[Sheet->second];
 }
 
+std::optional<FActorAnimation> CreateActorAnimation(const FObjectBody& Body, const FLevel& Level, const FObjectSprites& Sprites)
+{
+    const FLevelObject& Object = Level.Objects[Body.ObjectIndex];
+    const std::vector<Gaf::FAnimation>* const Animations = FindAnimations(Sprites, Object.GafPath);
+    if (!Body.Actor || !Animations || Object.GafIndex < 1)
+    {
+        return std::nullopt;
+    }
+
+    FActorAnimation Actor{ .PreviousPose = Body.State.Pose };
+    const size_t WalkCount = Object.SubType == "walker" ? size_t(ObjectDirectionCount) : Object.SubType == "spider" ? size_t(FourWayDirectionCount) : 0;
+    for (size_t Walk = 0; Walk < WalkCount && size_t(Object.GafIndex - 1) + Walk < Animations->size(); ++Walk)
+    {
+        Actor.Walks.push_back(StartAnimation((*Animations)[size_t(Object.GafIndex - 1) + Walk]));
+    }
+
+    return Actor;
+}
+
 std::vector<std::optional<FActorAnimation>> CreateActorAnimations(const std::span<const FObjectBody> Bodies, const FLevel& Level, const FObjectSprites& Sprites)
 {
     std::vector<std::optional<FActorAnimation>> Result(Level.Objects.size());
     for (const FObjectBody& Body : Bodies)
     {
-        const FLevelObject& Object = Level.Objects[Body.ObjectIndex];
-        const std::vector<Gaf::FAnimation>* const Animations = FindAnimations(Sprites, Object.GafPath);
-        if (!Body.Actor || !Animations || Object.GafIndex < 1)
-        {
-            continue;
-        }
-
-        FActorAnimation& Actor = Result[Body.ObjectIndex].emplace(FActorAnimation{ .PreviousPose = Body.State.Pose });
-        const size_t WalkCount = Object.SubType == "walker" ? size_t(ObjectDirectionCount) : Object.SubType == "spider" ? size_t(FourWayDirectionCount) : 0;
-        for (size_t Walk = 0; Walk < WalkCount && size_t(Object.GafIndex - 1) + Walk < Animations->size(); ++Walk)
-        {
-            Actor.Walks.push_back(StartAnimation((*Animations)[size_t(Object.GafIndex - 1) + Walk]));
-        }
+        Result[Body.ObjectIndex] = CreateActorAnimation(Body, Level, Sprites);
     }
 
     return Result;
@@ -1117,6 +1124,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                     Combat->Clock += StepMilliseconds;
                     const float EnergyBefore = Inventory.Energy;
                     const float ShieldBefore = Inventory.Shield;
+                    StepGenerators(*Combat, *Level, Bodies, Rider, StepMilliseconds);
                     const bool bFire = bAutoFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL);
                     if (!DeathTimer)
                     {
@@ -1156,8 +1164,14 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                         }
                     }
 
-                    Combat->CreatedObjects.clear();
                     ActorAnimations.resize(Level->Objects.size());
+                    for (const size_t Created : Combat->CreatedObjects)
+                    {
+                        const auto Body = std::ranges::find(Bodies, Created, &FObjectBody::ObjectIndex);
+                        ActorAnimations[Created] = Body == Bodies.end() ? std::nullopt : CreateActorAnimation(*Body, *Level, *Objects);
+                    }
+
+                    Combat->CreatedObjects.clear();
                 }
 
                 if (!DeathTimer && CollectPickups(*Player, *PlayerClass, Inventory, Pickups, *Level, Messages) != 0)

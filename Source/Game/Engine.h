@@ -315,6 +315,27 @@ struct FAbsorption
 };
 
 // A placed object that takes part in collisions (Bounding-Box-Size above zero), with its own inertia once pushed.
+// A StaticGen's TYPE Generator block (attribute kind 2) and its birth cycle (ObjectUpdateGenerator at 004372a0).
+struct FGenerator
+{
+    // Lower-case class name.
+    std::string Product;
+    // Negative for no limit.
+    int MaxBirths = 0;
+    int Births = 0;
+    int32_t BirthDelay = 0;
+    int32_t BirthDuration = 0;
+    int32_t Timer = 0;
+    // A damaged generator counts its time down twice as fast.
+    bool bStressable = false;
+    // Flag 2: the generator has closed for a birth, which comes when the timer runs out. Active sets it from the start.
+    bool bBirthing = false;
+    // A product's death frees its place for another birth (ObjectDropContents at 00437f80).
+    bool bStablePopulation = false;
+    // EngineActivateObjects counts a generator of seekers or trackers as an enemy.
+    bool bProductHunts = false;
+};
+
 struct FObjectBody
 {
     size_t ObjectIndex = 0;
@@ -334,6 +355,9 @@ struct FObjectBody
     bool bPassable = false;
     std::optional<FTurret> Turret;
     std::optional<FActor> Actor;
+    std::optional<FGenerator> Generator;
+    // Object +0x2b4: the generator that made this object, by object index.
+    std::optional<size_t> Parent;
 };
 
 inline constexpr int PlayerPoseCount = 48;
@@ -552,6 +576,10 @@ std::expected<FMovementClass, std::string> ReadMovementClass(const FLevelObject&
 FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class);
 // Every collidable object except the player; classes without movement properties keep zeroed fields like the original class record.
 std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level);
+// The body of one level object, or nullopt when it does not collide.
+std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, size_t Index);
+// Every generator's birth cycle for one step; new products join Bodies and Combat.CreatedObjects.
+void StepGenerators(FCombat& Combat, FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTarget& Player, uint32_t StepMilliseconds);
 std::vector<FPickup> CreatePickups(const FLevel& Level);
 // The 1-based slot "next weapon" moves to (FUN_004376a0): the first after the one in hand, wrapping after slot 9, whose ammo stock is not empty,
 // or the one in hand when none is.
@@ -607,7 +635,7 @@ std::expected<void, std::string> VerifyPlayerMovement();
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive);
 std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive);
 // The level's enemies still alive, as the session counter at +0x2094 keeps them: seekers and trackers that hunt the player.
-// ponytail: generators of enemies, which EngineActivateObjects also counts, are not ported.
+// Generators of hunters count too, as EngineActivateObjects counts them.
 int CountEnemies(const FLevel& Level, std::span<const FObjectBody> Bodies);
 // Every level's gates close with nothing near and open for the player, and the player rides every usable lift.
 std::expected<std::string, std::string> VerifyDoors(FResourceArchive& Archive);

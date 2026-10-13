@@ -66,6 +66,20 @@ The first object lands on the wreck's truncated position. Each later one is plac
 
 The new objects are not activated, so they draw no bob phase.
 
+## Generators
+
+A StaticGen (kind 0x17, the `Generator-*` classes of tower 3) carries a `TYPE Generator` block, attribute kind 2: `Product` (a class, keyword 0x66) at `+0x10`, `Max-births` (negative for no limit) at `+0x14`, the births so far at `+0x18`, `Birth-delay` and `Birth-duration` in milliseconds at `+0x1c` and `+0x20`, a timer at `+0x24`, and flags at `+0x28`: 1 `Stressable`, 2 `Active` (a birth under way), 4 `Stable-population`.
+
+`ObjectUpdateGenerator` (`004372a0`) runs at the end of the generator's update every step; generators skip the view check other objects have. While births remain and either time is set:
+
+1. The timer counts the step down, twice as fast for a stressable generator whose energy is below its class maximum.
+2. When the step reaches it, a generator that is neither under way nor open (object `+0x5c` bit 1) waits.
+3. Otherwise `ObjectOverlapsSolid` (`00405df0`) tests the generator closed: anything solid on it holds the birth back.
+4. An open generator closes: the timer becomes the birth duration and flag 2 is set.
+5. A closed one creates its product on itself (`FUN_00433ff0`), links it back at product `+0x2b0` and `+0x2b4`, gives it weapon slot 1, counts the birth, opens and restarts the timer with the birth delay. A product that hunts the player adds to the enemy count.
+
+`Active = 1` makes the first birth come at the first update. With `Stable-population`, `ObjectDropContents` takes a dead product off its generator's births, so it makes another.
+
 ## Wrecks
 
 A class with `Two-pieces` (class `+0x20` bit 2: tanks and turrets) dies twice. On the first death `EngineUpdateObjects` calls `ObjectDestroy` with its keep flag: the explosions go off and the reward is paid, but nothing drops and the enemy count stays. The object becomes a wreck (object `+0x128` bit `0x20`): its energy and shield go back to the class's initial values, and its behaviour becomes plain Fixed (8), so it neither moves nor looks for the player. `ObjectDraw` leaves out a wreck's upper half, a tank's top or a turret's gun, and keeps the turret's base (the animation after its 24 gun poses) and the shadow. The second death destroys it for good. Gold boxes leave `Gold` (500 money), and many classes drop a `Surprise` power-up by chance.
@@ -90,7 +104,7 @@ The port runs the original incremental route search from collision centre to col
 - The idle look-around of fixed objects (`FixedIdleLookAround`, `00444a40`), with its saved random state.
 - Drawing turret bases, the player's shove and absorption, the HUD and the player's death.
 - Automatic weapon switching when the stock is empty.
-- Water splashes, what a surprise does when collected, and sounds.
+- Water splashes, what a surprise does when collected, the generator's opening animation, the `CREATE` trails and smoke (they draw from their own random stream), and sounds.
 - Blasts hurting pickups.
 - Drawing visible ammo.
 

@@ -23,7 +23,7 @@ Every part is placed from a screen corner (session `+0xf84` and `+0xf88`), so th
 
 - **Speed** is the player's speed magnitude clamped to ±999, multiplied by 100 and taken modulo 1000.
 - **Kills** are object `+0x26c`. `AreaDamage` and `AmmoHit` count an object there when the player's shot finishes it off.
-- **Enemies** are session `+0x2094`. `EngineActivateObjects` counts every seeker or tracker that hunts the player, and every generator of one; each one's death lowers the count.
+- **Enemies** are session `+0x2094`. `EngineActivateObjects` counts every seeker or tracker that hunts the player, and every generator of one; each birth of a hunter raises it and each death lowers it.
 - **Option flags:** with flag `0x20` four bars frame the screen. With flag 8, "WARNING : YOU ARE LOCKED" and "DANGER : SHIELD IS LOW" appear as floating messages at 100, 90 and 100, 100.
 - **Big radar:** while it is on (session `+0x1ff0`), it costs 30 money in each pass, and runs out below 30.
 

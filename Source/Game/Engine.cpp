@@ -855,145 +855,167 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
     return HitBody;
 }
 
+std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t Index)
+{
+    const FLevelObject& Object = Level.Objects[Index];
+    // Kinds come from the class Sub-type or the GAF folder (CreateObject at 00413800); pickups are collected instead of blocking.
+    constexpr std::array<std::string_view, 8> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller", "lift", "gate" };
+    constexpr std::array<std::string_view, 6> ActorKinds = { "cop", "jeep", "tank", "walker", "spider", "heli" };
+    constexpr std::string_view CopKind = "cop";
+    constexpr std::string_view TankKind = "tank";
+    constexpr std::string_view WalkerKind = "walker";
+    constexpr std::string_view SpiderKind = "spider";
+    const bool bActor = std::ranges::contains(ActorKinds, Object.SubType);
+    if (Object.BoundingBoxSize <= 0 || (!bActor && !std::ranges::contains(SolidKinds, Object.SubType)) || IsPickup(Object))
+    {
+        return std::nullopt;
+    }
+
+    const FLevelPropertyBlock& Properties = Object.Properties;
+    const auto Number = [](const FLevelPropertyBlock* Block, const std::string_view Field)
+    {
+        return Block ? ParseLevelFloat(Block->Find(Field)).value_or(0.f) : 0.f;
+    };
+    FMovementClass Class{
+        .Weight = Number(FindBlock(Properties, "Weight"), "Initial"),
+        .DecelerationStep = Number(&Properties, "Decceleration-step"),
+        .Elasticity = Number(&Properties, "Elasticity"),
+        .Grip = Number(&Properties, "Grip"),
+        .Friction = ParsePair(Properties.Find("Friction-factor")).value_or(FCollisionPoint{}),
+        .FrictionThreshold = ParsePair(Properties.Find("Friction-threshold")).value_or(FCollisionPoint{}),
+        .bUseInertia = Number(&Properties, "Use-inertia") != 0.f,
+        .Radius = float(Object.BoundingBoxSize),
+    };
+    FObjectBody Body{
+        .ObjectIndex = Index,
+        .Class = Class,
+        .Energy = Number(FindBlock(Properties, "Energy"), "Initial"),
+        .Shield = Number(FindBlock(Properties, "Shield"), "Initial"),
+        .Reward = Number(&Properties, "Reward"),
+        .bIndestructible = Number(&Properties, "Indestructible") != 0.f,
+    };
+    for (const FLevelPropertyBlock& Child : Properties.Children)
+    {
+        if (Child.Kind == "TYPE" && Child.Name == "Absorption")
+        {
+            Body.Absorptions.push_back({ .AmmoClass = ToLowerName(Child.Find("Class-name")), .Coeff = Number(&Child, "Coeff") });
+        }
+    }
+
+    for (const FLevelPropertyBlock& Child : Properties.Children)
+    {
+        if (Child.Kind == "TYPE" && Child.Name == "Explosion")
+        {
+            Body.Explosions.push_back({ .BoomEffect = ToLowerName(Child.Find("Boom-fx")), .Damage = Number(&Child, "Damage"), .Zone = Number(&Child, "Damage-zone") });
+        }
+    }
+
+    Body.Altitude = Object.Altitude;
+    // .3DO instances can override the starting Energy and Shield with plain fields.
+    Body.Energy = ParseLevelFloat(Properties.Find("Energy")).value_or(Body.Energy);
+    Body.Shield = ParseLevelFloat(Properties.Find("Shield")).value_or(Body.Shield);
+    Body.State.Position = Body.State.PreviousPosition = { .X = Object.X, .Y = Object.Y };
+    Body.State.Center = CollisionFromWorld(Body.State.Position);
+    if (bActor)
+    {
+        const std::optional<uint32_t> Behaviour = ParseBehaviour(Object.Behaviour);
+        const std::expected<FMovementClass, std::string> Movement = ReadMovementProperties(Properties, Object.ClassName, Object.BoundingBoxSize);
+        if (!Behaviour || !Movement)
+        {
+            return std::nullopt;
+        }
+
+        Body.Class = *Movement;
+        const bool bLegged = Object.SubType == WalkerKind || Object.SubType == SpiderKind;
+        Body.Class.bThrustIgnoresWeight = bLegged;
+        Body.Class.bDropsVelocity = bLegged || Object.SubType == TankKind;
+        Body.Class.bOverWater = Number(&Properties, "Over-water") != 0.f;
+        Body.State.Speed = Movement->ThrustInitial;
+        Body.State.Direction = Object.Direction < DirectionCount ? Object.Direction : 0;
+        const int ActorPoses = Object.SubType == CopKind ? PosesPerDirection : 1;
+        Body.State.Pose = Body.State.TargetPose = Body.State.Direction * ActorPoses + 1;
+        constexpr float TankCorrectionScale = 0.01f;
+        FActor& Actor = Body.Actor.emplace(FActor{
+            .Behaviour = *Behaviour,
+            .bTurnOnPlace = Number(&Properties, "Can-turn-on-place") != 0.f,
+            .PosesPerDirection = ActorPoses,
+            .bTwoPieces = Number(&Properties, "Two-pieces") != 0.f,
+            .CorrectionScale = Object.SubType == TankKind || bLegged ? TankCorrectionScale : 1.f,
+            .bSpider = Object.SubType == SpiderKind,
+            .TopPose = Body.State.Pose,
+            .TopTargetPose = Body.State.Pose,
+            .TopTurnTimeout = int32_t(Number(&Properties, "Turret-turn-timeout")),
+        });
+        if (const FLevelPropertyBlock* const Patrol = FindTypeBlock(Properties, "Patrol"); Patrol && (*Behaviour & BehaviourMovementMask) == BehaviourPatrol)
+        {
+            const int PathId = int(Number(Patrol, "Path-ID"));
+            const auto Path = std::ranges::find(Level.PatrolPaths | std::views::reverse, PathId, &FPatrolPath::Id);
+            Actor.Patrol = FPatrol{
+                .Path = Path.base() == Level.PatrolPaths.begin() ? std::nullopt : std::optional(size_t(Path.base() - Level.PatrolPaths.begin()) - 1),
+                .bReverse = Number(Patrol, "Reverse") != 0.f,
+                .bClosed = Number(Patrol, "Closed") != 0.f,
+                .Work = { .Interval = int32_t(Number(Patrol, "Scan-delay")), .Radius = Object.SubType == SpiderKind ? SpiderArrivalRadius
+                                                                                       : Object.SubType == WalkerKind ? WalkerArrivalRadius
+                                                                                                                      : PatrolArrivalRadius },
+            };
+        }
+
+        if (const FLevelPropertyBlock* const Random = FindTypeBlock(Properties, "Random"); Random && (*Behaviour & BehaviourMovementMask) == BehaviourRandom)
+        {
+            // RandomMoveUpdate gives its work attribute no arrival radius, so each route is driven to its end.
+            Actor.RandomMove = FRandomMove{ .Range = Number(Random, "Range"), .Work = { .Interval = int32_t(Number(Random, "Delay")) } };
+        }
+
+        // SeekerFindAttribute (0042c510): a seeker drives the TYPE Seeker block, a tracker the TYPE Tracker block.
+        const uint32_t Target = *Behaviour & BehaviourTargetMask;
+        const bool bTracker = Target == BehaviourTracker;
+        if (const FLevelPropertyBlock* const Seeker = FindTypeBlock(Properties, bTracker ? "Tracker" : "Seeker"); Seeker && (Target == BehaviourSeeker || bTracker))
+        {
+            // ponytail: the Vision-Angle conversion is not traced; it is read as for turrets, half a direction per 30 degrees.
+            constexpr float DegreesPerVisionStep = 30.f;
+            Actor.Seeker = FSeeker{
+                .bTracker = bTracker,
+                .VisionDirections = int(Number(Seeker, "Vision-Angle") / DegreesPerVisionStep),
+                .SensorRange = Number(Seeker, "Sensor-Range"),
+                .Work = { .Interval = int32_t(Number(Seeker, "Scan-Delay")), .Radius = uint32_t(Number(Seeker, "Min-distance")) },
+            };
+            // A negative Location means the placement position.
+            if (const FLevelPropertyBlock* const Guardian = FindTypeBlock(Properties, "Guardian"); Guardian && (*Behaviour & BehaviourGuardian) != 0)
+            {
+                const FCollisionPoint Location = ParsePair(Guardian->Find("Location")).value_or(FCollisionPoint{ .X = -1.f, .Y = -1.f });
+                Actor.Seeker->bGuardian = true;
+                Actor.Seeker->GuardRange = Number(Guardian, "Range");
+                Actor.Seeker->GuardLocation = Location.X < 0.f || Location.Y < 0.f ? Body.State.Position : Location;
+            }
+        }
+    }
+
+    if (const FLevelPropertyBlock* const Generator = FindTypeBlock(Properties, "Generator"))
+    {
+        // Keywords 0x66 to 0x6d of LoadObjectClassLibrary: Active (flag 2) starts the first birth at once.
+        Body.Generator = FGenerator{
+            .Product = ToLowerName(Generator->Find("Product")),
+            .MaxBirths = int(Number(Generator, "Max-births")),
+            .BirthDelay = int32_t(Number(Generator, "Birth-delay")),
+            .BirthDuration = int32_t(Number(Generator, "Birth-duration")),
+            .bStressable = Number(Generator, "Stressable") != 0.f,
+            .bBirthing = Number(Generator, "Active") != 0.f,
+            .bStablePopulation = Number(Generator, "Stable-population") != 0.f,
+        };
+    }
+
+    return Body;
+}
+
 std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
 {
     std::vector<FObjectBody> Bodies;
     for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
     {
-        const FLevelObject& Object = Level.Objects[Index];
-        // Kinds come from the class Sub-type or the GAF folder (CreateObject at 00413800); pickups are collected instead of blocking.
-        constexpr std::array<std::string_view, 8> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller", "lift", "gate" };
-        constexpr std::array<std::string_view, 6> ActorKinds = { "cop", "jeep", "tank", "walker", "spider", "heli" };
-        constexpr std::string_view CopKind = "cop";
-        constexpr std::string_view TankKind = "tank";
-        constexpr std::string_view WalkerKind = "walker";
-        constexpr std::string_view SpiderKind = "spider";
-        const bool bActor = std::ranges::contains(ActorKinds, Object.SubType);
-        if (Object.BoundingBoxSize <= 0 || (!bActor && !std::ranges::contains(SolidKinds, Object.SubType)) || IsPickup(Object))
+        if (std::optional<FObjectBody> Body = CreateObjectBody(Level, Index))
         {
-            continue;
+            Bodies.push_back(std::move(*Body));
         }
-
-        const FLevelPropertyBlock& Properties = Object.Properties;
-        const auto Number = [](const FLevelPropertyBlock* Block, const std::string_view Field)
-        {
-            return Block ? ParseLevelFloat(Block->Find(Field)).value_or(0.f) : 0.f;
-        };
-        FMovementClass Class{
-            .Weight = Number(FindBlock(Properties, "Weight"), "Initial"),
-            .DecelerationStep = Number(&Properties, "Decceleration-step"),
-            .Elasticity = Number(&Properties, "Elasticity"),
-            .Grip = Number(&Properties, "Grip"),
-            .Friction = ParsePair(Properties.Find("Friction-factor")).value_or(FCollisionPoint{}),
-            .FrictionThreshold = ParsePair(Properties.Find("Friction-threshold")).value_or(FCollisionPoint{}),
-            .bUseInertia = Number(&Properties, "Use-inertia") != 0.f,
-            .Radius = float(Object.BoundingBoxSize),
-        };
-        FObjectBody Body{
-            .ObjectIndex = Index,
-            .Class = Class,
-            .Energy = Number(FindBlock(Properties, "Energy"), "Initial"),
-            .Shield = Number(FindBlock(Properties, "Shield"), "Initial"),
-            .Reward = Number(&Properties, "Reward"),
-            .bIndestructible = Number(&Properties, "Indestructible") != 0.f,
-        };
-        for (const FLevelPropertyBlock& Child : Properties.Children)
-        {
-            if (Child.Kind == "TYPE" && Child.Name == "Absorption")
-            {
-                Body.Absorptions.push_back({ .AmmoClass = ToLowerName(Child.Find("Class-name")), .Coeff = Number(&Child, "Coeff") });
-            }
-        }
-
-        for (const FLevelPropertyBlock& Child : Properties.Children)
-        {
-            if (Child.Kind == "TYPE" && Child.Name == "Explosion")
-            {
-                Body.Explosions.push_back({ .BoomEffect = ToLowerName(Child.Find("Boom-fx")), .Damage = Number(&Child, "Damage"), .Zone = Number(&Child, "Damage-zone") });
-            }
-        }
-
-        Body.Altitude = Object.Altitude;
-        // .3DO instances can override the starting Energy and Shield with plain fields.
-        Body.Energy = ParseLevelFloat(Properties.Find("Energy")).value_or(Body.Energy);
-        Body.Shield = ParseLevelFloat(Properties.Find("Shield")).value_or(Body.Shield);
-        Body.State.Position = Body.State.PreviousPosition = { .X = Object.X, .Y = Object.Y };
-        Body.State.Center = CollisionFromWorld(Body.State.Position);
-        if (bActor)
-        {
-            const std::optional<uint32_t> Behaviour = ParseBehaviour(Object.Behaviour);
-            const std::expected<FMovementClass, std::string> Movement = ReadMovementProperties(Properties, Object.ClassName, Object.BoundingBoxSize);
-            if (!Behaviour || !Movement)
-            {
-                continue;
-            }
-
-            Body.Class = *Movement;
-            const bool bLegged = Object.SubType == WalkerKind || Object.SubType == SpiderKind;
-            Body.Class.bThrustIgnoresWeight = bLegged;
-            Body.Class.bDropsVelocity = bLegged || Object.SubType == TankKind;
-            Body.Class.bOverWater = Number(&Properties, "Over-water") != 0.f;
-            Body.State.Speed = Movement->ThrustInitial;
-            Body.State.Direction = Object.Direction < DirectionCount ? Object.Direction : 0;
-            const int ActorPoses = Object.SubType == CopKind ? PosesPerDirection : 1;
-            Body.State.Pose = Body.State.TargetPose = Body.State.Direction * ActorPoses + 1;
-            constexpr float TankCorrectionScale = 0.01f;
-            FActor& Actor = Body.Actor.emplace(FActor{
-                .Behaviour = *Behaviour,
-                .bTurnOnPlace = Number(&Properties, "Can-turn-on-place") != 0.f,
-                .PosesPerDirection = ActorPoses,
-                .bTwoPieces = Number(&Properties, "Two-pieces") != 0.f,
-                .CorrectionScale = Object.SubType == TankKind || bLegged ? TankCorrectionScale : 1.f,
-                .bSpider = Object.SubType == SpiderKind,
-                .TopPose = Body.State.Pose,
-                .TopTargetPose = Body.State.Pose,
-                .TopTurnTimeout = int32_t(Number(&Properties, "Turret-turn-timeout")),
-            });
-            if (const FLevelPropertyBlock* const Patrol = FindTypeBlock(Properties, "Patrol"); Patrol && (*Behaviour & BehaviourMovementMask) == BehaviourPatrol)
-            {
-                const int PathId = int(Number(Patrol, "Path-ID"));
-                const auto Path = std::ranges::find(Level.PatrolPaths | std::views::reverse, PathId, &FPatrolPath::Id);
-                Actor.Patrol = FPatrol{
-                    .Path = Path.base() == Level.PatrolPaths.begin() ? std::nullopt : std::optional(size_t(Path.base() - Level.PatrolPaths.begin()) - 1),
-                    .bReverse = Number(Patrol, "Reverse") != 0.f,
-                    .bClosed = Number(Patrol, "Closed") != 0.f,
-                    .Work = { .Interval = int32_t(Number(Patrol, "Scan-delay")), .Radius = Object.SubType == SpiderKind ? SpiderArrivalRadius
-                                                                                           : Object.SubType == WalkerKind ? WalkerArrivalRadius
-                                                                                                                          : PatrolArrivalRadius },
-                };
-            }
-
-            if (const FLevelPropertyBlock* const Random = FindTypeBlock(Properties, "Random"); Random && (*Behaviour & BehaviourMovementMask) == BehaviourRandom)
-            {
-                // RandomMoveUpdate gives its work attribute no arrival radius, so each route is driven to its end.
-                Actor.RandomMove = FRandomMove{ .Range = Number(Random, "Range"), .Work = { .Interval = int32_t(Number(Random, "Delay")) } };
-            }
-
-            // SeekerFindAttribute (0042c510): a seeker drives the TYPE Seeker block, a tracker the TYPE Tracker block.
-            const uint32_t Target = *Behaviour & BehaviourTargetMask;
-            const bool bTracker = Target == BehaviourTracker;
-            if (const FLevelPropertyBlock* const Seeker = FindTypeBlock(Properties, bTracker ? "Tracker" : "Seeker"); Seeker && (Target == BehaviourSeeker || bTracker))
-            {
-                // ponytail: the Vision-Angle conversion is not traced; it is read as for turrets, half a direction per 30 degrees.
-                constexpr float DegreesPerVisionStep = 30.f;
-                Actor.Seeker = FSeeker{
-                    .bTracker = bTracker,
-                    .VisionDirections = int(Number(Seeker, "Vision-Angle") / DegreesPerVisionStep),
-                    .SensorRange = Number(Seeker, "Sensor-Range"),
-                    .Work = { .Interval = int32_t(Number(Seeker, "Scan-Delay")), .Radius = uint32_t(Number(Seeker, "Min-distance")) },
-                };
-                // A negative Location means the placement position.
-                if (const FLevelPropertyBlock* const Guardian = FindTypeBlock(Properties, "Guardian"); Guardian && (*Behaviour & BehaviourGuardian) != 0)
-                {
-                    const FCollisionPoint Location = ParsePair(Guardian->Find("Location")).value_or(FCollisionPoint{ .X = -1.f, .Y = -1.f });
-                    Actor.Seeker->bGuardian = true;
-                    Actor.Seeker->GuardRange = Number(Guardian, "Range");
-                    Actor.Seeker->GuardLocation = Location.X < 0.f || Location.Y < 0.f ? Body.State.Position : Location;
-                }
-            }
-        }
-
-        Bodies.push_back(std::move(Body));
     }
 
     return Bodies;
@@ -1786,8 +1808,9 @@ FBox CircleBox(const FCollisionPoint Center, const float Radius)
     return { .MinX = Center.X - Radius, .MinY = Center.Y - Radius, .MaxX = Center.X + Radius, .MaxY = Center.Y + Radius };
 }
 
-// ObjectOverlapsSolid at 00405df0: whether a solid object in the door's cell or the cells around it overlaps the door's box. Lying items are left out.
-bool DoorBlocked(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const FObjectBody& Door)
+// ObjectOverlapsSolid at 00405df0: whether a solid object in the body's cell or the cells around it overlaps the body's box. Lying items are left
+// out.
+bool ObjectOverlapsSolid(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const FObjectBody& Door)
 {
     const FWorldCell DoorCell = CellOf(Door.State.Position);
     const FBox DoorBox = CircleBox(Door.State.Center, Door.Class.Radius);
@@ -1910,7 +1933,7 @@ void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
         return;
     }
 
-    if (DoorBlocked(Level, BodyOf, Player, Body) || (Door.Flags & DoorStayOpen) != 0)
+    if (ObjectOverlapsSolid(Level, BodyOf, Player, Body) || (Door.Flags & DoorStayOpen) != 0)
     {
         return;
     }
@@ -1985,7 +2008,7 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
         return false;
     }
 
-    if (!DoorBlocked(Level, BodyOf, Player, Body))
+    if (!ObjectOverlapsSolid(Level, BodyOf, Player, Body))
     {
         if ((Door.Flags & DoorStayOpen) == 0)
         {
@@ -2666,6 +2689,87 @@ void ReportDoorContact(const std::span<const FDoor> Doors, const FObjectBody& Bo
     }, EMessagePlacement::Replace);
 }
 
+namespace
+{
+std::expected<void, std::string> ArmSeeker(FCombat& Combat, const FLevel& Level, const FLevelObject& Object, FObjectBody& Body);
+}
+
+void StepGenerators(FCombat& Combat, FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTarget& Player, const uint32_t StepMilliseconds)
+{
+    // Bodies grows while the loop runs, so the generators are found by index.
+    for (size_t Index = 0; Index < Bodies.size(); ++Index)
+    {
+        if (!Bodies[Index].Generator || Level.Objects[Bodies[Index].ObjectIndex].bRemoved)
+        {
+            continue;
+        }
+
+        FObjectBody& Body = Bodies[Index];
+        FGenerator& Generator = *Body.Generator;
+        if ((0 <= Generator.MaxBirths && Generator.MaxBirths <= Generator.Births) || (Generator.BirthDelay == 0 && Generator.BirthDuration == 0) ||
+            Generator.Product.empty())
+        {
+            continue;
+        }
+
+        int32_t Step = int32_t(StepMilliseconds);
+        if (Step < Generator.Timer)
+        {
+            const FLevelPropertyBlock* const Energy = FindBlock(Level.Objects[Body.ObjectIndex].Properties, "Energy");
+            const float EnergyMax = Energy ? ParseLevelFloat(Energy->Find("Max")).value_or(0.f) : 0.f;
+            Step *= Generator.bStressable && Body.Energy < EnergyMax ? 2 : 1;
+            Generator.Timer -= Step;
+            continue;
+        }
+
+        // An open generator closes for the overlap test; nothing may stand on it when it closes or gives birth.
+        if (!Generator.bBirthing && !Body.bPassable)
+        {
+            continue;
+        }
+
+        const bool bWasPassable = Body.bPassable;
+        Body.bPassable = Generator.bBirthing ? Body.bPassable : false;
+        const bool bBlocked = ObjectOverlapsSolid(Level, BodiesByObject(Level, Bodies), Player, Body);
+        Body.bPassable = Generator.bBirthing ? Body.bPassable : bWasPassable;
+        if (bBlocked)
+        {
+            continue;
+        }
+
+        if (!Generator.bBirthing)
+        {
+            Generator.Timer = Generator.BirthDuration;
+            Generator.bBirthing = true;
+            Body.bPassable = false;
+            continue;
+        }
+
+        // The product appears on the generator, which opens again.
+        const size_t GeneratorObject = Body.ObjectIndex;
+        const FCollisionPoint Position = Body.State.Position;
+        const std::optional<size_t> Created = CreateLevelObject(Level, Generator.Product, Position.X, Position.Y);
+        std::optional<FObjectBody> Product = Created ? CreateObjectBody(Level, *Created) : std::nullopt;
+        if (!Product)
+        {
+            continue;
+        }
+
+        Product->Parent = GeneratorObject;
+        if (const std::expected<void, std::string> Armed = ArmSeeker(Combat, Level, Level.Objects[*Created], *Product); !Armed)
+        {
+            continue;
+        }
+
+        ++Generator.Births;
+        Generator.Timer = Generator.BirthDelay;
+        Generator.bBirthing = false;
+        Body.bPassable = true;
+        Combat.CreatedObjects.push_back(*Created);
+        Bodies.push_back(std::move(*Product));
+    }
+}
+
 std::string NextLevelPath(const std::string_view CurrentPath, const FDoor& Lift)
 {
     const size_t Separator = CurrentPath.find('\\');
@@ -2677,6 +2781,36 @@ bool FViewCells::Contains(const FCollisionPoint World) const
 {
     const FWorldCell Cell = CellOf(World);
     return Cell.X >= Left && Cell.X < Right && Cell.Y >= Top && Cell.Y < Bottom;
+}
+
+namespace
+{
+// A moving seeker or tracker takes its class's first ADD Weapon and ADD Ammo (ObjectSetWeaponSlot with slot 1).
+std::expected<void, std::string> ArmSeeker(FCombat& Combat, const FLevel& Level, const FLevelObject& Object, FObjectBody& Body)
+{
+    const auto WeaponEntry = std::ranges::find_if(Object.Properties.Children, [](const FLevelPropertyBlock& Child) { return Child.Kind == "ADD" && Child.Name == "Weapon"; });
+    const auto AmmoEntry = std::ranges::find_if(Object.Properties.Children, [](const FLevelPropertyBlock& Child) { return Child.Kind == "ADD" && Child.Name == "Ammo"; });
+    FSeeker* const Seeker = Body.Actor && Body.Actor->Seeker ? &*Body.Actor->Seeker : nullptr;
+    if (!Seeker || WeaponEntry == Object.Properties.Children.end())
+    {
+        return {};
+    }
+
+    const std::expected<size_t, std::string> Weapon = LoadWeapon(Combat, Level, WeaponEntry->Find("Name"));
+    if (!Weapon)
+    {
+        return std::unexpected(std::format("{}: {}", Object.ClassName, Weapon.error()));
+    }
+
+    Seeker->Weapon = *Weapon;
+    Seeker->WeaponState = { .Weapon = *Weapon, .Slope = Combat.Weapons[*Weapon].InitialSlope };
+    if (AmmoEntry != Object.Properties.Children.end())
+    {
+        Seeker->Ammo = { .Name = ToLowerName(AmmoEntry->Find("Name")), .Count = ClassNumber(*AmmoEntry, "Count"), .Max = ClassNumber(*AmmoEntry, "Max") };
+    }
+
+    return {};
+}
 }
 
 std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, std::vector<FObjectBody>& Bodies)
@@ -2722,26 +2856,45 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
     // Moving seekers carry their first ADD Weapon and ADD Ammo.
     for (FObjectBody& Body : Bodies)
     {
-        FSeeker* const Seeker = Body.Actor && Body.Actor->Seeker ? &*Body.Actor->Seeker : nullptr;
-        const FLevelObject& Object = Level.Objects[Body.ObjectIndex];
-        const auto WeaponEntry = std::ranges::find_if(Object.Properties.Children, [](const FLevelPropertyBlock& Child) { return Child.Kind == "ADD" && Child.Name == "Weapon"; });
-        const auto AmmoEntry = std::ranges::find_if(Object.Properties.Children, [](const FLevelPropertyBlock& Child) { return Child.Kind == "ADD" && Child.Name == "Ammo"; });
-        if (!Seeker || WeaponEntry == Object.Properties.Children.end())
+        if (std::expected<void, std::string> Armed = ArmSeeker(Combat, Level, Level.Objects[Body.ObjectIndex], Body); !Armed)
+        {
+            return std::unexpected(Armed.error());
+        }
+    }
+
+    // A generator's product may be of a class no placed object uses: its weapon and effects load now, while the archive is at hand.
+    std::vector<std::string> ProductEffects;
+    for (FObjectBody& Body : Bodies)
+    {
+        if (!Body.Generator)
         {
             continue;
         }
 
-        const std::expected<size_t, std::string> Weapon = LoadWeapon(Combat, Level, WeaponEntry->Find("Name"));
-        if (!Weapon)
+        const auto Product = Level.ClassObjects.find(Body.Generator->Product);
+        if (Product == Level.ClassObjects.end())
         {
-            return std::unexpected(std::format("{}: {}", Object.ClassName, Weapon.error()));
+            return std::unexpected(std::format("unknown generator product '{}'", Body.Generator->Product));
         }
 
-        Seeker->Weapon = *Weapon;
-        Seeker->WeaponState = { .Weapon = *Weapon, .Slope = Combat.Weapons[*Weapon].InitialSlope };
-        if (AmmoEntry != Object.Properties.Children.end())
+        const std::optional<uint32_t> Behaviour = ParseBehaviour(Product->second.Behaviour);
+        const uint32_t Target = Behaviour ? *Behaviour & BehaviourTargetMask : 0;
+        Body.Generator->bProductHunts = Target == BehaviourSeeker || Target == BehaviourTracker;
+        const auto WeaponEntry = std::ranges::find_if(Product->second.Properties.Children, [](const FLevelPropertyBlock& Child) { return Child.Kind == "ADD" && Child.Name == "Weapon"; });
+        if (Body.Generator->bProductHunts && WeaponEntry != Product->second.Properties.Children.end())
         {
-            Seeker->Ammo = { .Name = ToLowerName(AmmoEntry->Find("Name")), .Count = ClassNumber(*AmmoEntry, "Count"), .Max = ClassNumber(*AmmoEntry, "Max") };
+            if (const std::expected<size_t, std::string> Weapon = LoadWeapon(Combat, Level, WeaponEntry->Find("Name")); !Weapon)
+            {
+                return std::unexpected(std::format("{}: {}", Product->second.ClassName, Weapon.error()));
+            }
+        }
+
+        for (const FLevelPropertyBlock& Child : Product->second.Properties.Children)
+        {
+            if (Child.Kind == "TYPE" && Child.Name == "Explosion")
+            {
+                ProductEffects.push_back(ToLowerName(Child.Find("Boom-fx")));
+            }
         }
     }
 
@@ -2801,6 +2954,8 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
     {
         EffectNames.push_back(Explosion.BoomEffect);
     }
+
+    EffectNames.insert(EffectNames.end(), ProductEffects.begin(), ProductEffects.end());
 
     for (const std::string& Name : EffectNames)
     {
@@ -4133,7 +4288,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
     });
 
     // Session +0x2094 counts the hunters down as they die; the last one announces the empty level.
-    const auto IsHunter = [](const FObjectBody& Body) { return Body.Turret || (Body.Actor && Body.Actor->Seeker); };
+    const auto IsHunter = [](const FObjectBody& Body) { return Body.Turret || (Body.Actor && Body.Actor->Seeker) || (Body.Generator && Body.Generator->bProductHunts); };
     int Hunters = int(std::ranges::count_if(Bodies, [&](const FObjectBody& Body) { return IsHunter(Body) && !Level.Objects[Body.ObjectIndex].bRemoved; }));
     // The dropped objects join the level once the destroyed ones are gone, so no object reference outlives the list growing.
     std::vector<FDrop> Drops;
@@ -4153,6 +4308,14 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         if (!bFirstOfTwo)
         {
             DropContents(Combat.Random, Object, Drops);
+            if (Body.Parent)
+            {
+                const auto Generator = std::ranges::find(Bodies, *Body.Parent, &FObjectBody::ObjectIndex);
+                if (Generator != Bodies.end() && Generator->Generator && Generator->Generator->bStablePopulation && !Level.Objects[*Body.Parent].bRemoved)
+                {
+                    --Generator->Generator->Births;
+                }
+            }
         }
 
         if (!bFirstOfTwo && IsHunter(Body) && --Hunters == 0)
@@ -4466,7 +4629,7 @@ int CountEnemies(const FLevel& Level, const std::span<const FObjectBody> Bodies)
 {
     return int(std::ranges::count_if(Bodies, [&](const FObjectBody& Body)
     {
-        const bool bHunter = Body.Turret || (Body.Actor && Body.Actor->Seeker);
+        const bool bHunter = Body.Turret || (Body.Actor && Body.Actor->Seeker) || (Body.Generator && Body.Generator->bProductHunts);
         return bHunter && 0.f < Body.Energy && !Level.Objects[Body.ObjectIndex].bRemoved;
     }));
 }
@@ -4492,6 +4655,8 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     size_t Destroyed = 0;
     size_t Dropped = 0;
     size_t Wrecks = 0;
+    size_t Generators = 0;
+    size_t GeneratorsBirthing = 0;
     size_t Effects = 0;
     // A direct cardinal route locks, a diagonal route is rejected, and an overlapping target aborts; each attempt refills the scan timer.
     const std::array<FCollisionPoint, 3> SearchTargets = {
@@ -4709,11 +4874,39 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         }
 
         Dropped += Combat->CreatedObjects.size();
+        Combat->CreatedObjects.clear();
+
+        // Nine in ten generators must give birth within 20 seconds while the player waits at the start; the others have something standing on
+        // them, which holds a birth back (ObjectOverlapsSolid).
+        constexpr uint32_t GeneratorMilliseconds = 20000;
+        std::set<size_t> Parents;
+        const FPlayerState Waiting = SpawnPlayer(*PlayerObject, *Class);
+        const FPlayerTarget Target{ .State = Waiting, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
+        Generators += size_t(std::ranges::count_if(Bodies, [&](const FObjectBody& Body) { return Body.Generator && !Level->Objects[Body.ObjectIndex].bRemoved; }));
+        for (uint32_t Time = 0; Time < GeneratorMilliseconds; Time += StepMilliseconds)
+        {
+            StepGenerators(*Combat, *Level, Bodies, Target, StepMilliseconds);
+        }
+
+        for (const FObjectBody& Body : Bodies)
+        {
+            if (Body.Parent)
+            {
+                Parents.insert(*Body.Parent);
+            }
+        }
+
+        GeneratorsBirthing += Parents.size();
     }
 
     if (Dropped == 0 || Wrecks == 0)
     {
         return std::unexpected(std::format("{} objects dropped, {} wrecks", Dropped, Wrecks));
+    }
+
+    if (GeneratorsBirthing * 10 < Generators * 9)
+    {
+        return std::unexpected(std::format("{} of {} generators gave birth", GeneratorsBirthing, Generators));
     }
 
     if (Duels != 0 && DuelShots == 0)
@@ -4727,6 +4920,6 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     }
 
     return std::format("{} levels, {} player shots, {} turret shots while spinning, {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; {} turret duels: {} shots, {:.0f} damage taken; "
-        "{} cop duels ({} classes): {} shots",
-        Levels, Shots, TurretShots, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots);
+        "{} cop duels ({} classes): {} shots; {} of {} generators gave birth",
+        Levels, Shots, TurretShots, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators);
 }
