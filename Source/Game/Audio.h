@@ -125,6 +125,8 @@ public:
     void PlayMenuAccept();
     // MenuStep at 00421780 plays electric.wav, hard left, with the VZ fire flash.
     void PlayMenuFlash();
+    // FUN_00445dd0 plays electric.wav, centred, at priority 0xbf with each of the finale's flashes.
+    void PlayFinaleFlash();
 
     // PlayerUpdateMotorSound (00445c50), every frame of a level: while the player's motor works its loop plays on channel 4, louder with speed, from a third of the sound-fx volume up; a blocked motor tries start-engine.wav when the player thrusts.
     void UpdateMotor(const FPlayerState& Player, float ThrustMax, bool bBlockedMotor, bool bThrusting);

@@ -412,6 +412,8 @@ struct FObjectBody
     // Visible-when-firing (class +0x1c bit 0x400) shows it while it shoots and hides it again otherwise (SeekerEngage at 0042caa0).
     bool bInvisible = false;
     bool bVisibleWhenFiring = false;
+    // Final-object (class +0x20 bit 0x20, only Final-PC): its death ends the game (FUN_0043db70).
+    bool bFinalObject = false;
     std::vector<FAbsorption> Absorptions;
     // Every TYPE Explosion block: the Boom-fx objects spawned on destruction and the blasts they carry.
     std::vector<FExplosionBlock> Explosions;
@@ -693,6 +695,8 @@ struct FCombat
     std::vector<FObjectBob> Bobs;
     // The game clock in milliseconds; never zero, since a zero last-shot time means no shot yet.
     uint32_t Clock = 1;
+    // A Final-object died: the level is destroyed and the finale runs (FUN_0043db70, then FUN_00445dd0 in EngineRunLevel).
+    bool bFinale = false;
     // Level objects the steps created, such as dropped items, for the window and the pickups to take on.
     std::vector<size_t> CreatedObjects;
 };

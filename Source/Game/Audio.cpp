@@ -262,6 +262,11 @@ void FAudio::PlayMenuFlash()
     Mixer.Play(Load("electric.wav"), false, MenuPriority, Sound::FMixer::AllChannels, std::nullopt, -Sound::MaxPan);
 }
 
+void FAudio::PlayFinaleFlash()
+{
+    Mixer.Play(Load("electric.wav"), false, MenuPriority, Sound::FMixer::AllChannels, std::nullopt, 0);
+}
+
 void FAudio::UpdateMotor(const FPlayerState& Player, const float ThrustMax, const bool bBlockedMotor, const bool bThrusting)
 {
     // The motor reads the sound-fx volume itself, so it plays even with sound-fx off.

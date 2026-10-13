@@ -1123,6 +1123,74 @@ private:
     std::vector<bool> Previous;
 };
 
+// FUN_00446120 when the finale ends: over a black screen the lines of PTR_s_____GENERAL_NETWORK_FAILURE_____0050d740 type out at 100, from 100 and 20 apart, one a second, until 10 seconds pass or a key or button goes down.
+void ShowNetworkFailure(GLFWwindow* const Window, FRenderer& Renderer, const FPanel& Panel)
+{
+    constexpr std::array<std::string_view, 5> Lines = { "... GENERAL NETWORK FAILURE ...", "", "... DISCONNECTED ...", "", "... SYSTEM HALTED ..." };
+    constexpr int32_t LineX = 100;
+    constexpr int32_t FirstLineY = 100;
+    constexpr int32_t LineStep = 0x14;
+    constexpr int32_t LinePeriodMilliseconds = 1000;
+    constexpr int32_t ScreenMilliseconds = 10000;
+    constexpr uint32_t LineLifeMilliseconds = 360000;
+    // MessageAddText gets the panel's font (session +0x20a8), the port's panel font 3.
+    constexpr uint32_t LineFont = 3;
+    // FUN_004315b0 colours each line green.
+    constexpr uint32_t LineColor = 0xff00;
+    const FSpriteSheet Sheet = Renderer.CreateSpriteSheet(Panel.GetBitmaps(EHudSheet::Panel));
+    FMessages Messages;
+    FInputPress Input(Window);
+    uint32_t Last = ClockMilliseconds();
+    int32_t Elapsed = 0;
+    int32_t LineTimer = 0;
+    size_t Line = 0;
+    while (!glfwWindowShouldClose(Window) && Elapsed < ScreenMilliseconds)
+    {
+        glfwPollEvents();
+        if (Input.Poll())
+        {
+            break;
+        }
+
+        const uint32_t Now = ClockMilliseconds();
+        const int32_t Step = int32_t(Now - Last);
+        Last = Now;
+        Elapsed += Step;
+        LineTimer -= Step;
+        if (LineTimer < 1 && Line < Lines.size())
+        {
+            LineTimer = LinePeriodMilliseconds;
+            Messages.Add({
+                .Text = std::string(Lines[Line]),
+                .X = float(LineX),
+                .Y = float(FirstLineY + LineStep * int32_t(Line)),
+                .LifeMilliseconds = LineLifeMilliseconds,
+                .bTypewriter = true,
+                .Gaf = EMessageGaf::Panel,
+                .Font = LineFont,
+                .Color = { .Diffuse = LineColor },
+            }, EMessagePlacement::Always);
+            ++Line;
+        }
+
+        if (Renderer.BeginFrame())
+        {
+            std::vector<FHudSprite> Sprites;
+            const FMessages::FDraw Draw = [&](const FMessage& Message, const int32_t X, const int32_t Y, const std::string_view Text)
+            {
+                Panel.DrawMessage(Sprites, Message, X, Y, Text);
+            };
+            Messages.Update(Step, 0, 0, &Draw);
+            for (const FHudSprite& Hud : Sprites)
+            {
+                DrawHudSprite(Renderer, Sheet, Hud);
+            }
+
+            Renderer.EndFrame();
+        }
+    }
+}
+
 uint32_t DisplayFramePeriod()
 {
     const GLFWvidmode* const DisplayMode = glfwGetVideoMode(glfwGetPrimaryMonitor());
@@ -2153,6 +2221,15 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
     std::fflush(stdout);
 
+    // The finale after a Final-object's death (FUN_00445dd0 with its timer DAT_00523820 and flash timer DAT_00523818): 4.5 seconds, flashing every quarter second until 2.5 are left, then fading out.
+    constexpr int32_t FinaleMilliseconds = 0x1194;
+    constexpr int32_t FinaleFadeMilliseconds = 0x9c4;
+    constexpr int32_t FinaleFlashMilliseconds = 0xfa;
+    bool bFinaleStarted = false;
+    bool bShowNetworkFailure = false;
+    int32_t FinaleTimer = 0;
+    int32_t FinaleFlashTimer = 0;
+    bool bFinaleFlash = false;
     // The class's acceleration and turn timeout, which the speed surprises and the speed toggle change.
     const float ClassAcceleration = PlayerClass ? PlayerClass->AccelerationStep : 0.f;
     const int ClassTurnTimeout = PlayerClass ? PlayerClass->TurnTimeout : 0;
@@ -2379,7 +2456,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         // EnginePause (0043b8d0): action-pause (P) closes an open map, or freezes the game (session +0x20 bit 0x1000000) under pause.gaf until P again; meanwhile only P is read and the clock's time is dropped.
         const bool bPausePressed = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS && !bPauseKeyDown;
         bPauseKeyDown = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS;
-        if (bPausePressed && Player && !Demo)
+        if (bPausePressed && Player && !Demo && !bFinaleStarted)
         {
             QueueVoice(EVoice::Pause, 0, VoiceDuration, VoiceHold);
             if (bMapShown)
@@ -2430,7 +2507,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             {
                 *DeathTimer = 0;
             }
-            else if (bEscapePressed && MenuArt)
+            else if (bEscapePressed && MenuArt && !bFinaleStarted)
             {
                 if (!MenuSheets)
                 {
@@ -2468,7 +2545,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             // EngineReadActionKeys (0043b5c0) with the default keys of DAT_00509298: Backspace is action-next-weapon and 1 to 9 are action-weapon-1 to 9 (FUN_0043bad0 skips the slot in hand); Tab is action-cycle-panels, Left Shift stepping back, and M is action-map.
             const bool bTabPressed = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS && !bTabDown;
             bTabDown = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
-            if (bTabPressed && Panel && !Demo)
+            if (bTabPressed && Panel && !Demo && !bFinaleStarted)
             {
                 Panel->CyclePanels(glfwGetKey(Window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS);
             }
@@ -2476,7 +2553,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             // action-toggle-hilo-speed (Page Down, DIK_NEXT in DAT_00509298), FUN_0043b830: at full acceleration or more the player drops to a third of the class's and turns 1.5 times slower ("low speed"); otherwise both return to the class's ("high speed").
             const bool bSpeedPressed = glfwGetKey(Window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS && !bSpeedKeyDown;
             bSpeedKeyDown = glfwGetKey(Window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS;
-            if (bSpeedPressed && Player && PlayerClass && !Demo)
+            if (bSpeedPressed && Player && PlayerClass && !Demo && !bFinaleStarted)
             {
                 constexpr float LowSpeedScale = 1.f / 3.f;
                 constexpr double LowSpeedTurnScale = 1.5f;
@@ -2498,7 +2575,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
             const bool bMapPressed = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS && !bMapKeyDown;
             bMapKeyDown = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS;
-            if (bMapPressed && Player && !Demo)
+            if (bMapPressed && Player && !Demo && !bFinaleStarted)
             {
                 ToggleMap();
                 QueueVoice(EVoice::Map, 0, VoiceDuration, VoiceHold);
@@ -2520,7 +2597,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                 for (size_t Slot = 1; Slot < WeaponKeysNow.size(); ++Slot)
                 {
-                    if (WeaponKeysNow[Slot] && !WeaponKeysDown[Slot] && Combat->PlayerSlot != Slot)
+                    if (WeaponKeysNow[Slot] && !WeaponKeysDown[Slot] && Combat->PlayerSlot != Slot && !bFinaleStarted)
                     {
                         SelectPlayerWeapon(*Combat, Slot, Inventory, Messages);
                     }
@@ -2721,6 +2798,52 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
                     Player->Velocity = { .X = Player->Velocity.X + Inventory.Shove.X, .Y = Player->Velocity.Y + Inventory.Shove.Y };
                     Inventory.Shove = {};
+                    // FUN_0043db70 starts the finale: the motor channel stops and Yeepee replaces the queued lines. With Gamma FX each flash plays electric.wav.
+                    if (Combat->bFinale && !bFinaleStarted)
+                    {
+                        bFinaleStarted = true;
+                        FinaleTimer = FinaleMilliseconds;
+                        FinaleFlashTimer = FinaleFlashMilliseconds;
+                        bFinaleFlash = true;
+                        constexpr uint32_t YeepeeHold = 10000;
+                        ClearVoices();
+                        if (QueueVoice(EVoice::Yeepee, 0, VoiceDuration, YeepeeHold) && GameAudio)
+                        {
+                            GameAudio->UpdateVoices();
+                        }
+
+                        if (GameAudio)
+                        {
+                            GameAudio->StopMotor();
+                            if (Settings.Details.bGammaFx)
+                            {
+                                GameAudio->PlayFinaleFlash();
+                            }
+                        }
+                    }
+                    else if (FinaleTimer > 0 && Settings.Details.bGammaFx && FinaleTimer >= FinaleFadeMilliseconds)
+                    {
+                        FinaleFlashTimer -= int32_t(StepMilliseconds);
+                        if (FinaleFlashTimer < 1)
+                        {
+                            FinaleFlashTimer = FinaleFlashMilliseconds;
+                            bFinaleFlash = true;
+                            if (GameAudio)
+                            {
+                                GameAudio->PlayFinaleFlash();
+                            }
+                        }
+                    }
+
+                    if (FinaleTimer > 0)
+                    {
+                        FinaleTimer -= int32_t(StepMilliseconds);
+                        if (FinaleTimer <= 0 && !NextLevel)
+                        {
+                            bShowNetworkFailure = true;
+                            NextLevel = "*";
+                        }
+                    }
                     if (Inventory.Money != MoneyBefore || Inventory.Energy != EnergyBefore || Inventory.Shield != ShieldBefore)
                     {
                         std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
@@ -3418,6 +3541,27 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         // EngineRunLevel with Gamma FX, each frame unless a lift is taking the player: the gamma ramp takes the offsets (FUN_0045ffc0), a positive one lifting a channel toward white by offset / 256 of the way and a negative one scaling it by (offset + 255) / 256.
         // While the player lives each offset then steps one toward zero; the dead player's red stays.
+        // During the finale the gamma ramp goes white for each flash and stays at the base otherwise; for the last 2.5 seconds FUN_00446060 fades it from white to black along ln(e - t (e - 1) / 2500).
+        if (Settings.Details.bGammaFx && FinaleTimer > 0)
+        {
+            std::array<int32_t, 3>& Gamma = Inventory.Surprises.Gamma;
+            if (FinaleTimer >= FinaleFadeMilliseconds)
+            {
+                constexpr int32_t White = 0xff;
+                Gamma.fill(bFinaleFlash ? White : 0);
+                bFinaleFlash = false;
+            }
+            else
+            {
+                constexpr double E = 2.718281828459045;
+                constexpr double FadeRate = 0.0004;
+                constexpr double FadeSpan = 0x1fe;
+                constexpr int32_t FadeOffset = 0xff;
+                const double Elapsed = double(FinaleFadeMilliseconds - FinaleTimer);
+                Gamma.fill(TruncateLow(FadeSpan * std::log(E - Elapsed * (E - 1.) * FadeRate)) - FadeOffset);
+            }
+        }
+
         if (Settings.Details.bGammaFx && !NextLevel)
         {
             std::array<int32_t, 3>& Gamma = Inventory.Surprises.Gamma;
@@ -3471,6 +3615,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         // EngineRunLevel ends the game after a starred lift: the registered game's two ending pages over theend.tga (FUN_00402890), then the score table and the menu.
         if (NextLevel && NextLevel->starts_with('*'))
         {
+            if (bShowNetworkFailure && Panel)
+            {
+                ShowNetworkFailure(Window, Renderer, *Panel);
+            }
+
             constexpr int32_t FirstPageLeft = 0x46;
             constexpr int32_t SecondPageLeft = 0x8c;
             if (Panel)

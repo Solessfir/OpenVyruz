@@ -823,7 +823,7 @@ void ApplyDamage(FObjectBody& Body, const float Amount)
 
 // EngineUpdateObjects (004406e0) on a knock: a mover that travelled more than 2 units this step hurts itself and what it hit by half its speed times its weight, or itself alone by a tenth of that against the terrain.
 // The player never hurts itself this way, and a Player-direct-fire-only class (flag 0x40 at +0x20) is hurt only in knocks with the player.
-// ponytail: the Bounce-fx spark (FUN_0043d140) and the reward call on a kill (FUN_0043db70) are left to the usual destruction path.
+// A Final-object killed this way starts the finale like any other death of one (FUN_0043db70). ponytail: the Bounce-fx spark (FUN_0043d140) is left out.
 void KnockDamage(const FPlayerState& Mover, const FMovementClass& Class, const FCollisionPoint Delta, FObjectBody* const Self, FObjectBody* const HitBody, FPlayerKnock* const PlayerHit)
 {
     constexpr float HardKnockTravel = 2.f;
@@ -1041,6 +1041,7 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
         .bIgnoreSameClass = Number(&Properties, "Ignore-same-class-objects") != 0.f,
         .bInvisible = Number(&Properties, "Invisible") != 0.f,
         .bVisibleWhenFiring = Number(&Properties, "Visible-when-firing") != 0.f,
+        .bFinalObject = Number(&Properties, "Final-object") != 0.f,
     };
     Body.Absorptions = ReadAbsorptions(Properties);
 
@@ -2500,8 +2501,9 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
 }
 
 // AreaDamage at 0043cb20: every live object near the blast takes damage falling off linearly over Damage-zone collision units.
+// A Player-direct-fire-only object only takes the blasts of the player's own shots (FUN_0043c990 on the blast's source).
 void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float Damage, const float Zone, std::vector<FObjectBody>& Bodies,
-    const FPlayerTarget& Player)
+    const FPlayerTarget& Player, const bool bByPlayer)
 {
     if (Damage == 0.f || Zone == 0.f)
     {
@@ -2534,7 +2536,7 @@ void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float
 
     for (FObjectBody& Body : Bodies)
     {
-        if (0.f < Body.Energy)
+        if (0.f < Body.Energy && (!Body.bPlayerDirectFireOnly || bByPlayer))
         {
             if (const std::optional<float> Amount = Falloff(Body.State.Position, Body.State.Center))
             {
@@ -5488,15 +5490,20 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             }
 
             // AmmoHit at 0043d7d0 blasts around the shot's last committed centre, then AmmoImpact (0043d350) shoves and damages what it struck.
-            AreaDamage(Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies, Player);
+            const bool bPlayerShot = Shot.Owner == Player.ObjectIndex;
+            AreaDamage(Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies, Player, bPlayerShot);
             if (Target)
             {
                 constexpr double ImpactPush = 40.;
                 const FCollisionPoint Facing = FacingVector(Shot.State.Direction);
                 Target->State.Velocity.X = float(double(Facing.X) * ImpactPush / double(Target->Class.Weight) + double(Target->State.Velocity.X));
                 Target->State.Velocity.Y = float(double(Facing.Y) * ImpactPush / double(Target->Class.Weight) + double(Target->State.Velocity.Y));
+                // AmmoImpact hurts a Player-direct-fire-only object only with the player's own shots.
                 const auto Absorption = std::ranges::find(Target->Absorptions, Ammo.Name, &FAbsorption::AmmoClass);
-                ApplyDamage(*Target, Absorption == Target->Absorptions.end() ? Ammo.Damage : float(double(Ammo.Damage) * double(Absorption->Coeff)));
+                if (!Target->bPlayerDirectFireOnly || bPlayerShot)
+                {
+                    ApplyDamage(*Target, Absorption == Target->Absorptions.end() ? Ammo.Damage : float(double(Ammo.Damage) * double(Absorption->Coeff)));
+                }
             }
 
             // The player is shoved and its absorptions scale the damage like any object's.
@@ -5666,7 +5673,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             if (bBlast)
             {
                 Effect.BlastTimer = -1;
-                AreaDamage(CollisionFromWorld(Effect.Position), CellOf(Effect.Position), Effect.Damage, Effect.Zone, Bodies, Player);
+                AreaDamage(CollisionFromWorld(Effect.Position), CellOf(Effect.Position), Effect.Damage, Effect.Zone, Bodies, Player, false);
                 Effect.Damage = 0.f;
             }
         }
@@ -5674,6 +5681,27 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         AdvanceEffect(Effect, Class, StepMilliseconds);
         return Effect.bFinished;
     });
+
+    // ApplyDamage (0043ca30) reports a Final-object's death and its callers run FUN_0043db70: DestroyAround (0043d980) from the map's centre over the whole level takes every destructible object's energy and draws its shake, which is then stopped, and the finale starts.
+    // ponytail: the original reacts at the damage itself, the port at the next destruction pass.
+    if (!Combat.bFinale && std::ranges::any_of(Bodies, [](const FObjectBody& Body) { return Body.bFinalObject && Body.bDamaged && Body.Energy <= 0.f; }))
+    {
+        Combat.bFinale = true;
+        for (FObjectBody& Body : Bodies)
+        {
+            if (!Body.bIndestructible && !Level.Objects[Body.ObjectIndex].bRemoved)
+            {
+                Body.Energy = 0.f;
+                Body.bDamaged = true;
+            }
+        }
+
+        constexpr int ShakeRange = 0x20;
+        Combat.Random.Range(-ShakeRange, ShakeRange);
+        Combat.Random.Range(-ShakeRange, ShakeRange);
+        Player.Inventory.Surprises.ShakeX = 0;
+        Player.Inventory.Surprises.ShakeY = 0;
+    }
 
     // Session +0x2094 counts the hunters down as they die; the last one announces the empty level.
     int Hunters = int(std::ranges::count_if(Bodies, [&](const FObjectBody& Body) { return HuntsPlayer(Body) && !Level.Objects[Body.ObjectIndex].bRemoved; }));
