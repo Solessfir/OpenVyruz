@@ -20,6 +20,7 @@
 #include <set>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 #include <utility>
 
@@ -820,7 +821,7 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
     FObjectBody* HitBody = nullptr;
     for (FObjectBody& Body : Bodies)
     {
-        if (&Body == Self)
+        if (&Body == Self || Body.bPassable)
         {
             continue;
         }
@@ -856,11 +857,8 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
     for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
     {
         const FLevelObject& Object = Level.Objects[Index];
-        // ponytail: only static scenery for now; enemies, pickups, gates and lifts join once their behaviours move, collect or open them.
-        // Kinds come from the class Sub-type or the GAF folder (CreateObject at 00413800). ponytail: actors, lifts and gates join once their
-        // behaviours move or open them; pickups are collected instead of blocking.
-        constexpr std::array<std::string_view, 6> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller" };
-        // ponytail: cops and jeeps move so far; tanks need their turret top, walkers and spiders their stepping gait, helis their pose selection.
+        // Kinds come from the class Sub-type or the GAF folder (CreateObject at 00413800); pickups are collected instead of blocking.
+        constexpr std::array<std::string_view, 8> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller", "lift", "gate" };
         constexpr std::array<std::string_view, 6> ActorKinds = { "cop", "jeep", "tank", "walker", "spider", "heli" };
         constexpr std::string_view CopKind = "cop";
         constexpr std::string_view TankKind = "tank";
@@ -1336,6 +1334,8 @@ std::vector<FPickup> CreatePickups(const FLevel& Level)
         }
 
         const auto Number = [Item](const std::string_view Field) { return ParseLevelFloat(Item->Find(Field)).value_or(0.f); };
+        const FLevelPropertyBlock* const Key = FindTypeBlock(Object.Properties, "Key");
+        const auto KeyNumber = [Key](const std::string_view Field) { return int(ParseLevelFloat(Key->Find(Field)).value_or(0.f)); };
         Pickups.push_back({
             .ObjectIndex = Index,
             .Circle = { .Center = CollisionFromWorld({ .X = Object.X, .Y = Object.Y }), .Radius = Object.BoundingBoxSize > 0 ? float(Object.BoundingBoxSize) : DefaultCollisionRadius },
@@ -1344,6 +1344,9 @@ std::vector<FPickup> CreatePickups(const FLevel& Level)
             .AddMoney = Number("Add-Money"),
             .AmmoType = std::string(Item->Find("Ammo-Type")),
             .AddAmmo = Number("Add-Ammo"),
+            .Key = Key ? std::optional(FCarriedKey{ .Id = KeyNumber("Id"), .bCode = KeyNumber("Is-code") != 0, .PartId = KeyNumber("Code-part-id"),
+                                                    .PartCount = KeyNumber("Code-part-count") })
+                       : std::nullopt,
         });
     }
 
@@ -1432,6 +1435,13 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
                 Stock->Count = std::min(Stock->Max, Stock->Count + Pickup.AddAmmo);
                 bUsed = true;
             }
+        }
+
+        // ConsumeItem at 00444660 carries an item without an action, which is what keys and code parts are.
+        if (Pickup.Key)
+        {
+            Inventory.Keys.push_back(*Pickup.Key);
+            bUsed = true;
         }
 
         if (bUsed)
@@ -1598,6 +1608,334 @@ std::vector<FObjectBob> ActivateObjects(FLevel& Level, const std::span<FObjectBo
     return Bobs;
 }
 
+// ObjectCarriesKey at 0043dcb0: the newest carried key with the id decides; a code also needs all of its parts (ObjectFindCompleteCode at 00439270), counted as the first part
+// says and including part 1.
+bool CarriesKey(const std::vector<FCarriedKey>& Keys, const int Id)
+{
+    const auto Newest = std::ranges::find(Keys.rbegin(), Keys.rend(), Id, &FCarriedKey::Id);
+    if (Newest == Keys.rend() || !Newest->bCode)
+    {
+        return Newest != Keys.rend();
+    }
+
+    int PartCount = 0;
+    int Parts = 0;
+    bool bFirstPart = false;
+    for (const FCarriedKey& Key : Keys | std::views::reverse)
+    {
+        if (Key.Id != Id || !Key.bCode)
+        {
+            continue;
+        }
+
+        // A part whose count disagrees with the first is reported and left out.
+        if (PartCount == 0)
+        {
+            PartCount = Key.PartCount;
+        }
+        else if (PartCount != Key.PartCount)
+        {
+            continue;
+        }
+
+        bFirstPart = bFirstPart || Key.PartId == 1;
+        ++Parts;
+    }
+
+    return bFirstPart && Parts == PartCount;
+}
+
+enum class EHolder : uint8_t
+{
+    None,
+    Other,
+    Player,
+};
+
+// Objects that never open a gate or call a lift: ammo, FX, items, lifts, gates and things (kinds 0x10 to 0x15).
+constexpr std::array<std::string_view, 6> NonSensingKinds = { "ammo", "fx", "item", "lift", "gate", "thing" };
+
+FCollisionPoint ObjectPosition(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const size_t Index)
+{
+    if (Index == Player.ObjectIndex)
+    {
+        return Player.State.Position;
+    }
+
+    return BodyOf[Index] ? BodyOf[Index]->State.Position : FCollisionPoint{ .X = Level.Objects[Index].X, .Y = Level.Objects[Index].Y };
+}
+
+// DoorFindHolder at 00443430: something that may pass within two cells of the door. A key or code can only be carried by the player.
+// ponytail: invisibility is not ported, so invisible objects are not left out.
+EHolder FindHolder(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const FWorldCell Door, const int Id)
+{
+    constexpr int SensorCells = 2;
+    const auto Near = [&](const FCollisionPoint Position)
+    {
+        const FWorldCell Cell = CellOf(Position);
+        return std::abs(Cell.X - Door.X) <= SensorCells && std::abs(Cell.Y - Door.Y) <= SensorCells;
+    };
+
+    if (Id != 0)
+    {
+        return Near(Player.State.Position) && CarriesKey(Player.Inventory.Keys, Id) ? EHolder::Player : EHolder::None;
+    }
+
+    for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
+    {
+        const FLevelObject& Object = Level.Objects[Index];
+        if (!Object.bRemoved && !std::ranges::contains(NonSensingKinds, Object.SubType) && Near(ObjectPosition(Level, BodyOf, Player, Index)))
+        {
+            return Index == Player.ObjectIndex ? EHolder::Player : EHolder::Other;
+        }
+    }
+
+    return EHolder::None;
+}
+
+struct FBox
+{
+    float MinX = 0.f;
+    float MinY = 0.f;
+    float MaxX = 0.f;
+    float MaxY = 0.f;
+};
+
+// BoundsUpdateBox at 00405cb0: a circle's box in collision space; objects without a bounding box are a point.
+FBox CircleBox(const FCollisionPoint Center, const float Radius)
+{
+    return { .MinX = Center.X - Radius, .MinY = Center.Y - Radius, .MaxX = Center.X + Radius, .MaxY = Center.Y + Radius };
+}
+
+// ObjectOverlapsSolid at 00405df0: whether a solid object in the door's cell or the cells around it overlaps the door's box. Lying items are left out.
+bool DoorBlocked(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const FObjectBody& Door)
+{
+    const FWorldCell DoorCell = CellOf(Door.State.Position);
+    const FBox DoorBox = CircleBox(Door.State.Center, Door.Class.Radius);
+    for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
+    {
+        const FLevelObject& Object = Level.Objects[Index];
+        const FObjectBody* const Body = BodyOf[Index];
+        if (Index == Door.ObjectIndex || Object.bRemoved || (Body && Body->bPassable) || (Object.SubType == "item" && FindItemBlock(Object)))
+        {
+            continue;
+        }
+
+        const FCollisionPoint Position = ObjectPosition(Level, BodyOf, Player, Index);
+        const FWorldCell Cell = CellOf(Position);
+        if (std::abs(Cell.X - DoorCell.X) > 1 || std::abs(Cell.Y - DoorCell.Y) > 1)
+        {
+            continue;
+        }
+
+        const FBox Box = Index == Player.ObjectIndex ? CircleBox(Player.State.Center, Player.Radius)
+                         : Body                       ? CircleBox(Body->State.Center, Body->Class.Radius)
+                                                      : CircleBox(CollisionFromWorld(Position), 0.f);
+        if (DoorBox.MinX < Box.MaxX && Box.MinX < DoorBox.MaxX && DoorBox.MinY < Box.MaxY && Box.MinY < DoorBox.MaxY)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The key part of the gate and lift updates: Destroy-key takes every carried key or code part with the id (ObjectDestroyKeys at 0043dd20), and without
+// Key-always-needed the door forgets its id. ponytail: the "Using key" message waits for the HUD.
+void UseKey(FDoor& Door, FPlayerInventory& Inventory)
+{
+    if ((Door.Flags & DoorDestroyKey) != 0)
+    {
+        std::erase_if(Inventory.Keys, [&](const FCarriedKey& Key) { return Key.Id == Door.Id; });
+    }
+
+    if ((Door.Flags & DoorKeyAlwaysNeeded) == 0)
+    {
+        Door.Id = 0;
+    }
+}
+
+// The update copies a fresh instance of the animation and shows its third frame.
+void StartDoorAnimation(FDoor& Door, const size_t Animation)
+{
+    constexpr uint32_t FirstMovingFrame = 3;
+    Door.Animation = Animation;
+    Door.Playback = StartAnimation(Door.Animations[Animation]);
+    ShowFrame(Door.Playback, Door.Animations[Animation], FirstMovingFrame);
+}
+
+constexpr size_t OpenAnimation = 0;
+constexpr size_t ClosedAnimation = 1;
+
+// GateUpdate at 00443620.
+void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const int32_t Step)
+{
+    const FWorldCell Cell = CellOf(Body.State.Position);
+    if ((Door.Flags & DoorOpen) == 0)
+    {
+        if ((Door.Flags & DoorOpening) != 0)
+        {
+            Body.bPassable = true;
+            Door.Flags |= DoorOpen;
+            Door.Timer = Step < Door.Timer ? Door.Timer - Step : 0;
+            return;
+        }
+
+        const EHolder Holder = (Door.Flags & DoorSensor) != 0 ? FindHolder(Level, BodyOf, Player, Cell, Door.Id) : EHolder::None;
+        if ((Door.Flags & DoorSensor) == 0 || Holder != EHolder::None)
+        {
+            Door.Timer = 0;
+            Door.Flags &= ~DoorStayClosed;
+            if (Holder != EHolder::None && Door.Id != 0)
+            {
+                UseKey(Door, Player.Inventory);
+            }
+        }
+        else
+        {
+            Door.Flags |= DoorStayClosed;
+        }
+
+        if ((Door.Flags & DoorStayClosed) == 0)
+        {
+            if (Step < Door.Timer)
+            {
+                Door.Timer -= Step;
+                return;
+            }
+
+            Door.Timer = Door.Delay;
+            StartDoorAnimation(Door, OpenAnimation);
+            Door.Flags |= DoorOpening;
+        }
+
+        return;
+    }
+
+    Body.bPassable = true;
+    if (Step < Door.Timer)
+    {
+        Door.Timer -= Step;
+        return;
+    }
+
+    if (FindHolder(Level, BodyOf, Player, Cell, Door.Id) != EHolder::None)
+    {
+        if (Door.Id != 0)
+        {
+            UseKey(Door, Player.Inventory);
+        }
+
+        return;
+    }
+
+    if (DoorBlocked(Level, BodyOf, Player, Body) || (Door.Flags & DoorStayOpen) != 0)
+    {
+        return;
+    }
+
+    Door.Flags &= ~(DoorOpen | DoorOpening);
+    Body.bPassable = false;
+    Door.Timer = Door.Delay;
+    StartDoorAnimation(Door, ClosedAnimation);
+}
+
+// ObjectUpdateLevelExit at 00442bf0. A lift leaves when nothing stands on it and comes back after its delay; the player rides it once fully
+// inside its box. A negative Reward is its fare. ponytail: the waiting and key messages wait for the HUD.
+std::optional<std::string> StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player,
+    const int32_t Step)
+{
+    const FWorldCell Cell = CellOf(Body.State.Position);
+    if ((Door.Flags & DoorOpen) == 0)
+    {
+        if ((Door.Flags & DoorOpening) != 0)
+        {
+            if (Door.Id == 0 || FindHolder(Level, BodyOf, Player, Cell, Door.Id) != EHolder::None)
+            {
+                Body.bPassable = true;
+                if (Door.Id != 0)
+                {
+                    UseKey(Door, Player.Inventory);
+                }
+            }
+
+            Door.Flags |= DoorOpen;
+            Door.Timer = Step < Door.Timer ? Door.Timer - Step : 0;
+            return std::nullopt;
+        }
+
+        if ((Door.Flags & DoorStayClosed) != 0)
+        {
+            return std::nullopt;
+        }
+
+        if (Step < Door.Timer)
+        {
+            Door.Timer -= Step;
+            return std::nullopt;
+        }
+
+        Door.Timer = Door.Delay;
+        StartDoorAnimation(Door, OpenAnimation);
+        Door.Flags |= DoorOpening;
+        return std::nullopt;
+    }
+
+    const bool bAccess = Door.Id == 0 || FindHolder(Level, BodyOf, Player, Cell, Door.Id) != EHolder::None;
+    if (bAccess)
+    {
+        Body.bPassable = true;
+        if (Door.Id != 0)
+        {
+            UseKey(Door, Player.Inventory);
+        }
+    }
+
+    if (Step < Door.Timer)
+    {
+        Door.Timer -= Step;
+        return std::nullopt;
+    }
+
+    if (Door.UsageCount < 1)
+    {
+        return std::nullopt;
+    }
+
+    if (!DoorBlocked(Level, BodyOf, Player, Body))
+    {
+        if ((Door.Flags & DoorStayOpen) == 0)
+        {
+            Door.Flags &= ~(DoorOpen | DoorOpening);
+            Body.bPassable = false;
+            Door.Timer = Door.Delay;
+            StartDoorAnimation(Door, ClosedAnimation);
+        }
+
+        return std::nullopt;
+    }
+
+    const FBox Lift = CircleBox(Body.State.Center, Body.Class.Radius);
+    const FBox Rider = CircleBox(Player.State.Center, Player.Radius);
+    if (!bAccess || Rider.MinX < Lift.MinX || Lift.MaxX < Rider.MaxX || Rider.MinY < Lift.MinY || Lift.MaxY < Rider.MaxY)
+    {
+        return std::nullopt;
+    }
+
+    if (Body.Reward < 0.f)
+    {
+        if (Player.Inventory.Money < -Body.Reward)
+        {
+            return std::nullopt;
+        }
+
+        Player.Inventory.Money += Body.Reward;
+    }
+
+    --Door.UsageCount;
+    return Door.NextLevel;
+}
+
 // AreaDamage at 0043cb20: every live object near the blast takes damage falling off linearly over Damage-zone collision units.
 void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float Damage, const float Zone, std::vector<FObjectBody>& Bodies,
     const FPlayerTarget& Player)
@@ -1656,7 +1994,7 @@ FObjectBody* FindStruckBody(std::vector<FObjectBody>& Bodies, const FCollisionCi
     FObjectBody* Struck = nullptr;
     for (FObjectBody& Body : Bodies)
     {
-        if (Body.ObjectIndex == Owner)
+        if (Body.ObjectIndex == Owner || Body.bPassable)
         {
             continue;
         }
@@ -2044,6 +2382,147 @@ void TurnTurretTop(FTurret& Turret, const uint32_t StepMilliseconds)
         Turret.Direction = Wrap(Turret.Direction + (Delta <= DirectionCount / 2 ? 1 : -1));
     }
 }
+}
+
+void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, const int32_t Milliseconds)
+{
+    constexpr uint32_t LoopFlag = 2;
+    if (Playback.bEnded)
+    {
+        return;
+    }
+
+    Playback.Timer -= Milliseconds;
+    const uint32_t FrameCount = uint32_t(Animation.Frames.size());
+    // A looping animation of zero-length frames would never leave this loop; one pass through it is enough.
+    for (uint32_t Advanced = 0; Playback.Timer <= 0 && Advanced <= FrameCount; ++Advanced)
+    {
+        ++Playback.Frame;
+        if (Playback.Frame > FrameCount)
+        {
+            Playback.Frame = (Animation.Flags & LoopFlag) != 0 ? Animation.LoopStart : 0;
+        }
+
+        if (Playback.Frame == 0 || Playback.Frame > FrameCount)
+        {
+            Playback = { .bEnded = true };
+            return;
+        }
+
+        Playback.Timer += Animation.Frames[Playback.Frame - 1].Duration * AnimationPeriodMilliseconds;
+    }
+}
+
+FAnimationPlayback StartAnimation(const Gaf::FAnimation& Animation)
+{
+    FAnimationPlayback Playback{ .bEnded = Animation.Frames.empty() };
+    UpdateAnimation(Playback, Animation, 0);
+    return Playback;
+}
+
+void ShowFrame(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, const uint32_t Frame)
+{
+    if (Frame == 0 || Frame > Animation.Frames.size())
+    {
+        Playback = { .bEnded = true };
+        return;
+    }
+
+    Playback.Frame = Frame - 1;
+    UpdateAnimation(Playback, Animation, Playback.Timer);
+}
+
+std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, FResourceArchive& Archive, const std::span<FObjectBody> Bodies)
+{
+    std::vector<FDoor> Doors;
+    std::unordered_map<std::string, std::vector<Gaf::FAnimation>> Gafs;
+    const std::vector<FObjectBody*> BodyOf = BodiesByObject(Level, Bodies);
+    for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
+    {
+        const FLevelObject& Object = Level.Objects[Index];
+        const bool bLift = Object.SubType == "lift";
+        const FLevelPropertyBlock* const Block = FindTypeBlock(Object.Properties, bLift ? "Lift" : "Gate");
+        if ((!bLift && Object.SubType != "gate") || !Block || !BodyOf[Index])
+        {
+            continue;
+        }
+
+        auto [Gaf, bNew] = Gafs.try_emplace(Object.GafPath);
+        if (bNew)
+        {
+            const std::optional<std::vector<uint8_t>> File = Archive.Read(Object.GafPath);
+            const std::optional<std::vector<Gaf::FFrame>> Bitmaps = File ? Gaf::LoadFrames(*File) : std::nullopt;
+            std::optional<std::vector<Gaf::FAnimation>> Animations = Bitmaps ? Gaf::LoadAnimations(*File, Bitmaps->size()) : std::nullopt;
+            Gaf->second = Animations ? std::move(*Animations) : std::vector<Gaf::FAnimation>{};
+        }
+
+        if (Object.GafIndex < 1 || size_t(Object.GafIndex) + 1 > Gaf->second.size())
+        {
+            return std::unexpected(std::format("{} needs two animations from GAF-index {} of {}", Object.ClassName, Object.GafIndex, Object.GafPath));
+        }
+
+        const auto Number = [Block](const std::string_view Field) { return int(ParseLevelFloat(Block->Find(Field)).value_or(0.f)); };
+        const auto Flag = [&](const std::string_view Field, const uint32_t Bit) { return Number(Field) != 0 ? Bit : 0u; };
+        FDoor Door{
+            .ObjectIndex = Index,
+            .bLift = bLift,
+            .Flags = Flag("Active", DoorActive) | Flag(bLift ? "Present" : "Opened", DoorOpen) | Flag(bLift ? "Going-up" : "Closing", DoorOpening) |
+                     Flag(bLift ? "Stay-up" : "Stay-opened", DoorStayOpen) | Flag(bLift ? "Stay-down" : "Stay-closed", DoorStayClosed) |
+                     (bLift ? 0u : Flag("Sensor", DoorSensor)) | Flag("Key-always-needed", DoorKeyAlwaysNeeded) | Flag("Destroy-key", DoorDestroyKey) |
+                     Flag("Needs-code", DoorNeedsCode),
+            .Delay = Number("Delay"),
+            .Id = Number("Id"),
+            .UsageCount = Number("Usage-count"),
+            .NextLevel = std::string(Block->Find("3do-file")),
+            .Animations = { Gaf->second[size_t(Object.GafIndex - 1)], Gaf->second[size_t(Object.GafIndex)] },
+        };
+        // AnimInitializeGraphics shows the last frame of the animation for the activation state, and the timer starts full.
+        const bool bOpen = (Door.Flags & DoorOpen) != 0;
+        Door.Animation = bOpen ? OpenAnimation : ClosedAnimation;
+        Door.Playback = StartAnimation(Door.Animations[Door.Animation]);
+        ShowFrame(Door.Playback, Door.Animations[Door.Animation], uint32_t(Door.Animations[Door.Animation].Frames.size()));
+        Door.Timer = Door.Delay;
+        BodyOf[Index]->bPassable = bOpen;
+        Doors.push_back(std::move(Door));
+    }
+
+    return Doors;
+}
+
+std::optional<std::string> StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std::span<FObjectBody> Bodies, const FPlayerTarget& Player,
+    const uint32_t StepMilliseconds)
+{
+    const std::vector<FObjectBody*> BodyOf = BodiesByObject(Level, Bodies);
+    const int32_t Step = int32_t(StepMilliseconds);
+    std::optional<std::string> Exit;
+    for (FDoor& Door : Doors)
+    {
+        FObjectBody* const Body = BodyOf[Door.ObjectIndex];
+        const Gaf::FAnimation& Animation = Door.Animations[Door.Animation];
+        if (!Body)
+        {
+            continue;
+        }
+
+        // Graphic-update-needed: EngineUpdateObjects advances the animation before the update, which waits for a fresh one to finish.
+        UpdateAnimation(Door.Playback, Animation, Step);
+        const uint32_t Frame = Door.Playback.bEnded ? 0 : Door.Playback.Frame;
+        if ((Door.Flags & DoorActive) == 0 || (Door.Timer == Door.Delay && Frame != Animation.Frames.size()))
+        {
+            continue;
+        }
+
+        if (!Door.bLift)
+        {
+            StepGate(Door, *Body, Level, BodyOf, Player, Step);
+        }
+        else if (std::optional<std::string> Next = StepLift(Door, *Body, Level, BodyOf, Player, Step); Next && !Exit)
+        {
+            Exit = std::move(Next);
+        }
+    }
+
+    return Exit;
 }
 
 bool FViewCells::Contains(const FCollisionPoint World) const
@@ -3362,6 +3841,129 @@ std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive)
     if (Patrollers == 0 || Advanced * 2 < Patrollers || Destined == 0 || Wandered * 2 < Destined)
     {
         return std::unexpected(std::format("{}; stuck: {}", Summary, Stuck.empty() ? std::string() : Stuck.front()));
+    }
+
+    return Summary;
+}
+
+std::expected<std::string, std::string> VerifyDoors(FResourceArchive& Archive)
+{
+    constexpr uint32_t StepMilliseconds = 14;
+    constexpr uint32_t SettleMilliseconds = 12000;
+    constexpr uint32_t RideMilliseconds = 30000;
+    size_t Gates = 0;
+    size_t Closed = 0;
+    size_t Opened = 0;
+    size_t Lifts = 0;
+    size_t Ridden = 0;
+    std::vector<std::string> Failures;
+    for (const std::string& Name : Archive.GetNames())
+    {
+        if (!Name.ends_with(".3do"))
+        {
+            continue;
+        }
+
+        std::expected<FLevel, std::string> Level = LoadLevel(Archive, Name.substr(0, Name.size() - 4));
+        if (!Level)
+        {
+            return std::unexpected(std::format("{}: {}", Name, Level.error()));
+        }
+
+        const auto PlayerObject = std::ranges::find(Level->Objects, std::string_view("Player"), &FLevelObject::Behaviour);
+        const std::expected<FMovementClass, std::string> PlayerClass = PlayerObject != Level->Objects.end() ? ReadMovementClass(*PlayerObject)
+                                                                                                           : std::unexpected(std::string("no player"));
+        if (!PlayerClass)
+        {
+            continue;
+        }
+
+        const size_t PlayerIndex = size_t(PlayerObject - Level->Objects.begin());
+        const auto Run = [&](std::vector<FDoor>& Doors, std::vector<FObjectBody>& Bodies, const FCollisionPoint At, FPlayerInventory& Inventory, const uint32_t Duration)
+        {
+            FPlayerState Player = SpawnPlayer(*PlayerObject, *PlayerClass);
+            Player.Position = At;
+            Player.Center = CollisionFromWorld(At);
+            for (uint32_t Time = 0; Time < Duration; Time += StepMilliseconds)
+            {
+                if (std::optional<std::string> Next = StepDoors(Doors, *Level, Bodies, { .State = Player, .Radius = PlayerClass->Radius, .Inventory = Inventory,
+                                                                                        .ObjectIndex = PlayerIndex }, StepMilliseconds))
+                {
+                    return Next;
+                }
+            }
+
+            return std::optional<std::string>();
+        };
+
+        // With the player far away, sensing gates close once nothing stands in them; then the player opens each closed one alone.
+        constexpr FCollisionPoint FarAway{ .X = -100000.f, .Y = -100000.f };
+        std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+        std::expected<std::vector<FDoor>, std::string> Doors = CreateDoors(*Level, Archive, Bodies);
+        if (!Doors)
+        {
+            return std::unexpected(std::format("{}: {}", Name, Doors.error()));
+        }
+
+        FPlayerInventory Inventory;
+        Run(*Doors, Bodies, FarAway, Inventory, SettleMilliseconds);
+        for (size_t Index = 0; Index < Doors->size(); ++Index)
+        {
+            const FDoor Settled = (*Doors)[Index];
+            if (Settled.bLift || (Settled.Flags & DoorSensor) == 0)
+            {
+                continue;
+            }
+
+            ++Gates;
+            if ((Settled.Flags & DoorOpen) != 0)
+            {
+                continue;
+            }
+
+            ++Closed;
+            const FLevelObject& Gate = Level->Objects[Settled.ObjectIndex];
+            std::vector<FDoor> Single = { Settled };
+            Inventory.Keys = { FCarriedKey{ .Id = Settled.Id } };
+            Run(Single, Bodies, { .X = Gate.X, .Y = Gate.Y }, Inventory, SettleMilliseconds);
+            Opened += (Single.front().Flags & DoorOpen) != 0 ? 1 : 0;
+            if ((Single.front().Flags & DoorOpen) == 0)
+            {
+                Failures.push_back(std::format("{} gate {} at {:.0f},{:.0f}", Name, Gate.ClassName, Gate.X, Gate.Y));
+            }
+        }
+
+        // The player waits on each usable lift with its key until it leaves.
+        for (const FDoor& Door : *Doors)
+        {
+            if (!Door.bLift || (Door.Flags & DoorActive) == 0 || Door.UsageCount < 1)
+            {
+                continue;
+            }
+
+            ++Lifts;
+            std::vector<FObjectBody> LiftBodies = CreateObjectBodies(*Level);
+            std::expected<std::vector<FDoor>, std::string> Fresh = CreateDoors(*Level, Archive, LiftBodies);
+            const auto Lift = std::ranges::find(*Fresh, Door.ObjectIndex, &FDoor::ObjectIndex);
+            std::vector<FDoor> Single = { *Lift };
+            const FLevelObject& Object = Level->Objects[Door.ObjectIndex];
+            FPlayerInventory Rider{ .Keys = { FCarriedKey{ .Id = Door.Id } } };
+            if (const std::optional<std::string> Next = Run(Single, LiftBodies, { .X = Object.X, .Y = Object.Y }, Rider, RideMilliseconds); Next == Door.NextLevel)
+            {
+                ++Ridden;
+            }
+            else
+            {
+                Failures.push_back(std::format("{} lift at {:.0f},{:.0f}", Name, Object.X, Object.Y));
+            }
+        }
+    }
+
+    const std::string Summary = std::format("{} of {} sensing gates closed and {} of those opened for the player, {} of {} lifts carried the player off",
+        Closed, Gates, Opened, Lifts, Ridden);
+    if (Gates == 0 || Opened != Closed || Lifts == 0 || Ridden != Lifts)
+    {
+        return std::unexpected(std::format("{}; first failure: {}", Summary, Failures.empty() ? std::string() : Failures.front()));
     }
 
     return Summary;

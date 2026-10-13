@@ -2,6 +2,7 @@
 
 #include "Game/Collision.h"
 #include "Game/Path.h"
+#include "Pg/Gaf.h"
 #include "Pg/Random.h"
 
 #include <cstdint>
@@ -18,6 +19,21 @@ struct FLevelObject;
 // UpdateAnimation at 0045e7e0 holds each frame for its duration in ticks; VzRun fixes the tick at 14 ms through AnimationSetFixedPeriod
 // (0045e4c0), so the display period never applies.
 inline constexpr int32_t AnimationPeriodMilliseconds = 14;
+
+// An animation instance's frame and timer, as StartAnimation (0045e770) resets them and UpdateAnimation (0045e7e0) advances them.
+struct FAnimationPlayback
+{
+    // 1-based.
+    uint32_t Frame = 0;
+    int32_t Timer = 0;
+    bool bEnded = false;
+};
+
+// UpdateAnimation at 0045e7e0. Object animations neither run backwards nor play back and forth, so only looping is handled.
+void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, int32_t Milliseconds);
+FAnimationPlayback StartAnimation(const Gaf::FAnimation& Animation);
+// ObjectDraw at 00431ae0 shows a chosen frame by stepping back to the one before it and replaying the time left, which lands on it.
+void ShowFrame(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, uint32_t Frame);
 
 // The grid cells that the object passes of EngineRunLevel (EngineVisitViewObjects at 00433b30) visit around the view, as half-open ranges.
 struct FViewCells
@@ -306,11 +322,22 @@ struct FObjectBody
     // Every TYPE Explosion block: the Boom-fx objects spawned on destruction and the blasts they carry.
     std::vector<FExplosionBlock> Explosions;
     float Altitude = 0.f;
+    // Object +0x5c bit 1: the body's collision node is disabled, as for an open gate or a present lift.
+    bool bPassable = false;
     std::optional<FTurret> Turret;
     std::optional<FActor> Actor;
 };
 
 inline constexpr int PlayerPoseCount = 48;
+
+// A carried TYPE Key (attribute kind 5): a key, or one part of a code that only counts once every part is carried.
+struct FCarriedKey
+{
+    int Id = 0;
+    bool bCode = false;
+    int PartId = 0;
+    int PartCount = 0;
+};
 
 // A collectable item: an indestructible Item-kind object with a TYPE Item block.
 struct FPickup
@@ -322,6 +349,7 @@ struct FPickup
     float AddMoney = 0.f;
     std::string AmmoType;
     float AddAmmo = 0.f;
+    std::optional<FCarriedKey> Key;
 };
 
 // The player's Energy, Shield, money and ammo, as the item pickup branch of EngineUpdateObjects (004406e0) changes them.
@@ -333,6 +361,46 @@ struct FPlayerInventory
     float ShieldMax = 0.f;
     float Money = 0.f;
     std::vector<FAmmoStock> Ammo;
+    // Carried key items in pickup order (object +0x11c lists them newest first).
+    std::vector<FCarriedKey> Keys;
+};
+
+// TYPE Gate and TYPE Lift flags (attribute +0x10) as LoadObjectClassLibrary packs them.
+enum EDoorFlag : uint32_t
+{
+    DoorActive = 0x1,
+    // Gate Opened, lift Present.
+    DoorOpen = 0x2,
+    // Gate Closing, lift Going-Up: set once the animation toward open has started.
+    DoorOpening = 0x4,
+    // Stay-Opened, Stay-Up.
+    DoorStayOpen = 0x8,
+    // Stay-Closed, Stay-Down; a sensing gate also sets it while nothing that may pass is near.
+    DoorStayClosed = 0x10,
+    // Gate Sensor: the gate opens only for something near.
+    DoorSensor = 0x20,
+    DoorKeyAlwaysNeeded = 0x40,
+    DoorDestroyKey = 0x80,
+    DoorNeedsCode = 0x100,
+};
+
+// A gate (TYPE Gate, attribute kind 4) or a lift (TYPE Lift, kind 3). The object's first animation leads to open or present, its second
+// to closed or away; each plays once and holds its last frame.
+struct FDoor
+{
+    size_t ObjectIndex = 0;
+    bool bLift = false;
+    uint32_t Flags = 0;
+    int32_t Delay = 0;
+    int32_t Timer = 0;
+    // The key or code a holder must carry; zero lets anything through.
+    int Id = 0;
+    int UsageCount = 0;
+    // A lift's 3do-file: the level it leads to, or a starred marker such as *End*.
+    std::string NextLevel;
+    std::array<Gaf::FAnimation, 2> Animations;
+    size_t Animation = 0;
+    FAnimationPlayback Playback;
 };
 
 // The TYPE Weapon block of a weapon class (weapon.3dc), as the class loader stores it.
@@ -473,6 +541,13 @@ void StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayer
 void StepActors(FCombat* Combat, std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
     const FPlayerState* Player);
 void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
+// Every gate and lift of the level, in their activation state (AnimInitializeGraphics at 00417b30): open ones are passable and show the
+// last frame of their first animation.
+std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, FResourceArchive& Archive, std::span<FObjectBody> Bodies);
+// One step of every gate (GateUpdate at 00443620) and lift (ObjectUpdateLevelExit at 00442bf0) after its animation advances. Returns the lift's
+// 3do-file once the player has taken a lift.
+std::optional<std::string> StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, std::span<FObjectBody> Bodies, const FPlayerTarget& Player,
+    uint32_t StepMilliseconds);
 // Activates the level's objects, which draws each bob's phase and sets its first altitude, then loads the player's weapons, arms the level's
 // turrets and loads every FX class the level's ammo and explosions can spawn.
 std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, std::vector<FObjectBody>& Bodies);
@@ -494,5 +569,7 @@ std::expected<void, std::string> VerifyPlayerMovement();
 // Loads every level's weapons and fires them for a few seconds of game time.
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive);
 std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive);
+// Every level's gates close with nothing near and open for the player, and the player rides every usable lift.
+std::expected<std::string, std::string> VerifyDoors(FResourceArchive& Archive);
 // Replays the CAVE\DEMO.3DR inputs through StepPlayer and compares every step with the recorded position.
 std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archive);

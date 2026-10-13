@@ -335,65 +335,6 @@ std::optional<size_t> FindOrLoadSheet(FObjectSprites& Sprites, FResourceArchive&
     return Sheet->second;
 }
 
-// An animation instance's frame and timer, as StartAnimation (0045e770) resets them and UpdateAnimation (0045e7e0) advances them.
-struct FAnimationPlayback
-{
-    // 1-based.
-    uint32_t Frame = 0;
-    int32_t Timer = 0;
-    bool bEnded = false;
-};
-
-// UpdateAnimation at 0045e7e0. Actor animations neither run backwards nor play back and forth, so only looping is handled.
-void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, const int32_t Milliseconds)
-{
-    constexpr uint32_t LoopFlag = 2;
-    if (Playback.bEnded)
-    {
-        return;
-    }
-
-    Playback.Timer -= Milliseconds;
-    const uint32_t FrameCount = uint32_t(Animation.Frames.size());
-    // A looping animation of zero-length frames would never leave this loop; one pass through it is enough.
-    for (uint32_t Advanced = 0; Playback.Timer <= 0 && Advanced <= FrameCount; ++Advanced)
-    {
-        ++Playback.Frame;
-        if (Playback.Frame > FrameCount)
-        {
-            Playback.Frame = (Animation.Flags & LoopFlag) != 0 ? Animation.LoopStart : 0;
-        }
-
-        if (Playback.Frame == 0 || Playback.Frame > FrameCount)
-        {
-            Playback = { .bEnded = true };
-            return;
-        }
-
-        Playback.Timer += Animation.Frames[Playback.Frame - 1].Duration * AnimationPeriodMilliseconds;
-    }
-}
-
-FAnimationPlayback StartAnimation(const Gaf::FAnimation& Animation)
-{
-    FAnimationPlayback Playback{ .bEnded = Animation.Frames.empty() };
-    UpdateAnimation(Playback, Animation, 0);
-    return Playback;
-}
-
-// ObjectDraw at 00431ae0 shows a chosen frame by stepping back to the one before it and replaying the time left, which lands on it.
-void ShowFrame(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, const uint32_t Frame)
-{
-    if (Frame == 0 || Frame > Animation.Frames.size())
-    {
-        Playback = { .bEnded = true };
-        return;
-    }
-
-    Playback.Frame = Frame - 1;
-    UpdateAnimation(Playback, Animation, Playback.Timer);
-}
-
 // An actor's part of ObjectDraw (00431ae0): the walk it plays and the frames it last chose. Animation indices are 0-based into the GAF.
 struct FActorAnimation
 {
@@ -661,8 +602,14 @@ std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive&
     return Result;
 }
 
-void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std::vector<std::optional<FActorAnimation>>& Actors)
+void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std::vector<std::optional<FActorAnimation>>& Actors, const std::span<const FDoor> Doors)
 {
+    std::vector<const FDoor*> DoorOf(Level.Objects.size(), nullptr);
+    for (const FDoor& Door : Doors)
+    {
+        DoorOf[Door.ObjectIndex] = &Door;
+    }
+
     for (FObjectSprite& Sprite : Sprites.Sprites)
     {
         const FLevelObject& Object = Level.Objects[Sprite.ObjectIndex];
@@ -675,6 +622,15 @@ void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std
             const size_t Index = Sprite.bShadow ? Actor->ShadowAnimation : Actor->BodyAnimation;
             const uint32_t Frame = Sprite.bShadow ? Actor->ShadowFrame : Actor->BodyFrame;
             const bool bShown = Actor->bInView && Index < Animations.size() && Frame >= 1 && Frame <= Animations[Index].Frames.size();
+            Sprite.Frame = bShown ? Animations[Index].Frames[Frame - 1] : Gaf::FAnimationFrame{};
+        }
+
+        // A gate or lift shows the animation its state machine plays.
+        if (const FDoor* const Door = DoorOf[Sprite.ObjectIndex]; Door && !Sprite.bShadow)
+        {
+            const size_t Index = size_t(Object.GafIndex - 1) + Door->Animation;
+            const uint32_t Frame = Door->Playback.bEnded ? 0 : Door->Playback.Frame;
+            const bool bShown = Index < Animations.size() && Frame >= 1 && Frame <= Animations[Index].Frames.size();
             Sprite.Frame = bShown ? Animations[Index].Frames[Frame - 1] : Gaf::FAnimationFrame{};
         }
 
@@ -830,9 +786,11 @@ int main(const int ArgCount, char** const Args)
         std::printf("Combat: %s\n", Combat ? Combat->c_str() : Combat.error().c_str());
         const std::expected<std::string, std::string> Patrols = VerifyPatrols(Archive);
         std::printf("Patrols: %s\n", Patrols ? Patrols->c_str() : Patrols.error().c_str());
+        const std::expected<std::string, std::string> Doors = VerifyDoors(Archive);
+        std::printf("Gates and lifts: %s\n", Doors ? Doors->c_str() : Doors.error().c_str());
         std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
             Collision ? "passed" : Collision.error().c_str(), Movement ? "passed" : Movement.error().c_str());
-        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols ? 0 : 1;
+        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols && Doors ? 0 : 1;
     }
 
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
@@ -890,6 +848,15 @@ int main(const int ArgCount, char** const Args)
     const size_t PlayerIndex = size_t(PlayerObject - Level->Objects.begin());
     std::vector<FPickup> Pickups = CreatePickups(*Level);
     std::vector<std::optional<FActorAnimation>> ActorAnimations = CreateActorAnimations(Bodies, *Level, *Objects);
+    std::expected<std::vector<FDoor>, std::string> Doors = CreateDoors(*Level, Archive, Bodies);
+    if (!Doors)
+    {
+        std::fprintf(stderr, "Gates and lifts stay still: %s\n", Doors.error().c_str());
+        Doors.emplace();
+    }
+
+    // ponytail: level changes are not ported yet; the lift the player takes is only reported.
+    std::optional<std::string> LiftDestination;
     FPlayerInventory Inventory = PlayerObject != Level->Objects.end() ? CreateInventory(*PlayerObject) : FPlayerInventory{};
     if (PlayerObject != Level->Objects.end())
     {
@@ -958,6 +925,13 @@ int main(const int ArgCount, char** const Args)
                 StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies);
                 StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
                 StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &*Player);
+                const FPlayerTarget Rider{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
+                if (std::optional<std::string> Next = StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds); Next && !LiftDestination)
+                {
+                    std::printf("Lift to %s\n", Next->c_str());
+                    std::fflush(stdout);
+                    LiftDestination = std::move(Next);
+                }
                 if (Combat)
                 {
                     const float MoneyBefore = Inventory.Money;
@@ -1033,7 +1007,7 @@ int main(const int ArgCount, char** const Args)
         CameraY = std::clamp(CameraY, 0.0, std::max(0.0, double(MapHeight - ScreenHeight)));
         AnimateActors(ActorAnimations, Bodies, *Level, *Objects, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level),
             int32_t(LastStepMilliseconds));
-        UpdateObjectSprites(*Objects, *Level, ActorAnimations);
+        UpdateObjectSprites(*Objects, *Level, ActorAnimations, *Doors);
         if (Player)
         {
             // The player's 48 poses are the frames of the rot animation that follows its 24 direction animations; odd poses match them.
