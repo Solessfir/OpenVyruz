@@ -3251,6 +3251,7 @@ int main(const int ArgCount, char** const Args)
     }
 
     const bool bDataPathGiven = DataPath.has_value();
+    bool bRememberDataPath = bDataPathGiven;
     const std::filesystem::path GameFolderFile = UserDataDirectory() / "game-folder.txt";
     if (!DataPath)
     {
@@ -3262,7 +3263,7 @@ int main(const int ArgCount, char** const Args)
         }
 
         DataPath = *Directory / "vz-data.rsc";
-        // An installed binary (such as /usr/bin from the Arch package) has no data beside it, so it uses the game folder last given on the command line.
+        // An installed binary (such as /usr/bin from the Arch package) has no data beside it, so it uses the game folder last given on the command line or picked.
         if (std::error_code Error; !std::filesystem::exists(*DataPath, Error))
         {
             std::string Remembered;
@@ -3282,13 +3283,21 @@ int main(const int ArgCount, char** const Args)
     }
 
     FResourceArchive Archive;
-    if (!Archive.Open(*DataPath))
+    // Without a path on the command line, the player picks the game folder until it holds the archive or they cancel.
+    while (!Archive.Open(*DataPath))
     {
-        std::fprintf(stderr, "Cannot open %s. Pass the game folder holding vz-data.rsc once; later runs remember it.\n", DataPath->string().c_str());
-        return 1;
+        const std::optional<std::filesystem::path> Picked = bDataPathGiven ? std::nullopt : PickFolder("Select the Vyruz folder (the one holding vz-data.rsc)");
+        if (!Picked)
+        {
+            std::fprintf(stderr, "Cannot open %s. Pass the game folder holding vz-data.rsc once; later runs remember it.\n", DataPath->string().c_str());
+            return 1;
+        }
+
+        DataPath = *Picked / "vz-data.rsc";
+        bRememberDataPath = true;
     }
 
-    if (bDataPathGiven)
+    if (bRememberDataPath)
     {
         std::error_code Error;
         std::filesystem::create_directories(GameFolderFile.parent_path(), Error);

@@ -9,7 +9,9 @@ license=('MIT')
 depends=('gcc-libs' 'glibc' 'vulkan-icd-loader' 'vulkan-driver' 'wayland' 'libxkbcommon' 'libx11' 'libxrandr' 'libxinerama' 'libxcursor' 'libxi')
 makedepends=('git' 'vulkan-headers' 'shader-slang')
 optdepends=('libpulse: sound through PulseAudio or PipeWire'
-            'alsa-lib: sound through ALSA')
+            'alsa-lib: sound through ALSA'
+            'zenity: folder picker for the game folder (or kdialog)'
+            'kdialog: folder picker for the game folder on KDE')
 provides=('openvyruz')
 conflicts=('openvyruz')
 options=('!debug')

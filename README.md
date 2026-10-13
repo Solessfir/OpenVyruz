@@ -46,7 +46,7 @@ make config=development Vyruz -j"$(nproc)"
 
 The executable is written to `Binaries/linux/Development/Vyruz`.
 
-On Arch, `Packaging/Arch/PKGBUILD` builds the `openvyruz-git` package from the latest `main`: it installs `/usr/bin/openvyruz` with its desktop entry and icon. Run `openvyruz <path to vz-data.rsc>` (the folder holding `vz-data.rsc`) once so it remembers the game folder.
+On Arch, `Packaging/Arch/PKGBUILD` builds the `openvyruz-git` package from the latest `main`: it installs `/usr/bin/openvyruz` with its desktop entry and icon. On the first run it asks for the game folder (the one holding `vz-data.rsc`), or pass it once: `openvyruz <path to vz-data.rsc>`.
 
 ```bash
 cd Packaging/Arch && makepkg -si
@@ -63,7 +63,7 @@ From Windows, `wsl -d archlinux -- bash Scripts/WslCheck.sh [gcc|clang]` builds 
 
 ## Running
 
-The game needs the original `vz-data.rsc`, which is not included. Pass an archive file or the directory containing it; the port remembers it in `game-folder.txt` in its user data folder (`%APPDATA%\OpenVyruz` or `$XDG_DATA_HOME/OpenVyruz`), and a later run without one uses `vz-data.rsc` beside the executable if there is one, else the remembered folder (which is how the installed Arch package finds it).
+The game needs the original `vz-data.rsc`, which is not included. Pass an archive file or the directory containing it; the port remembers it in `game-folder.txt` in its user data folder (`%APPDATA%\OpenVyruz` or `$XDG_DATA_HOME/OpenVyruz`), and a later run without one uses `vz-data.rsc` beside the executable if there is one, else the remembered folder (which is how the installed Arch package finds it). When neither holds the archive, it asks for the folder with the system's folder picker (zenity or kdialog on Linux).
 
 ```powershell
 .\Binaries\windows\Development\Vyruz.exe <path to vz-data.rsc>
