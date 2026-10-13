@@ -1917,6 +1917,8 @@ struct FSettings
     bool bMouse = false;
     FVideoDetails Details;
     FAudioSettings Audio;
+    // gamma = red, green, blue (session +0x27d4): the user's gamma, which every ramp with Gamma FX sits on.
+    std::array<int32_t, 3> Gamma{};
 };
 
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a menu ends or restarts the level.
@@ -3657,8 +3659,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         {
             std::array<int32_t, 3>& Gamma = Inventory.Surprises.Gamma;
             constexpr int32_t GammaLimit = 0xff;
-            const std::array<int32_t, 3> Shown = { std::clamp(Gamma[0], -GammaLimit, GammaLimit), std::clamp(Gamma[1], -GammaLimit, GammaLimit),
-                std::clamp(Gamma[2], -GammaLimit, GammaLimit) };
+            const std::array<int32_t, 3> Shown = { std::clamp(Gamma[0] + Settings.Gamma[0], -GammaLimit, GammaLimit),
+                std::clamp(Gamma[1] + Settings.Gamma[1], -GammaLimit, GammaLimit), std::clamp(Gamma[2] + Settings.Gamma[2], -GammaLimit, GammaLimit) };
             if (!DeathTimer)
             {
                 for (int32_t& Channel : Gamma)
@@ -4031,6 +4033,18 @@ int main(const int ArgCount, char** const Args)
             if (Key == "session-name" && !Value.empty() && Value.find_first_of("\\/:*?\"<>|.") == std::string_view::npos)
             {
                 Settings.PlayerName = std::string(Value);
+            }
+            else if (Key == "gamma")
+            {
+                size_t Channel = 0;
+                for (const auto Field : std::views::split(Value, ','))
+                {
+                    const std::string_view Number = Trim(std::string_view(Field.begin(), Field.end()));
+                    if (Channel < Settings.Gamma.size())
+                    {
+                        std::from_chars(Number.data(), Number.data() + Number.size(), Settings.Gamma[Channel++]);
+                    }
+                }
             }
             else if ((Key == "use-mouse" || Key == "use-keyboard" || Key == "use-joypad") && IsSet(Value))
             {

@@ -77,4 +77,4 @@ Todo: sessions in the original's format (`session\<session-name>\default` and `s
 
 Gameplay gaps (census of all 25 levels, none blocks progress since no gate or lift depends on kills): generator objects placed at load time.
 
-Todo: the rest of Gamma FX: the user's base gamma (vzconf.txt `gamma`, session `+0x27d4`), which every ramp sits on and which Darken also sets, and the game menu's own fade to black when it closes (`FUN_0041e5a0` on the menu's backdrop). The flashes, the death's red, the finale and the level's fade in after the menu are done ([Docs/MainLoop.md](Docs/MainLoop.md#gamma-flashes)).
+Todo: the rest of Gamma FX: the game menu's own fade to black when it closes (`FUN_0041e5a0` on the menu's backdrop), and Darken setting the ramp to the user's gamma. The flashes, the death's red, the finale and the level's fade in after the menu are done ([Docs/MainLoop.md](Docs/MainLoop.md#gamma-flashes)).
