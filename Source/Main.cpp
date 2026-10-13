@@ -2941,7 +2941,7 @@ int main(const int ArgCount, char** const Args)
         const std::expected<std::string, std::string> Doors = VerifyDoors(Archive);
         std::printf("Gates and lifts: %s\n", Doors ? Doors->c_str() : Doors.error().c_str());
         const std::expected<std::string, std::string> SessionCheck = VerifySessions(Archive);
-        std::printf("Settings: %s\n", SessionCheck ? SessionCheck->c_str() : SessionCheck.error().c_str());
+        std::printf("Sessions: %s\n", SessionCheck ? SessionCheck->c_str() : SessionCheck.error().c_str());
         const bool bScores = VerifyScores();
         std::printf("Scores: %s\n", bScores ? "passed" : "failed");
         std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
