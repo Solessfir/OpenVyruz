@@ -299,6 +299,9 @@ struct FObjectSprite
     bool bShadow = false;
     // A tank's turret top: the animation after its 24 body poses, one frame per top pose (ObjectDraw at 00431ae0, kind 0x20).
     bool bTop = false;
+    // A Use-delta-packing lift or gate stores later frames as changes over the first, which ObjectDraw (00431ae0, FUN_00433710) draws
+    // underneath first.
+    bool bDeltaBase = false;
     Gaf::FAnimationFrame Frame;
     float X = 0.f;
     float Y = 0.f;
@@ -586,6 +589,14 @@ std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive&
                 .Blend = DrawMode == AdditiveDrawMode ? ESpriteBlend::Additive : DrawMode == InverseSourceDrawMode ? ESpriteBlend::InverseSourceColor : ESpriteBlend::Opaque,
             });
 
+            const bool bDoor = Object.SubType == "lift" || Object.SubType == "gate";
+            if (!bShadow && bDoor && ParseLevelFloat(Object.Properties.Find("Use-delta-packing")).value_or(0.f) != 0.f)
+            {
+                FObjectSprite Base = Result.Sprites.back();
+                Base.bDeltaBase = true;
+                Result.Sprites.insert(Result.Sprites.end() - 1, Base);
+            }
+
             // The top shares the body's depth key and is drawn after it.
             const size_t TopIndex = size_t(Object.GafIndex - 1 + ObjectDirectionCount);
             if (!bShadow && Object.SubType == TankKind && TopIndex < GafAnimations.size() && GafAnimations[TopIndex].Frames.size() == ObjectDirectionCount)
@@ -629,7 +640,7 @@ void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std
         if (const FDoor* const Door = DoorOf[Sprite.ObjectIndex]; Door && !Sprite.bShadow)
         {
             const size_t Index = size_t(Object.GafIndex - 1) + Door->Animation;
-            const uint32_t Frame = Door->Playback.bEnded ? 0 : Door->Playback.Frame;
+            const uint32_t Frame = Sprite.bDeltaBase ? 1 : Door->Playback.bEnded ? 0 : Door->Playback.Frame;
             const bool bShown = Index < Animations.size() && Frame >= 1 && Frame <= Animations[Index].Frames.size();
             Sprite.Frame = bShown ? Animations[Index].Frames[Frame - 1] : Gaf::FAnimationFrame{};
         }

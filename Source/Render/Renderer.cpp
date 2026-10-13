@@ -12,7 +12,10 @@ namespace
 
 // ponytail: fixed pool, one set per sprite sheet; grow or go bindless when levels load more sheets than this.
 constexpr uint32_t MaxTextures = 1024;
-constexpr uint32_t SheetPadding = 1;
+// Each frame sits inside a border of copies of its own edge pixels: at a non-integer letterbox scale a pixel centre on a frame edge can
+// sample one texel past it, which must not be a neighbour or a transparent gap.
+constexpr uint32_t SheetBorder = 1;
+constexpr uint32_t SheetPadding = 2 * SheetBorder;
 
 void Check(const VkResult Result, const char* const What)
 {
@@ -624,7 +627,7 @@ FSpriteSheet FRenderer::CreateSpriteSheet(const std::vector<Gaf::FFrame>& Frames
     uint32_t RowHeight = 0;
     for (const Gaf::FFrame& Frame : Frames)
     {
-        if (CursorX + Frame.Width > SheetWidth)
+        if (CursorX + Frame.Width + SheetPadding > SheetWidth)
         {
             CursorX = 0;
             CursorY += RowHeight + SheetPadding;
@@ -634,19 +637,21 @@ FSpriteSheet FRenderer::CreateSpriteSheet(const std::vector<Gaf::FFrame>& Frames
         CursorX += Frame.Width + SheetPadding;
         RowHeight = std::max(RowHeight, Frame.Height);
     }
-    const uint32_t SheetHeight = CursorY + RowHeight;
+    const uint32_t SheetHeight = CursorY + RowHeight + SheetPadding;
 
     std::vector<uint32_t> Rgba(size_t{ SheetWidth } * SheetHeight, 0);
     for (size_t Index = 0; Index < Frames.size(); ++Index)
     {
         const Gaf::FFrame& Frame = Frames[Index];
-        const FPlacement Place = Placements[Index];
-        for (uint32_t Y = 0; Y < Frame.Height; ++Y)
+        const FPlacement Place = { .X = Placements[Index].X + SheetBorder, .Y = Placements[Index].Y + SheetBorder };
+        for (uint32_t Y = 0; Frame.Width != 0 && Frame.Height != 0 && Y < Frame.Height + SheetPadding; ++Y)
         {
-            for (uint32_t X = 0; X < Frame.Width; ++X)
+            for (uint32_t X = 0; X < Frame.Width + SheetPadding; ++X)
             {
-                const uint16_t Pixel = Frame.Pixels[size_t{ Y } * Frame.Width + X];
-                Rgba[size_t{ Place.Y + Y } * SheetWidth + Place.X + X] = Pixel == Frame.ColorKey ? 0 : Rgb555ToRgba8(Pixel);
+                const uint32_t SourceX = std::clamp(X, SheetBorder, Frame.Width + SheetBorder - 1) - SheetBorder;
+                const uint32_t SourceY = std::clamp(Y, SheetBorder, Frame.Height + SheetBorder - 1) - SheetBorder;
+                const uint16_t Pixel = Frame.Pixels[size_t{ SourceY } * Frame.Width + SourceX];
+                Rgba[size_t{ Placements[Index].Y + Y } * SheetWidth + Placements[Index].X + X] = Pixel == Frame.ColorKey ? 0 : Rgb555ToRgba8(Pixel);
             }
         }
         Sheet.Frames.push_back({

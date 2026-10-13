@@ -26,7 +26,7 @@ The words after it hold `Delay`, the running timer and `Id`. A lift also keeps `
 
 The object's animation `GAF-index` leads to open or present, and `GAF-index + 1` leads to closed or away. Each is played once and then held on its last frame, because the loop start is the last frame. `AnimInitializeGraphics` (`00417b30`) shows the last frame of the animation for the starting state and fills the timer with `Delay`. Its collision node is disabled while the gate is open or the lift present (object `+0x5c` bit 1, `ObjectSyncCollisionNode` at `0040ef20`). The decor classes have `Graphic-update-needed`, so `EngineUpdateObjects` advances the animation every step before the update runs, wherever the view is.
 
-A new animation starts at its third frame. Each update first returns while the timer is full and the animation has not reached its last frame.
+A class with `Use-delta-packing` (class flag 4) stores later frames as changes over the first, so `ObjectDraw` draws frame 1 of the animation underneath before the current frame (`FUN_00433710` through `FUN_0045ec90`). A new animation starts at its third frame. Each update first returns while the timer is full and the animation has not reached its last frame.
 
 ## Gates
 
