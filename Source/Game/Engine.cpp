@@ -2707,6 +2707,18 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
         Combat.PlayerWeapon = Combat.PlayerSlotStates.front();
     }
 
+    for (const FLevelPropertyBlock& Child : Player.Properties.Children)
+    {
+        if (Child.Kind == "TYPE" && Child.Name == "Explosion")
+        {
+            Combat.PlayerExplosions.push_back({
+                .BoomEffect = ToLowerName(Child.Find("Boom-fx")),
+                .Damage = ClassNumber(Child, "Damage"),
+                .Zone = ClassNumber(Child, "Damage-zone"),
+            });
+        }
+    }
+
     // Moving seekers carry their first ADD Weapon and ADD Ammo.
     for (FObjectBody& Body : Bodies)
     {
@@ -2785,6 +2797,11 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
         }
     }
 
+    for (const FExplosionBlock& Explosion : Combat.PlayerExplosions)
+    {
+        EffectNames.push_back(Explosion.BoomEffect);
+    }
+
     for (const std::string& Name : EffectNames)
     {
         if (const std::expected<void, std::string> Result = LoadEffect(Combat, Level, Archive, Name); !Result)
@@ -2836,6 +2853,14 @@ const FAmmoStock* SlotAmmo(const FCombat& Combat, const size_t Slot, const FPlay
 }
 
 constexpr size_t WeaponSlotCount = 9;
+}
+
+void ExplodePlayer(FCombat& Combat, const FCollisionPoint Position, const float Altitude)
+{
+    for (const FExplosionBlock& Explosion : Combat.PlayerExplosions)
+    {
+        SpawnEffect(Combat, Explosion.BoomEffect, Position, Altitude, Explosion.Damage, Explosion.Zone);
+    }
 }
 
 size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inventory)

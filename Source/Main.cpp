@@ -718,6 +718,51 @@ struct FCarriedPlayer
     uint32_t Clock = 1;
 };
 
+// ShowImageWait at 00404950: an image centred on the screen for up to 5 seconds; WaitForInput (00404910) ends the wait early on a key or a mouse button.
+void ShowImage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string_view Path)
+{
+    constexpr uint32_t WaitMilliseconds = 5000;
+    const std::optional<FObjectGaf> Gaf = LoadObjectGaf(Archive, Path);
+    if (!Gaf || Gaf->Animations.empty() || Gaf->Animations.front().Frames.empty() || Gaf->Animations.front().Frames.front().BitmapIndex == 0)
+    {
+        return;
+    }
+
+    const Gaf::FAnimationFrame& Frame = Gaf->Animations.front().Frames.front();
+    const Gaf::FFrame& Bitmap = Gaf->Bitmaps[Frame.BitmapIndex - 1];
+    const FSpriteSheet Sheet = Renderer.CreateSpriteSheet(Gaf->Bitmaps);
+    const float X = float((int(ScreenWidth) - int(Bitmap.Width)) / 2 - Bitmap.TrimX);
+    const float Y = float((int(ScreenHeight) - int(Bitmap.Height)) / 2 - Bitmap.TrimY);
+    const auto AnyInput = [Window]
+    {
+        for (int Key = GLFW_KEY_SPACE; Key <= GLFW_KEY_LAST; ++Key)
+        {
+            if (glfwGetKey(Window, Key) == GLFW_PRESS)
+            {
+                return true;
+            }
+        }
+
+        return glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS || glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    };
+
+    const uint32_t Start = ClockMilliseconds();
+    while (!glfwWindowShouldClose(Window) && ClockMilliseconds() - Start < WaitMilliseconds)
+    {
+        glfwPollEvents();
+        if (AnyInput())
+        {
+            break;
+        }
+
+        if (Renderer.BeginFrame())
+        {
+            Renderer.DrawSprite(Sheet, Frame.BitmapIndex - 1, X, Y);
+            Renderer.EndFrame();
+        }
+    }
+}
+
 // One level of LoopLevels: runs until the window closes or the player takes a lift, and then returns the next level's path with the player
 // in Carried.
 std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive,
@@ -902,6 +947,9 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
     // Tab, then the digits 1 to 9.
     constexpr size_t WeaponKeyCount = 10;
     std::array<bool, WeaponKeyCount> WeaponKeysDown{};
+    // Object +0xcc of the dead player: EngineUpdateObjects ends the game when it runs out.
+    constexpr int32_t DeathMilliseconds = 10000;
+    std::optional<int32_t> DeathTimer;
     const auto Current = std::ranges::find(DebugLevels, LevelPath);
     const size_t CurrentIndex = Current == DebugLevels.end() ? DebugLevels.size() : size_t(Current - DebugLevels.begin());
     while (!glfwWindowShouldClose(Window))
@@ -955,17 +1003,29 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
             const auto Pressed = [Window](const int Key) { return glfwGetKey(Window, Key) == GLFW_PRESS; };
             if (Player)
             {
-                const FPlayerCommand Command = PlayerCommandFromKeys(Pressed(GLFW_KEY_UP), Pressed(GLFW_KEY_DOWN), Pressed(GLFW_KEY_LEFT), Pressed(GLFW_KEY_RIGHT),
-                    Pressed(GLFW_KEY_A), Pressed(GLFW_KEY_D));
-                if (const FObjectBody* const Struck = StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies))
+                // The dead player's object skips its updates until the timer ends the game (game update result 0).
+                if (DeathTimer)
                 {
-                    ReportDoorContact(*Doors, *Struck, Inventory, Messages);
+                    *DeathTimer -= int32_t(StepMilliseconds);
+                    if (*DeathTimer <= 0)
+                    {
+                        break;
+                    }
+                }
+                else
+                {
+                    const FPlayerCommand Command = PlayerCommandFromKeys(Pressed(GLFW_KEY_UP), Pressed(GLFW_KEY_DOWN), Pressed(GLFW_KEY_LEFT), Pressed(GLFW_KEY_RIGHT),
+                        Pressed(GLFW_KEY_A), Pressed(GLFW_KEY_D));
+                    if (const FObjectBody* const Struck = StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies))
+                    {
+                        ReportDoorContact(*Doors, *Struck, Inventory, Messages);
+                    }
                 }
 
                 StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
                 StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &*Player);
                 const FPlayerTarget Rider{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
-                if (const FDoor* const Lift = StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds, Messages); Lift && !NextLevel)
+                if (const FDoor* const Lift = StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds, Messages); Lift && !NextLevel && !DeathTimer)
                 {
                     // ponytail: the end of a tower (a starred 3do-file) has no sequence yet; the player stays.
                     if (Lift->NextLevel.starts_with('*'))
@@ -985,15 +1045,26 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                     const float EnergyBefore = Inventory.Energy;
                     const float ShieldBefore = Inventory.Shield;
                     const bool bFire = bAutoFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL);
-                    StepPlayerWeapon(*Combat, bFire, *Player, *PlayerObject, PlayerIndex, PlayerSpriteSize, Inventory, Messages);
+                    if (!DeathTimer)
+                    {
+                        StepPlayerWeapon(*Combat, bFire, *Player, *PlayerObject, PlayerIndex, PlayerSpriteSize, Inventory, Messages);
+                    }
+
                     StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, *Player);
                     StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies,
                         { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
                     if (Inventory.Money != MoneyBefore || Inventory.Energy != EnergyBefore || Inventory.Shield != ShieldBefore)
                     {
-                        // ponytail: no HUD or death sequence yet; the totals go to the console.
                         std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
                         std::fflush(stdout);
+                    }
+
+                    // Spent energy kills the player like any object: its explosions go off and the object stays hidden.
+                    if (!DeathTimer && Inventory.Energy <= 0.f)
+                    {
+                        ExplodePlayer(*Combat, Player->Position, PlayerObject->Altitude);
+                        PlayerObject->bRemoved = true;
+                        DeathTimer = DeathMilliseconds;
                     }
                 }
                 // Objects the step created, such as dropped items, join the pickups and the drawn objects.
@@ -1016,7 +1087,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                     ActorAnimations.resize(Level->Objects.size());
                 }
 
-                if (CollectPickups(*Player, *PlayerClass, Inventory, Pickups, *Level, Messages) != 0)
+                if (!DeathTimer && CollectPickups(*Player, *PlayerClass, Inventory, Pickups, *Level, Messages) != 0)
                 {
                     std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
                     std::fflush(stdout);
@@ -1046,6 +1117,15 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                 CameraX += (Pressed(GLFW_KEY_RIGHT) - Pressed(GLFW_KEY_LEFT)) * ScrollStep;
                 CameraY += (Pressed(GLFW_KEY_DOWN) - Pressed(GLFW_KEY_UP)) * ScrollStep;
             }
+        }
+
+        // Game over (EngineGameOver at 00445a40): the game-over image, then the menu. ponytail: there is no menu yet, so the level starts over without the
+        // carried player.
+        if (DeathTimer && *DeathTimer <= 0)
+        {
+            ShowImage(Window, Renderer, Archive, "common\\data\\extra\\game-over.gaf");
+            Carried.reset();
+            return std::optional(LevelPath);
         }
 
         if (Player)

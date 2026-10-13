@@ -502,6 +502,8 @@ struct FCombat
     // trigger state, which PlayerSlotStates holds for the slots not in hand.
     size_t PlayerSlot = 1;
     std::vector<FWeaponState> PlayerSlotStates;
+    // The player class's TYPE Explosion blocks, set off when it dies.
+    std::vector<FExplosionBlock> PlayerExplosions;
     std::vector<FProjectile> Projectiles;
     std::vector<FEffectClass> EffectClasses;
     std::vector<FEffect> Effects;
@@ -554,6 +556,8 @@ std::vector<FPickup> CreatePickups(const FLevel& Level);
 // The 1-based slot "next weapon" moves to (FUN_004376a0): the first after the one in hand, wrapping after slot 9, whose ammo stock is not empty,
 // or the one in hand when none is.
 size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inventory);
+// The player's death branch of EngineUpdateObjects (004406e0): ObjectDestroy keeps the player object but sets off its explosions.
+void ExplodePlayer(FCombat& Combat, FCollisionPoint Position, float Altitude);
 // FUN_00437740: takes the slot's weapon in hand and, with option flag 8, lists its weapon and ammo for 4 seconds.
 void SelectPlayerWeapon(FCombat& Combat, size_t Slot, const FPlayerInventory& Inventory, FMessages& Messages);
 std::optional<FPickup> CreatePickup(const FLevel& Level, size_t ObjectIndex);
