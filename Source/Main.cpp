@@ -2350,6 +2350,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     {
                         ReportDoorContact(*Doors, *Struck, *Player, Inventory, Messages);
                     }
+
+                    // EngineUpdateObjects puts the sound listener where the player stands (SoundSetListener at 0045edb0).
+                    SetSoundListener(Player->Position.X, Player->Position.Y, PlayerObject->Altitude);
                 }
 
                 StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);

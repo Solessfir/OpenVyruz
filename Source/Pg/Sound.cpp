@@ -317,7 +317,20 @@ uint32_t Sound::FMixer::Play(std::shared_ptr<const FSample> Sample, const bool b
     Channel.Priority = Priority;
     Channel.Volume = Volume ? std::clamp(*Volume, 0, MaxVolume) : Channel.Volume;
     Channel.Pan = Pan ? std::clamp(*Pan, -MaxPan, MaxPan) : Channel.Pan;
+    Channel.Serial = NextSerial++;
     return *Chosen + 1;
+}
+
+int Sound::FMixer::GetVolume(const uint32_t Channel) const
+{
+    const std::scoped_lock Lock(Mutex);
+    return Channel >= 1 && Channel <= ChannelCount ? Channels[Channel - 1].Volume : 0;
+}
+
+uint32_t Sound::FMixer::GetSerial(const uint32_t Channel) const
+{
+    const std::scoped_lock Lock(Mutex);
+    return Channel >= 1 && Channel <= ChannelCount && Channels[Channel - 1].Sample ? Channels[Channel - 1].Serial : 0;
 }
 
 bool Sound::FMixer::IsPlaying(const uint32_t Channel) const

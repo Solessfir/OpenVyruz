@@ -502,6 +502,9 @@ struct FDoor
     std::array<Gaf::FAnimation, 2> Animations;
     size_t Animation = 0;
     FAnimationPlayback Playback;
+    // Where its animation sounds play from, with its class's sample channels. ponytail: the original advances these Graphic-update-needed animations in the
+    // object update, outside ObjectDraw's position copy; whether their instance position lags behind the object is not checked in the running game.
+    FSoundEmitter Emitter;
 };
 
 // The TYPE Weapon block of a weapon class (weapon.3dc), as the class loader stores it.
@@ -545,8 +548,10 @@ struct FEffectClass
     std::string Name;
     std::string GafPath;
     int GafIndex = 0;
-    // Frame durations in animation ticks.
-    std::vector<int32_t> FrameDurations;
+    Gaf::FAnimation Animation;
+    // The class's sample channels and priority; each effect plays its sounds from where it is.
+    uint32_t ChannelMask = 0;
+    uint32_t Priority = 0;
     uint32_t LoopStart = 0;
     bool bLoop = false;
     // FX stretch-ratio; ObjectDraw at 00431ae0 treats zero as no stretch.
@@ -563,6 +568,7 @@ struct FEffect
     uint32_t Frame = 0;
     int32_t FrameTimer = 0;
     bool bFinished = false;
+    FSoundTrack Sound;
     float Damage = 0.f;
     float Zone = 0.f;
     int32_t BlastTimer = 0;

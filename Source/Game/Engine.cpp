@@ -12,6 +12,8 @@
 #include <bit>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <format>
 #include <iterator>
 #include <limits>
@@ -2199,8 +2201,8 @@ void StartDoorAnimation(FDoor& Door, const size_t Animation)
 {
     constexpr uint32_t FirstMovingFrame = 3;
     Door.Animation = Animation;
-    Door.Playback = StartAnimation(Door.Animations[Animation]);
-    ShowFrame(Door.Playback, Door.Animations[Animation], FirstMovingFrame);
+    Door.Playback = StartAnimation(Door.Animations[Animation], &Door.Emitter);
+    ShowFrame(Door.Playback, Door.Animations[Animation], FirstMovingFrame, &Door.Emitter);
 }
 
 constexpr size_t OpenAnimation = 0;
@@ -2469,7 +2471,14 @@ void AdvanceEffect(FEffect& Effect, const FEffectClass& Class, const uint32_t St
         return;
     }
 
-    const uint32_t FrameCount = uint32_t(Class.FrameDurations.size());
+    const FSoundEmitter Emitter{
+        .X = Effect.Position.X,
+        .Y = Effect.Position.Y,
+        .Altitude = Effect.Altitude,
+        .ChannelMask = Class.ChannelMask,
+        .Priority = Class.Priority,
+    };
+    const uint32_t FrameCount = uint32_t(Class.Animation.Frames.size());
     Effect.FrameTimer -= int32_t(StepMilliseconds);
     // A looping animation of zero-length frames would never leave this loop; one pass through it is enough.
     for (uint32_t Advanced = 0; Effect.FrameTimer <= 0 && Advanced <= FrameCount; ++Advanced)
@@ -2487,8 +2496,11 @@ void AdvanceEffect(FEffect& Effect, const FEffectClass& Class, const uint32_t St
             return;
         }
 
-        Effect.FrameTimer += Class.FrameDurations[Effect.Frame - 1] * AnimationPeriodMilliseconds;
+        Effect.FrameTimer += Class.Animation.Frames[Effect.Frame - 1].Duration * AnimationPeriodMilliseconds;
+        PlayFrameSound(Class.Animation, Class.Animation.Frames[Effect.Frame - 1], Effect.Sound, &Emitter);
     }
+
+    FollowFrameSound(Effect.Sound, &Emitter);
 }
 
 void SpawnEffect(FCombat& Combat, const std::string_view ClassName, const FCollisionPoint Position, const float Altitude, const float Damage = 0.f,
@@ -2658,21 +2670,20 @@ std::expected<void, std::string> LoadEffect(FCombat& Combat, const FLevel& Level
     }
 
     const Gaf::FAnimation& Animation = (*Animations)[size_t(GafIndex - 1)];
+    const FSoundEmitter Channels = MakeSoundEmitter(Class->Find("Sample-channel-range"), Class->Find("Sample-channel-priority"), 0.f, 0.f, 0.f);
     FEffectClass EffectClass{
         .Name = Name,
         .GafPath = GafPath->second,
         .GafIndex = GafIndex,
+        .Animation = Animation,
+        .ChannelMask = Channels.ChannelMask,
+        .Priority = Channels.Priority,
         .LoopStart = Animation.LoopStart,
         .bLoop = ClassNumber(*Effect, "Loop") != 0.f,
     };
     if (const float Stretch = ClassNumber(*Effect, "Stretch-ratio"); Stretch != 0.f)
     {
         EffectClass.Stretch = Stretch;
-    }
-
-    for (const Gaf::FAnimationFrame& Frame : Animation.Frames)
-    {
-        EffectClass.FrameDurations.push_back(Frame.Duration);
     }
 
     Combat.EffectClasses.push_back(std::move(EffectClass));
@@ -2850,20 +2861,32 @@ void TurnTurretTop(FTurret& Turret, const uint32_t StepMilliseconds)
 namespace
 {
 Sound::FMixer* AnimationMixer = nullptr;
+// SoundSetListener's position, which the positional sounds measure from (DAT_00519430).
+FSoundEmitter Listener;
 
-// AnimationFrameSound (0045ea70) picks a frame's sample by event flag 1 and its event value, and AnimationPlaySound (0045e6e0) plays it. Every SMP_ descriptor in the data is zero,
-// so none is positional: it takes any idle channel at priority 0x7f and keeps the channel's own volume and pan.
-void PlayFrameSound(const Gaf::FAnimation& Animation, const Gaf::FAnimationFrame& Frame)
+// SoundDistanceVolume at 0045e4e0: full volume while the emitter lies within the descriptor's inner box (+0x28) on every axis, nothing beyond its
+// outer box (+0x34). In between the original scales by the distance between two radii (+0x40, +0x44) that AnimStampSoundChannels (00417a20) never sets, so the
+// division by zero leaves nothing there either. The boxes are DAT_0050d420 (400 on each axis) and DAT_0050d430 (800).
+int PositionalVolume(const FSoundEmitter& Emitter, const int Volume)
 {
-    constexpr uint32_t SoundEventFlag = 1;
-    constexpr uint32_t FrameSoundPriority = 0x7f;
-    if (!AnimationMixer || (Frame.EventFlags & SoundEventFlag) == 0 || !Animation.Samples || Frame.EventValue == 0 || Frame.EventValue > Animation.Samples->size())
+    constexpr float InnerBox = 400.f;
+    const bool bInside = std::abs(Listener.X - Emitter.X) <= InnerBox && std::abs(Listener.Y - Emitter.Y) <= InnerBox &&
+        std::abs(Listener.Altitude - Emitter.Altitude) <= InnerBox;
+    return bInside ? Volume : 0;
+}
+
+// SoundScreenPan at 0045e630: the emitter's offset right of the listener over half the 640-pixel screen, as a full pan at the edge.
+int PositionalPan(const FSoundEmitter& Emitter)
+{
+    constexpr float HalfScreen = 320.f;
+    constexpr float FullPan = float(Sound::MaxPan);
+    const float Offset = Listener.X - Emitter.X;
+    if (Offset < 0.f)
     {
-        return;
+        return -Offset < HalfScreen ? TruncateLow(double(Offset) * double(-FullPan) / double(HalfScreen)) : Sound::MaxPan;
     }
 
-    const std::shared_ptr<const Sound::FSample> Sample(Animation.Samples, &(*Animation.Samples)[Frame.EventValue - 1]);
-    AnimationMixer->Play(Sample, false, FrameSoundPriority, Sound::FMixer::AllChannels);
+    return Offset < HalfScreen ? TruncateLow(double(Offset) * double(-FullPan) / double(HalfScreen)) : -Sound::MaxPan;
 }
 }
 
@@ -2872,7 +2895,87 @@ void SetAnimationMixer(Sound::FMixer* const Mixer)
     AnimationMixer = Mixer;
 }
 
-void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, const int32_t Milliseconds)
+void SetSoundListener(const float X, const float Y, const float Altitude)
+{
+    Listener = { .X = X, .Y = Y, .Altitude = Altitude };
+}
+
+FSoundEmitter MakeSoundEmitter(const std::string_view ChannelRange, const std::string_view Priority, const float X, const float Y, const float Altitude)
+{
+    FSoundEmitter Emitter{ .X = X, .Y = Y, .Altitude = Altitude };
+    int First = 0;
+    int Last = 0;
+    if (std::sscanf(std::string(ChannelRange).c_str(), "%d , %d", &First, &Last) == 2)
+    {
+        if (Last < First)
+        {
+            std::swap(First, Last);
+        }
+
+        for (int Channel = std::max(First, 1); Channel <= std::min(Last, int(Sound::FMixer::ChannelCount)); ++Channel)
+        {
+            Emitter.ChannelMask |= 1u << (Channel - 1);
+        }
+    }
+
+    Emitter.Priority = uint32_t(std::clamp(std::atoi(std::string(Priority).c_str()), 0, 0xff));
+    return Emitter;
+}
+
+// AnimationFrameSound (0045ea70) picks a frame's sample by event flag 1 and its event value, and AnimationPlaySound (0045e6e0) plays it. The
+// descriptor's volume is the sound-fx channel volume when the class was set up (SoundGetVolume(2) in AnimStampSoundChannels (00417a20)).
+void PlayFrameSound(const Gaf::FAnimation& Animation, const Gaf::FAnimationFrame& Frame, FSoundTrack& Track, const FSoundEmitter* const Emitter)
+{
+    constexpr uint32_t SoundEventFlag = 1;
+    constexpr uint32_t AnywherePriority = 0x7f;
+    constexpr uint32_t SoundFxChannel = 2;
+    if (!AnimationMixer || (Frame.EventFlags & SoundEventFlag) == 0 || !Animation.Samples || Frame.EventValue == 0 || Frame.EventValue > Animation.Samples->size())
+    {
+        return;
+    }
+
+    const std::shared_ptr<const Sound::FSample> Sample(Animation.Samples, &(*Animation.Samples)[Frame.EventValue - 1]);
+    if (!Emitter || Emitter->ChannelMask == 0)
+    {
+        AnimationMixer->Play(Sample, false, AnywherePriority, Sound::FMixer::AllChannels);
+        return;
+    }
+
+    const int Volume = PositionalVolume(*Emitter, AnimationMixer->GetVolume(SoundFxChannel));
+    if (Volume <= 0)
+    {
+        return;
+    }
+
+    const uint32_t Channel = AnimationMixer->Play(Sample, false, Emitter->Priority, Emitter->ChannelMask, Volume, PositionalPan(*Emitter));
+    Track = { .Channel = Channel, .Serial = Channel == 0 ? 0 : AnimationMixer->GetSerial(Channel) };
+}
+
+// UpdateAnimation keeps a positional sound's volume and pan on its emitter while the sound plays, and stops it once out of range.
+void FollowFrameSound(FSoundTrack& Track, const FSoundEmitter* const Emitter)
+{
+    if (!AnimationMixer || Track.Channel == 0)
+    {
+        return;
+    }
+
+    constexpr uint32_t SoundFxChannel = 2;
+    if (Emitter && AnimationMixer->GetSerial(Track.Channel) == Track.Serial)
+    {
+        if (const int Volume = PositionalVolume(*Emitter, AnimationMixer->GetVolume(SoundFxChannel)); Volume > 0)
+        {
+            AnimationMixer->SetVolume(Track.Channel, Volume);
+            AnimationMixer->SetPan(Track.Channel, PositionalPan(*Emitter));
+            return;
+        }
+
+        AnimationMixer->Stop(1u << (Track.Channel - 1));
+    }
+
+    Track = {};
+}
+
+void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, const int32_t Milliseconds, const FSoundEmitter* const Emitter)
 {
     constexpr uint32_t LoopFlag = 2;
     if (Playback.bEnded)
@@ -2881,6 +2984,11 @@ void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animat
     }
 
     Playback.Timer -= Milliseconds;
+    if (Playback.Timer > 0)
+    {
+        FollowFrameSound(Playback.Sound, Emitter);
+    }
+
     const uint32_t FrameCount = uint32_t(Animation.Frames.size());
     // A looping animation of zero-length frames would never leave this loop; one pass through it is enough.
     for (uint32_t Advanced = 0; Playback.Timer <= 0 && Advanced <= FrameCount; ++Advanced)
@@ -2898,18 +3006,20 @@ void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animat
         }
 
         Playback.Timer += Animation.Frames[Playback.Frame - 1].Duration * AnimationPeriodMilliseconds;
-        PlayFrameSound(Animation, Animation.Frames[Playback.Frame - 1]);
+        PlayFrameSound(Animation, Animation.Frames[Playback.Frame - 1], Playback.Sound, Emitter);
     }
+
+    FollowFrameSound(Playback.Sound, Emitter);
 }
 
-FAnimationPlayback StartAnimation(const Gaf::FAnimation& Animation)
+FAnimationPlayback StartAnimation(const Gaf::FAnimation& Animation, const FSoundEmitter* const Emitter)
 {
     FAnimationPlayback Playback{ .bEnded = Animation.Frames.empty() };
-    UpdateAnimation(Playback, Animation, 0);
+    UpdateAnimation(Playback, Animation, 0, Emitter);
     return Playback;
 }
 
-void ShowFrame(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, const uint32_t Frame)
+void ShowFrame(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, const uint32_t Frame, const FSoundEmitter* const Emitter)
 {
     if (Frame == 0 || Frame > Animation.Frames.size())
     {
@@ -2918,7 +3028,7 @@ void ShowFrame(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, c
     }
 
     Playback.Frame = Frame - 1;
-    UpdateAnimation(Playback, Animation, Playback.Timer);
+    UpdateAnimation(Playback, Animation, Playback.Timer, Emitter);
 }
 
 std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, FResourceArchive& Archive, const std::span<FObjectBody> Bodies)
@@ -2965,12 +3075,17 @@ std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, 
             .NextLevel = std::string(Block->Find("3do-file")),
             .Scenery = std::string(Block->Find("Scenery")),
             .Animations = { Gaf->second[size_t(Object.GafIndex - 1)], Gaf->second[size_t(Object.GafIndex)] },
+            .Emitter = MakeSoundEmitter(Object.Properties.Find("Sample-channel-range"), Object.Properties.Find("Sample-channel-priority"), Object.X, Object.Y,
+                Object.Altitude),
         };
-        // AnimInitializeGraphics shows the last frame of the animation for the activation state, and the timer starts full.
+        // AnimInitializeGraphics shows the last frame of the animation for the activation state, and the timer starts full. Its fresh animation
+        // instance has no position yet (ObjectDraw gives it one), so a sound on that frame plays from the origin.
         const bool bOpen = (Door.Flags & DoorOpen) != 0;
+        FSoundEmitter Fresh = Door.Emitter;
+        Fresh.X = Fresh.Y = Fresh.Altitude = 0.f;
         Door.Animation = bOpen ? OpenAnimation : ClosedAnimation;
-        Door.Playback = StartAnimation(Door.Animations[Door.Animation]);
-        ShowFrame(Door.Playback, Door.Animations[Door.Animation], uint32_t(Door.Animations[Door.Animation].Frames.size()));
+        Door.Playback = StartAnimation(Door.Animations[Door.Animation], &Fresh);
+        ShowFrame(Door.Playback, Door.Animations[Door.Animation], uint32_t(Door.Animations[Door.Animation].Frames.size()), &Fresh);
         Door.Timer = Door.Delay;
         BodyOf[Index]->bPassable = bOpen;
         Doors.push_back(std::move(Door));
@@ -2995,7 +3110,7 @@ const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std
         }
 
         // Graphic-update-needed: EngineUpdateObjects advances the animation before the update, which waits for a fresh one to finish.
-        UpdateAnimation(Door.Playback, Animation, Step);
+        UpdateAnimation(Door.Playback, Animation, Step, &Door.Emitter);
         const uint32_t Frame = Door.Playback.bEnded ? 0 : Door.Playback.Frame;
         if ((Door.Flags & DoorActive) == 0 || (Door.Timer == Door.Delay && Frame != Animation.Frames.size()))
         {
@@ -5136,7 +5251,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         if (Effect.Damage != 0.f)
         {
             bool bBlast = true;
-            if (Effect.Frame < uint32_t(Class.FrameDurations.size()) / 2)
+            if (Effect.Frame < uint32_t(Class.Animation.Frames.size()) / 2)
             {
                 if (Effect.BlastTimer < 1)
                 {

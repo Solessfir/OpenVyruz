@@ -5,7 +5,7 @@ The original plays everything through its own channel mixer (`pgaudio.cpp`) on t
 ## Samples
 
 - **WAV files**: 126 RIFF WAVE files in `common\data\sound` (`SoundLoadWav`, `0045dbe0`; `SoundParseWav`, `0045da80`): 8-bit unsigned or 16-bit signed PCM, mono or stereo, at 22050 or 44100 Hz. `SoundBankLoad` (`00403a40`) loads a sound once by name and keeps it in a bank, retrying under `..\Common\`. Voices sit in `english\` and `french\`.
-- **GAF samples**: 27 GAFs carry an `SMP_` entry whose slot 1 holds `SND_` records ([DataFormats.md](DataFormats.md)). Slot 0 holds one 76-byte descriptor per sample, and every one of them is zero in the data, so no GAF sound is positional (see below).
+- **GAF samples**: 27 GAFs carry an `SMP_` entry whose slot 1 holds `SND_` records ([DataFormats.md](DataFormats.md)). Slot 0 holds one 76-byte play descriptor per sample, zero on disk; the game fills them in (see [Animation sounds](#animation-sounds)).
 
 ## Mixer
 
@@ -19,7 +19,11 @@ The port mixes the channels itself in miniaudio's callback, resampling each samp
 
 ### Positional sounds
 
-`AnimationPlaySound` (`0045e6e0`) makes a sound positional when its descriptor's channel mask (`+0x1c`) is set. Its volume then comes from `SoundDistanceVolume` (`0045e4e0`) against the listener, which `SoundSetListener` (`0045edb0`) sets to the player's position and altitude each update. Inside the descriptor's inner box (`+0x28`) the volume is the descriptor's own (`+0x20`); beyond its outer box (`+0x34`) it is zero. In between, the original scales it by the distance between two radii (`+0x40`, `+0x44`), but it measures that distance from `|listener - position| - position` on each axis rather than from the difference. Its pan comes from `SoundScreenPan` (`0045e630`), the horizontal offset over half the screen width. No data uses this path, so the port does not implement it.
+`AnimationPlaySound` (`0045e6e0`) makes a sound positional when its descriptor's channel mask (`+0x1c`) is set, and plays it on that mask at the descriptor's priority (`+0x24`). `SoundSetListener` (`0045edb0`) puts the listener at the player's position and altitude on each update of the player.
+
+- **Volume** (`SoundDistanceVolume`, `0045e4e0`): the descriptor's volume (`+0x20`) while the emitter lies within its inner box (`+0x28`) of the listener on every axis, and nothing beyond its outer box (`+0x34`). In between the original scales by the distance between two radii (`+0x40`, `+0x44`), measured from `|listener - position| - position` on each axis rather than the difference. Nothing sets those radii, so the division by zero gives no volume there either: a positional sound is heard only inside the inner box.
+- **Pan** (`SoundScreenPan`, `0045e630`): the emitter's horizontal offset from the listener over half the screen width (320), full at the edge.
+- **Following**: while the sound plays, each `UpdateAnimation` call on its animation sets the channel's volume and pan again, and stops the channel once the volume drops to zero. It recognises its sound by the channel's serial (`+0x3c`), so a channel taken by another sound is let go.
 
 ## Channels
 
@@ -44,7 +48,11 @@ The music is three WAV loops, not the CD (`MusicLoad`, `0042eaf0`): 1 `techno.wa
 
 ## Animation sounds
 
-`UpdateAnimation` (`0045e7e0`) asks `AnimationFrameSound` (`0045ea70`) for a sound each time it enters a frame. A frame with event flag 1 names its GAF's sample by event value, from 1; a zero value or a missing sample plays nothing. Four frames have one (`panel.gaf`, `v-panel.gaf` and `circular-fx.gaf`). Since every descriptor is zero, the sound takes any idle channel at priority `0x7f` and keeps that channel's volume and pan. This covers explosions, gates, lifts, items, mines and the other FX: 55 sound events. `--verify-gaf` decodes every WAV and GAF sample and counts the events.
+`UpdateAnimation` (`0045e7e0`) asks `AnimationFrameSound` (`0045ea70`) for a sound each time it enters a frame. A frame with event flag 1 names its GAF's sample by event value, from 1. A zero value or a missing sample plays nothing, which four frames in `panel.gaf`, `v-panel.gaf` and `circular-fx.gaf` have. `--verify-gaf` decodes every WAV and GAF sample and counts the events: 55 play.
+
+`AnimInitializeGraphics` (`00417b30`) stamps each object's GAF descriptors through `AnimStampSoundChannels` (`00417a20`): the class's `Sample-channel-range` (keyword `0x3b`, `first, last`, class `+0xe8`) as the channel mask, its `Sample-channel-priority` (keyword `0x3c`, class `+0xec`) as the priority, channel 2's volume (the sound-fx volume) as the volume, and the boxes `DAT_0050d420` (400 on each axis) and `DAT_0050d430` (800). Each `.3DC` file sets these in its `DEFAULT-PROPERTY` block: FX on channels 6 to 8 at priority 130, ammo on 9 to 12 at 128, weapons on 9 to 16 at 129, common decor on 13 and 14, everything else on 1 to 16 at 127. `ObjectDraw` hands the animation instance the object's position and altitude, so object sounds are positional. The panel's animations are never stamped, so their sounds play on any idle channel at priority `0x7f` with the channel's own volume and pan.
+
+In the port, FX effects (explosions, impacts) and gates and lifts play their sounds from where they are. A fresh animation instance has no position until `ObjectDraw` gives it one, so the frame a door shows when the level loads sounds from the origin, which keeps it silent. Not checked yet: the original advances `Graphic-update-needed` classes (gates, lifts, FX) in the object update, outside `ObjectDraw`'s position copy; whether their instance position then lags behind the object.
 
 ## Menus
 
@@ -58,5 +66,6 @@ The music is three WAV loops, not the CD (`MusicLoad`, `0042eaf0`): 1 `techno.wa
 
 - **Weapon sounds**: `ObjectsUpdateWeaponSounds` (`0043df70`) and the weapon blocks' `fire-sound`, `fire-sound-loop`, `fire-start-sound`, `fire-end-sound` and `no-ammo-sound`. The player uses channel 2 at priority `0xbf`; others use their weapon's channel and priority.
 - **Voices**: 48 lines in `english\` and `french\`, on channel 5 through `VoicePlay` (`004133a0`) and the queue `VoiceQueueUpdate` (`004132e0`).
+- **Other animated objects**: items, mines, the `Particle-of-Death` things and the map animations do not animate in the port yet, so their sounds do not play.
 - **Other sounds**: the player's death (channel 2), `shield-alarm.wav`, `money.wav`, `pickup-heavy.wav`, `weapon-switch.wav`, and `fade.wav` with the gamma fades.
 - **Options**: the audio menus.

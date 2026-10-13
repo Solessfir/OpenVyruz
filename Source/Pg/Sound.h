@@ -53,6 +53,10 @@ public:
     bool IsPlaying(uint32_t Channel) const;
     // SoundStop (0045fa00): stops every channel in Mask.
     void Stop(uint32_t Mask);
+    // SoundGetVolume at 0045fda0.
+    int GetVolume(uint32_t Channel) const;
+    // Channel +0x3c: a number given to each sound when it starts, so a caller can tell its sound still plays; zero for an idle channel.
+    uint32_t GetSerial(uint32_t Channel) const;
     // SoundSetVolume (0045fe00) and SoundSetPan (0045ff00): the setting stays with the channel for later samples.
     void SetVolume(uint32_t Channel, int Volume);
     void SetPan(uint32_t Channel, int Pan);
@@ -66,6 +70,7 @@ private:
         uint32_t Priority = 0;
         int Volume = MaxVolume;
         int Pan = 0;
+        uint32_t Serial = 0;
     };
     struct FDevice;
 
@@ -76,6 +81,7 @@ private:
     mutable std::mutex Mutex;
     std::array<FChannel, ChannelCount> Channels;
     uint32_t OutputRate = 0;
+    uint32_t NextSerial = 1;
     std::unique_ptr<FDevice> Device;
 };
 }

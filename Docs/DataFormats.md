@@ -129,7 +129,7 @@ The object draw passes the full animation draw flags to the bitmap renderer. `Dr
 Depth sorting is only the queue order. `LevelCompositeSprites` (`00420070`) first calls `LevelFlushSpriteLayer` (`0041fec0`) for layer 3 with a threshold beyond the visible region, drawing all `In-ground` decals before the remaining sprite layers. It then interleaves terrain with layers 1, 2, and 0. A flat sort across all four layers incorrectly draws floor decals over nearby shadows, producing bright speckles.
 
 Some animation GAFs also carry an `SMP_` entry containing uncompressed sound
-effects. Slot 0 holds a 76-byte play descriptor per sample, all zero in the data ([Audio.md](Audio.md)); slot 1 holds the samples back to back.
+effects. Slot 0 holds a 76-byte play descriptor per sample, zero on disk and filled in by the game ([Audio.md](Audio.md#animation-sounds)); slot 1 holds the samples back to back.
 Each sample is a `SND_` record with this 36-byte header followed by
 interleaved PCM (unsigned 8-bit or signed little-endian 16-bit):
 
