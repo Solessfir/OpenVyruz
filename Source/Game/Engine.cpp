@@ -1203,21 +1203,8 @@ std::expected<void, std::string> VerifyPlayerMovement()
     return {};
 }
 
-std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archive)
+std::expected<std::vector<FDemoRecord>, std::string> LoadDemo(FResourceArchive& Archive)
 {
-    // The check ignores the floating messages it raises.
-    FMessages Messages;
-    // One .3DR record per game step: the step's start time, its input bits, and the player's position and direction before the step.
-    struct FDemoRecord
-    {
-        uint32_t Time;
-        uint32_t Input;
-        float X;
-        float Y;
-        int32_t Direction;
-    };
-    static_assert(sizeof(FDemoRecord) == 20);
-
     const std::optional<std::vector<uint8_t>> File = Archive.Read("cave\\demo.3dr");
     const std::optional<uint32_t> Count = File ? ReadStruct<uint32_t>(*File) : std::nullopt;
     if (!Count || *Count < 2 || (File->size() - sizeof(uint32_t)) / sizeof(FDemoRecord) < *Count)
@@ -1230,6 +1217,21 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
     {
         Records[Index] = *ReadStruct<FDemoRecord>(*File, sizeof(uint32_t) + Index * sizeof(FDemoRecord));
     }
+
+    return Records;
+}
+
+std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archive)
+{
+    // The check ignores the floating messages it raises.
+    FMessages Messages;
+    const std::expected<std::vector<FDemoRecord>, std::string> Demo = LoadDemo(Archive);
+    if (!Demo)
+    {
+        return std::unexpected(Demo.error());
+    }
+
+    const std::vector<FDemoRecord>& Records = *Demo;
 
     const std::expected<FLevel, std::string> Level = LoadLevel(Archive, "cave\\demo");
     if (!Level)
@@ -3552,10 +3554,16 @@ void StartMapAnimations(const FLevel& Level, FResourceArchive& Archive, FRandom&
 }
 }
 
-std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, std::vector<FObjectBody>& Bodies)
+std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, std::vector<FObjectBody>& Bodies,
+    const bool bDemo)
 {
     FCombat Combat;
     StartMapAnimations(Level, Archive, Combat.Random);
+    if (bDemo)
+    {
+        Combat.Random = FRandom{};
+    }
+
     Combat.Bobs = ActivateObjects(Level, Bodies, Combat.Random);
     for (const FLevelPropertyBlock& Child : Player.Properties.Children)
     {

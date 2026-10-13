@@ -43,6 +43,9 @@ struct FMenu
     std::optional<size_t> DefaultItem;
     // Menu +0x4c, the item the cursor starts on.
     size_t StartItem = 0;
+    // Menu +0x54 and +0x58: after this long without a key, a button or a mouse move the menu returns IdleResult; zero waits for ever.
+    uint32_t IdleMilliseconds = 0;
+    size_t IdleResult = 0;
 };
 
 // The state of a running menu (RunMenu at 00421050).

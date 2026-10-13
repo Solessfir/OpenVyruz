@@ -906,6 +906,43 @@ void ShowTextPage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchiv
     }
 }
 
+// A key or mouse button going down, as WaitForInput (00404910) and FUN_00401880 wait for one.
+class FInputPress
+{
+public:
+    explicit FInputPress(GLFWwindow* const Window) : Window(Window), Previous(Read()) {}
+
+    bool Poll()
+    {
+        const std::vector<bool> Now = Read();
+        bool bPressed = false;
+        for (size_t Index = 0; Index < Now.size(); ++Index)
+        {
+            bPressed = bPressed || (Now[Index] && !Previous[Index]);
+        }
+
+        Previous = Now;
+        return bPressed;
+    }
+
+private:
+    std::vector<bool> Read() const
+    {
+        std::vector<bool> Down;
+        for (int Key = GLFW_KEY_SPACE; Key <= GLFW_KEY_LAST; ++Key)
+        {
+            Down.push_back(glfwGetKey(Window, Key) == GLFW_PRESS);
+        }
+
+        Down.push_back(glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
+        Down.push_back(glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
+        return Down;
+    }
+
+    GLFWwindow* Window;
+    std::vector<bool> Previous;
+};
+
 uint32_t DisplayFramePeriod()
 {
     const GLFWvidmode* const DisplayMode = glfwGetVideoMode(glfwGetPrimaryMonitor());
@@ -996,9 +1033,12 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
     FMenuInput Pending{ .MouseX = Mouse.first, .MouseY = Mouse.second };
     const uint32_t FramePeriod = DisplayFramePeriod();
     FFrameClock Clock(FramePeriod);
+    FInputPress AnyInput(Window);
+    int64_t IdleLeft = Menu.IdleMilliseconds;
     while (!glfwWindowShouldClose(Window))
     {
         glfwPollEvents();
+        const bool bAnyInput = AnyInput.Poll();
         const auto Down = ReadDown();
         const auto Pressed = [&](const size_t Index) { return Down[Index] && !Previous[Index]; };
         Pending.bCancel = Pending.bCancel || Pressed(0) || Pressed(1);
@@ -1012,7 +1052,15 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
         Mouse = Now;
         Pending.MouseX = Mouse.first;
         Pending.MouseY = Mouse.second;
-        for (uint32_t Remaining = Clock.Poll(ClockMilliseconds()); Remaining != 0 && !State.Result;)
+        // MenuStep's draw pass counts the idle time down by the frame and starts it again on any input.
+        const uint32_t Elapsed = Clock.Poll(ClockMilliseconds());
+        IdleLeft = bAnyInput || Pending.bMouseMoved ? int64_t(Menu.IdleMilliseconds) : IdleLeft - Elapsed;
+        if (Menu.IdleMilliseconds != 0 && IdleLeft <= 0)
+        {
+            State.Result = Menu.IdleResult;
+        }
+
+        for (uint32_t Remaining = Elapsed; Remaining != 0 && !State.Result;)
         {
             const uint32_t StepMilliseconds = NextGameStep(Remaining, FramePeriod, false);
             const std::optional<std::pair<int32_t, int32_t>> Jump = Art.Step(Menu, State, Pending, Random, int32_t(StepMilliseconds));
@@ -1130,43 +1178,6 @@ std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Render
     const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
     return Item && *Item < std::min(Sessions.size(), MaxSessions) ? Item : std::nullopt;
 }
-
-// A key or mouse button going down, as WaitForInput (00404910) and FUN_00401880 wait for one.
-class FInputPress
-{
-public:
-    explicit FInputPress(GLFWwindow* const Window) : Window(Window), Previous(Read()) {}
-
-    bool Poll()
-    {
-        const std::vector<bool> Now = Read();
-        bool bPressed = false;
-        for (size_t Index = 0; Index < Now.size(); ++Index)
-        {
-            bPressed = bPressed || (Now[Index] && !Previous[Index]);
-        }
-
-        Previous = Now;
-        return bPressed;
-    }
-
-private:
-    std::vector<bool> Read() const
-    {
-        std::vector<bool> Down;
-        for (int Key = GLFW_KEY_SPACE; Key <= GLFW_KEY_LAST; ++Key)
-        {
-            Down.push_back(glfwGetKey(Window, Key) == GLFW_PRESS);
-        }
-
-        Down.push_back(glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
-        Down.push_back(glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
-        return Down;
-    }
-
-    GLFWwindow* Window;
-    std::vector<bool> Previous;
-};
 
 // The credits (ShowCredits at 00402990 with the scroller at 00402400): credits.gaf, and credits-en.txt in v-menu.gaf font 4 rising from the bottom of the clip
 // 380, 0 to 639, 479 by half a pixel per step, until it has passed the top or a key or mouse button goes down.
@@ -1335,8 +1346,8 @@ void RunOptionsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuAr
 
 // MenuExtras at 00427820, the extras: Scores, Credits, Intro, Slide Show while vz-slide.rsc is there, and Demo, then Back, the default. The original's
 // Russian build prints this menu's title and its Scores and Intro items in Russian even in English. ponytail: the scores table, the intro and
-// the demo playback are not ported.
-void RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random,
+// demo is played by the main menu's caller.
+bool RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random,
     const std::filesystem::path& DataFolder)
 {
     enum EItem : size_t
@@ -1369,6 +1380,7 @@ void RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchi
         Menu.Items.push_back({ .Text = "Slide Show" });
     }
 
+    const size_t DemoItem = Menu.Items.size();
     Menu.Items.push_back({ .Text = "Demo", .Help = "Auto-playing game demo." });
     if (!bSlides)
     {
@@ -1381,9 +1393,9 @@ void RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchi
     for (;;)
     {
         const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
-        if (!Item || *Item == *Menu.DefaultItem)
+        if (!Item || *Item == *Menu.DefaultItem || *Item == DemoItem)
         {
-            return;
+            return Item == DemoItem;
         }
 
         if (*Item == CreditsItem)
@@ -1403,6 +1415,8 @@ enum class EMenuChoice : uint8_t
     NewGame,
     // Restart Level and Load Game: the session in Chosen.
     Session,
+    // Extras' Demo, or 30 seconds of an untouched main menu.
+    Demo,
     Quit,
 };
 
@@ -1419,6 +1433,8 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         OptionsItem,
         ExtrasItem,
         ExitItem,
+        // Menu +0x58's result when the menu sat idle, which VzMenuLoop takes for the demo.
+        IdleDemo = 10,
     };
     std::vector<FSession> Saved = ReadSavedSessions(SessionFolder);
     const auto LoadHelp = [&] { return Saved.empty() ? std::string("No saved session.") : std::format("{} saved session{} available.", Saved.size(), Saved.size() > 1 ? "s" : ""); };
@@ -1438,6 +1454,8 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         },
         .DefaultItem = ExitItem,
         .StartItem = Session ? RestartItem : NewGameItem,
+        .IdleMilliseconds = 30000,
+        .IdleResult = IdleDemo,
     };
     FMenuSheets Sheets = CreateMenuSheets(Renderer, Art);
     FRandom Random;
@@ -1448,6 +1466,11 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         if (!Item)
         {
             return EMenuChoice::Quit;
+        }
+
+        if (*Item == IdleDemo)
+        {
+            return EMenuChoice::Demo;
         }
 
         if (*Item == RestartItem && Session)
@@ -1487,7 +1510,10 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         }
         else if (*Item == ExtrasItem)
         {
-            RunExtrasMenu(Window, Renderer, Archive, Art, Sheets, Random, DataFolder);
+            if (RunExtrasMenu(Window, Renderer, Archive, Art, Sheets, Random, DataFolder))
+            {
+                return EMenuChoice::Demo;
+            }
         }
         else if (*Item == ExitItem)
         {
@@ -1595,7 +1621,8 @@ struct FSessionContext
 // Session and on disk.
 std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
     const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
-    FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, const FSessionContext& Sessions)
+    FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, const FSessionContext& Sessions,
+    const std::vector<FDemoRecord>* const Demo)
 {
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
     if (!Level)
@@ -1694,7 +1721,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
 
             Terrain = std::move(*Collision);
-            if (std::expected<FCombat, std::string> Weapons = CreateCombat(*Level, *PlayerObject, Archive, Bodies))
+            if (std::expected<FCombat, std::string> Weapons = CreateCombat(*Level, *PlayerObject, Archive, Bodies, Demo != nullptr))
             {
                 Combat = std::move(*Weapons);
                 // The carried player object brings its weapons, loaded first and in the same order, and the game clock runs on.
@@ -1707,6 +1734,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         Combat->PlayerSlot = Carried->WeaponSlot;
                         Combat->PlayerSlotStates = Carried->WeaponSlots;
                     }
+                }
+
+                // DemoStartPlayback at 00429110 starts the game clock at the first record's time.
+                if (Demo)
+                {
+                    Combat->Clock = Demo->front().Time;
                 }
 
                 for (const FEffectClass& Effect : Combat->EffectClasses)
@@ -1729,7 +1762,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     }
 
     // EngineRunLevel writes the default session as the level starts, unless the level came from a session.
-    if (!Restore)
+    if (!Restore && !Demo)
     {
         Session = FSession{
             .LevelPath = LevelPath,
@@ -1906,6 +1939,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     bool bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
     // Backspace, then the digits 1 to 9.
     constexpr size_t WeaponKeyCount = 10;
+    // g_DemoReplayCursor.
+    size_t DemoCursor = 0;
     bool bTabDown = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
     bool bMapKeyDown = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS;
     std::array<bool, WeaponKeyCount> WeaponKeysDown{};
@@ -1923,6 +1958,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         // Escape (EngineEscape at 00445b40) opens the game menu, or ends the game at once for a dead player; the menu's steps do not count as game time.
         const bool bEscapePressed = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS && !bEscapeDown;
         bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+        // A playing demo ends on Escape (EngineRunLevel checks the key before DemoReplayStep).
+        if (bEscapePressed && Demo)
+        {
+            return FLevelEnd{ .Kind = ELevelEnd::Menu };
+        }
+
         if (bEscapePressed && bMapShown)
         {
             ToggleMap();
@@ -1964,14 +2005,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         // 9 (FUN_0043bad0 skips the slot in hand); Tab is action-cycle-panels, Left Shift stepping back, and M is action-map.
         const bool bTabPressed = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS && !bTabDown;
         bTabDown = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
-        if (bTabPressed && Panel)
+        if (bTabPressed && Panel && !Demo)
         {
             Panel->CyclePanels(glfwGetKey(Window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS);
         }
 
         const bool bMapPressed = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS && !bMapKeyDown;
         bMapKeyDown = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS;
-        if (bMapPressed && Player)
+        if (bMapPressed && Player && !Demo)
         {
             ToggleMap();
         }
@@ -1983,7 +2024,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             WeaponKeysNow[Slot] = glfwGetKey(Window, GLFW_KEY_0 + int(Slot)) == GLFW_PRESS;
         }
 
-        if (Combat)
+        if (Combat && !Demo)
         {
             if (WeaponKeysNow[0] && !WeaponKeysDown[0])
             {
@@ -2003,7 +2044,53 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
         while (RemainingMilliseconds != 0)
         {
-            const uint32_t StepMilliseconds = NextGameStep(RemainingMilliseconds, FramePeriod, false);
+            const uint32_t StepMilliseconds = NextGameStep(RemainingMilliseconds, FramePeriod, Demo != nullptr);
+            // DemoReplayStep (004291d0) takes the next record's input once the game clock reaches its time, staying on the last record; then
+            // EngineReplayActionKeys (0043bb00) replays its actions, of which 0x8000 (action-menu) ends the demo.
+            uint32_t DemoInput = 0;
+            if (Demo && Combat && Player)
+            {
+                if (Combat->Clock >= (*Demo)[DemoCursor].Time)
+                {
+                    DemoInput = (*Demo)[DemoCursor].Input;
+                    DemoCursor = std::min(DemoCursor + 1, Demo->size() - 1);
+                }
+
+                constexpr uint32_t NextWeaponBit = 0x100;
+                constexpr uint32_t MapBit = 0x400;
+                constexpr uint32_t CyclePanelsBit = 0x4000;
+                constexpr uint32_t MenuBit = 0x8000;
+                constexpr uint32_t FirstWeaponBit = 0x10000;
+                if ((DemoInput & CyclePanelsBit) != 0 && Panel)
+                {
+                    Panel->CyclePanels(false);
+                }
+
+                if ((DemoInput & MapBit) != 0)
+                {
+                    ToggleMap();
+                }
+
+                if ((DemoInput & NextWeaponBit) != 0)
+                {
+                    SelectPlayerWeapon(*Combat, NextPlayerWeaponSlot(*Combat, Inventory), Inventory, Messages);
+                }
+
+                for (size_t Slot = 1; Slot < WeaponKeyCount; ++Slot)
+                {
+                    if ((DemoInput & (FirstWeaponBit << (Slot - 1))) != 0)
+                    {
+                        SelectPlayerWeapon(*Combat, Slot, Inventory, Messages);
+                        break;
+                    }
+                }
+
+                if ((DemoInput & MenuBit) != 0)
+                {
+                    return FLevelEnd{ .Kind = ELevelEnd::Menu };
+                }
+            }
+
             const auto Pressed = [Window](const int Key) { return glfwGetKey(Window, Key) == GLFW_PRESS; };
             if (Player)
             {
@@ -2041,8 +2128,30 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     const bool bRight = Surprises.bReversed ? bTurnLeft : bTurnRight;
                     const bool bStrafeLeft = Surprises.bReversed ? bSideRight : bSideLeft;
                     const bool bStrafeRight = Surprises.bReversed ? bSideLeft : bSideRight;
-                    const FPlayerCommand Command = Surprises.bBlockedMotor ? FPlayerCommand{}
-                                                                            : PlayerCommandFromKeys(Pressed(GLFW_KEY_UP), Pressed(GLFW_KEY_DOWN), bLeft, bRight, bStrafeLeft, bStrafeRight);
+                    FPlayerCommand Command = Surprises.bBlockedMotor ? FPlayerCommand{}
+                                                                      : PlayerCommandFromKeys(Pressed(GLFW_KEY_UP), Pressed(GLFW_KEY_DOWN), bLeft, bRight, bStrafeLeft, bStrafeRight);
+                    // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its
+                    // velocity in collision units, and drives with the replayed input.
+                    if (Demo && DemoCursor >= 1)
+                    {
+                        const FDemoRecord& Placed = (*Demo)[DemoCursor - 1];
+                        if (Player->Position.X != Placed.X || Player->Position.Y != Placed.Y)
+                        {
+                            Player->Position = { .X = Placed.X, .Y = Placed.Y };
+                            Player->Center = CollisionFromWorld(Player->Position);
+                            const FCollisionPoint Before = CollisionFromWorld(Player->PreviousPosition);
+                            Player->Velocity = { .X = Player->Center.X - Before.X, .Y = Player->Center.Y - Before.Y };
+                        }
+
+                        if (Placed.Direction >= 0 && Placed.Direction < ObjectDirectionCount)
+                        {
+                            Player->Direction = Placed.Direction;
+                            Player->Pose = Player->TargetPose = Placed.Direction * (PlayerPoseCount / ObjectDirectionCount) + 1;
+                        }
+
+                        Command = PlayerCommandFromInput(DemoInput);
+                    }
+
                     if (const FObjectBody* const Struck = StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies))
                     {
                         ReportDoorContact(*Doors, *Struck, *Player, Inventory, Messages);
@@ -2064,7 +2173,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     const float EnergyBefore = Inventory.Energy;
                     const float ShieldBefore = Inventory.Shield;
                     StepGenerators(*Combat, *Level, Bodies, Rider, StepMilliseconds);
-                    const bool bFire = !Inventory.Surprises.bBlockedMotor && (bAutoFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL));
+                    constexpr uint32_t FireBit = 0x2;
+                    const bool bLiveFire = Demo ? (DemoInput & FireBit) != 0 : bAutoFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL);
+                    const bool bFire = !Inventory.Surprises.bBlockedMotor && bLiveFire;
                     if (!DeathTimer)
                     {
                         StepPlayerWeapon(*Combat, bFire, *Player, *PlayerObject, PlayerIndex, PlayerSpriteSize, Inventory, Messages);
@@ -2658,6 +2769,7 @@ int main(const int ArgCount, char** const Args)
     std::optional<FCarriedPlayer> Carried;
     std::optional<FSession> Session = ReadSessionFile(DefaultSessionPath(Sessions.Folder));
     std::optional<FSession> Restore;
+    std::optional<std::vector<FDemoRecord>> Demo;
     // Every level in the archive by file name, so each tower's floors follow each other, for the debug next-level key.
     std::vector<std::string> DebugLevels;
     for (const std::string& Name : Archive.GetNames())
@@ -2690,18 +2802,48 @@ int main(const int ArgCount, char** const Args)
                 break;
             }
 
-            Path = Choice == EMenuChoice::NewGame ? LevelPath : Chosen.LevelPath;
-            Carried = Choice == EMenuChoice::NewGame ? std::nullopt : Chosen.Player;
-            Restore = Choice == EMenuChoice::NewGame ? std::nullopt : std::optional(std::move(Chosen));
-            bMenu = false;
+            // VzMenuLoop's demo: CAVE\DEMO.3DR on the CAVE\DEMO level, then the menu again.
+            if (Choice == EMenuChoice::Demo)
+            {
+                std::expected<std::vector<FDemoRecord>, std::string> Records = LoadDemo(Archive);
+                if (!Records)
+                {
+                    std::fprintf(stderr, "Cannot load recorded demo: %s\n", Records.error().c_str());
+                    continue;
+                }
+
+                Demo = std::move(*Records);
+                Path = "cave\\demo";
+                Carried.reset();
+                Restore.reset();
+                bMenu = false;
+            }
+            else
+            {
+                Path = Choice == EMenuChoice::NewGame ? LevelPath : Chosen.LevelPath;
+                Carried = Choice == EMenuChoice::NewGame ? std::nullopt : Chosen.Player;
+                Restore = Choice == EMenuChoice::NewGame ? std::nullopt : std::optional(std::move(Chosen));
+                bMenu = false;
+            }
         }
 
         const std::expected<FLevelEnd, std::string> End = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Carried, DebugLevels, Panel ? &*Panel : nullptr,
-            MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Sessions);
+            MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Sessions, Demo ? &*Demo : nullptr);
         Restore.reset();
         Renderer.ReleaseSpriteSheets();
         // --start places the player in the first level only.
         Start.reset();
+        // A demo always comes back to the menu.
+        if (Demo && End && End->Kind != ELevelEnd::Quit)
+        {
+            Demo.reset();
+            bMenu = MenuArt.has_value();
+            Path = LevelPath;
+            Carried.reset();
+            continue;
+        }
+
+        Demo.reset();
         if (!End)
         {
             std::fprintf(stderr, "%s\n", End.error().c_str());

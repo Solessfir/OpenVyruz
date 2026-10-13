@@ -636,6 +636,20 @@ enum EBehaviour : uint32_t
 std::optional<uint32_t> ParseBehaviour(std::string_view Text);
 
 FPlayerCommand PlayerCommandFromKeys(bool bForward, bool bBackward, bool bTurnLeft, bool bTurnRight, bool bStrafeLeft, bool bStrafeRight);
+
+// One .3DR record per game step: the step's start time on the game clock, its input bits, and the player's position and direction before the step.
+struct FDemoRecord
+{
+    uint32_t Time;
+    uint32_t Input;
+    float X;
+    float Y;
+    int32_t Direction;
+};
+static_assert(sizeof(FDemoRecord) == 20);
+
+// DemoLoad at 004292b0: VzMenuLoop plays CAVE\DEMO.3DR, the one recording, on the CAVE\DEMO level.
+std::expected<std::vector<FDemoRecord>, std::string> LoadDemo(FResourceArchive& Archive);
 // Demo semantics of ReplayPlayerInput (00438800): strafing cancels turning.
 FPlayerCommand PlayerCommandFromInput(uint32_t InputBits);
 
@@ -724,7 +738,9 @@ void ReportDoorContact(std::span<const FDoor> Doors, const FObjectBody& Body, co
 std::string NextLevelPath(std::string_view CurrentPath, const FDoor& Lift);
 // Activates the level's objects, which draws each bob's phase and sets its first altitude, then loads the player's weapons, arms the level's
 // turrets and loads every FX class the level's ammo and explosions can spawn.
-std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, std::vector<FObjectBody>& Bodies);
+// A demo's playback reseeds the generator (DemoStartPlayback at 00429110) after the map animations' draws and before the objects activate.
+std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, std::vector<FObjectBody>& Bodies,
+    bool bDemo = false);
 // The bob part of the per-step update pass: every object in the view's cells bobs as ObjectSelectBobMode (00433f40) decides, which changes the altitude its
 // shots start from.
 void StepObjectBobs(FCombat& Combat, FLevel& Level, std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, FViewCells View);

@@ -50,7 +50,13 @@ The Extras menu (`MenuExtras`, `00427820`) lists Scores, Credits, Intro (`Select
 - Scores shows the score table (`SaveScores`, mode 0).
 - Credits (`ShowCredits`, `00402990`) draws `credits.gaf` and scrolls `credits-en.txt` (`credits-fr.txt` in the other language) in v-menu font 4 with word wrap inside 380, 0 to 639, 479, from the clip's bottom up by 0.5 pixel per step (the speed argument 500 times 0.001), until the text has passed the top or a key or mouse button goes down.
 - Slide Show (`ShowSlides`, `00404aa0`) opens `vz-slide.rsc` and shows `slides\slide-001.tga` to `slide-031.tga`, each centred, for up to 4 seconds (`WaitForInput`); it starts over while any slide showed and ends on a key or mouse button.
-- Demo returns 10, and `VzMenuLoop` plays `demo.3dr`.
+- Demo returns 10, as an idle main menu does, and `VzMenuLoop` plays the demo.
+
+## Demo
+
+`VzMenuLoop` sets the level to `cave\demo.3di` and `DemoLoad` (`004292b0`) reads `demo.3dr` (`CAVE\DEMO.3DR`): a count, then 20-byte records of the step's game-clock time, its input bits, and the player's position and direction before the step. EngineRunLevel writes no default session for it. `DemoStartPlayback` reseeds the shared generator after `LevelStartMapAnimations` has drawn and before `EngineActivateObjects`, and starts the game clock at the first record's time; steps are capped at 10 ms.
+
+Before each step's update, unless Escape is down (which ends the demo), `DemoReplayStep` (`004291d0`) gives the record under the cursor's input once the game clock has reached its time and moves the cursor on, staying on the last record; before that the input is 0. `EngineReplayActionKeys` (`0043bb00`) then replays its actions: 0x100 the next weapon, 0x200 the speed toggle, 0x400 the map, 0x800 and 0x1000 the inventory and help flags, 0x2000 pause, 0x4000 the panel cycle (never backwards), 0x10000 << N weapon slot N + 1, and 0x8000 ends the demo. In the player's update `ReplayPlayerInput` (`00438800`) puts the player where the record before the cursor has it (`DemoReplayPosition`), with the move from its previous position in collision units as its velocity, faces it the record's way (pose 2 * direction + 1), and drives with the input, dropping the turn while strafing. The demo then returns to the menu.
 
 ## Game menu
 
@@ -82,4 +88,4 @@ The texts print at the plot minus 150, 50 in world space in `v-bonus.gaf` font 6
 
 `Source/Game/Session` keeps the port's own session files, since the port does not model carried items as objects: `default.txt` and `s000.txt` onwards in `%APPDATA%\OpenVyruz\session\<session-name>` on Windows and `$XDG_DATA_HOME/OpenVyruz/session/<session-name>` (or `~/.local/share/...`) on Linux, where `<session-name>` comes from the archive's `VZCONF.TXT`, else `Player`. A file holds the level, the clock, energy and shield, the player (pose, inventory with ammo and keys, weapon slots) and, for a session saved during play, every object in the writer's order with its `.3DO` index or class, position, altitude, direction, wreck, energy, shield and door state. Loading replaces the level's objects with these, as loading the original's `.3DO` would; removed objects are left out except the ones carried keys came from. `--verify-game` checks that every level comes back from a session and that a saving plot saves once, for its cost, after 5.5 seconds.
 
-Not ported yet: the option menus behind Options (the port keeps the highest detail preset, the default keys, Normal difficulty and English), the scores, the intro, the demo (from Extras or the idle timeout), the exit explosions, the menu sounds, the "Licensed to" line, the session thumbnails, patrol points and other attribute blocks in sessions, and reading the original's session folders.
+Not ported yet: the option menus behind Options (the port keeps the highest detail preset, the default keys, Normal difficulty and English), the scores, the intro, the demo's pause, speed toggle, inventory and help actions, the exit explosions, the menu sounds, the "Licensed to" line, the session thumbnails, patrol points and other attribute blocks in sessions, and reading the original's session folders.
