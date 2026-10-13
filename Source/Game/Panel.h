@@ -28,6 +28,9 @@ enum class EHudSheet : uint8_t
     Icons,
     // Common\Data\Object\Item\surprise.gaf, the surprise icons.
     Surprise,
+    // Common\Data\Menu\menu.gaf and v-menu.gaf, which the menus draw from.
+    Menu,
+    VMenu,
 };
 
 // Radar dot colours, as the indices PanelDrawRadar at 00436080 plots.
@@ -129,6 +132,14 @@ private:
     // Session +0x22b8, one per weapon slot.
     std::array<FSlot, WeaponIconCount> Icons;
 };
+
+// A GAF's bitmaps and animations, and its FNT_ fonts, as VzLoadGaf loads them for the panel and the menus.
+std::expected<std::pair<std::vector<Gaf::FFrame>, std::vector<Gaf::FAnimation>>, std::string> LoadHudGaf(FResourceArchive& Archive, std::string_view Path);
+std::optional<std::vector<Font::FFont>> LoadGafFonts(FResourceArchive& Archive, std::string_view Path);
+std::vector<uint32_t> BitmapWidthsOf(const std::vector<Gaf::FFrame>& Bitmaps);
+// A text's glyphs in a font (PgFontPrint at 0044bd70), drawn in the font's mode with its colour combined with Color (PgFontSetColor at 0044cc30).
+void AppendText(std::vector<FHudSprite>& Out, EHudSheet Sheet, const Font::FFont& Font, std::span<const Gaf::FFrame> Bitmaps, std::span<const uint32_t> BitmapWidths,
+    int32_t X, int32_t Y, std::string_view Text, const Font::FColor& Color = {}, std::optional<int32_t> WrapRight = std::nullopt);
 
 // PanelDrawRadar at 00436080: the objects within 960 pixels of the player as dots in the radar beside the speedometer.
 std::vector<FRadarDot> FindRadarDots(const FLevel& Level, std::span<const FObjectBody> Bodies, FCollisionPoint Player, size_t PlayerIndex, int ViewHeight);

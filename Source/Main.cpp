@@ -1,6 +1,7 @@
 #include "Game/Collision.h"
 #include "Game/Engine.h"
 #include "Game/Level.h"
+#include "Game/Menu.h"
 #include "Game/Loop.h"
 #include "Game/Panel.h"
 #include "Pg/File.h"
@@ -531,6 +532,16 @@ ESpriteBlend FrameBlend(const Gaf::FAnimationFrame& Frame)
     return DrawMode == AdditiveDrawMode ? ESpriteBlend::Additive : DrawMode == InverseSourceDrawMode ? ESpriteBlend::InverseSourceColor : ESpriteBlend::Opaque;
 }
 
+void DrawHudSprite(FRenderer& Renderer, const FSpriteSheet& Sheet, const FHudSprite& Hud)
+{
+    const Gaf::FAnimationFrame& Frame = Hud.Frame;
+    if (Frame.BitmapIndex != 0)
+    {
+        Renderer.DrawSprite(Sheet, Frame.BitmapIndex - 1, Hud.X + float(Frame.OffsetX), Hud.Y + float(Frame.OffsetY), Frame.bMirrorX, Frame.bMirrorY,
+            Hud.Alpha < 1.f ? ESpriteBlend::Alpha : FrameBlend(Frame), 1.f, 1.f, Hud.VisibleColumns, Hud.Diffuse, Hud.Specular, Hud.Alpha);
+    }
+}
+
 struct FSpriteScale
 {
     float X = 1.f;
@@ -851,11 +862,352 @@ void ShowTextPage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchiv
     }
 }
 
-// One level of LoopLevels: runs until the window closes or the player takes a lift, and then returns the next level's path with the player
-// in Carried.
-std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive,
-    const std::string& LevelPath, const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried,
-    const std::span<const std::string> DebugLevels, FPanel* const Panel)
+uint32_t DisplayFramePeriod()
+{
+    const GLFWvidmode* const DisplayMode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+    const uint32_t RefreshMillihertz = DisplayMode && DisplayMode->refreshRate > 0 ? uint32_t(DisplayMode->refreshRate) * MillihertzPerHertz : 0;
+    return FramePeriodMilliseconds(RefreshMillihertz);
+}
+
+// The window's letterbox scale and the screen's top left in it.
+struct FLetterbox
+{
+    double Scale = 1.0;
+    double Left = 0.0;
+    double Top = 0.0;
+};
+
+FLetterbox WindowLetterbox(GLFWwindow* const Window)
+{
+    int Width = 0;
+    int Height = 0;
+    glfwGetWindowSize(Window, &Width, &Height);
+    const double Scale = std::min(Width / double(ScreenWidth), Height / double(ScreenHeight));
+    return Scale <= 0.0 ? FLetterbox{} : FLetterbox{ .Scale = Scale, .Left = (Width - ScreenWidth * Scale) / 2, .Top = (Height - ScreenHeight * Scale) / 2 };
+}
+
+// The mouse in the 640x480 screen, kept inside it as FUN_00451950 keeps the cursor.
+std::pair<int32_t, int32_t> ScreenCursor(GLFWwindow* const Window)
+{
+    const FLetterbox Box = WindowLetterbox(Window);
+    double X = 0.0;
+    double Y = 0.0;
+    glfwGetCursorPos(Window, &X, &Y);
+    return {
+        std::clamp(int32_t(std::floor((X - Box.Left) / Box.Scale)), 0, int32_t(ScreenWidth) - 1),
+        std::clamp(int32_t(std::floor((Y - Box.Top) / Box.Scale)), 0, int32_t(ScreenHeight) - 1),
+    };
+}
+
+void SetScreenCursor(GLFWwindow* const Window, const int32_t X, const int32_t Y)
+{
+    constexpr double PixelCentre = 0.5;
+    const FLetterbox Box = WindowLetterbox(Window);
+    glfwSetCursorPos(Window, Box.Left + (X + PixelCentre) * Box.Scale, Box.Top + (Y + PixelCentre) * Box.Scale);
+}
+
+struct FMenuSheets
+{
+    FSpriteSheet Menu;
+    FSpriteSheet VMenu;
+};
+
+FMenuSheets CreateMenuSheets(FRenderer& Renderer, const FMenuArt& Art)
+{
+    return { .Menu = Renderer.CreateSpriteSheet(Art.GetBitmaps(EHudSheet::Menu)), .VMenu = Renderer.CreateSpriteSheet(Art.GetBitmaps(EHudSheet::VMenu)) };
+}
+
+// RunMenu at 00421050: steps and draws a menu until an item is chosen, or nullopt when the window closes. A menu shown again keeps the
+// cursor where its last run left it (menu +0x20).
+std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, const FMenu& Menu, FRandom& Random,
+    std::optional<std::pair<int32_t, int32_t>>& Cursor)
+{
+    FMenuState State = Art.Start(Menu);
+    if (Cursor)
+    {
+        State.CursorX = Cursor->first;
+        State.CursorY = Cursor->second;
+    }
+
+    SetScreenCursor(Window, State.CursorX, State.CursorY);
+    glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+    // PgPoll reports presses, so a key held from before the menu does nothing. Escape and Backspace choose the default item, Space and Return
+    // the selected one, and the left button the one under the cursor.
+    static constexpr std::array<int, 7> Keys = { GLFW_KEY_ESCAPE, GLFW_KEY_BACKSPACE, GLFW_KEY_SPACE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_UP, GLFW_KEY_DOWN };
+    constexpr size_t MouseButton = Keys.size();
+    const auto ReadDown = [Window]
+    {
+        std::array<bool, Keys.size() + 1> Down{};
+        for (size_t Index = 0; Index < Keys.size(); ++Index)
+        {
+            Down[Index] = glfwGetKey(Window, Keys[Index]) == GLFW_PRESS;
+        }
+
+        Down[MouseButton] = glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        return Down;
+    };
+
+    auto Previous = ReadDown();
+    std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window);
+    FMenuInput Pending{ .MouseX = Mouse.first, .MouseY = Mouse.second };
+    const uint32_t FramePeriod = DisplayFramePeriod();
+    FFrameClock Clock(FramePeriod);
+    while (!glfwWindowShouldClose(Window))
+    {
+        glfwPollEvents();
+        const auto Down = ReadDown();
+        const auto Pressed = [&](const size_t Index) { return Down[Index] && !Previous[Index]; };
+        Pending.bCancel = Pending.bCancel || Pressed(0) || Pressed(1);
+        Pending.bAccept = Pending.bAccept || Pressed(2) || Pressed(3) || Pressed(4);
+        Pending.bUp = Pending.bUp || Pressed(5);
+        Pending.bDown = Pending.bDown || Pressed(6);
+        Pending.bClick = Pending.bClick || Pressed(MouseButton);
+        Previous = Down;
+        const std::pair<int32_t, int32_t> Now = ScreenCursor(Window);
+        Pending.bMouseMoved = Pending.bMouseMoved || Now != Mouse;
+        Mouse = Now;
+        Pending.MouseX = Mouse.first;
+        Pending.MouseY = Mouse.second;
+        for (uint32_t Remaining = Clock.Poll(ClockMilliseconds()); Remaining != 0 && !State.Result;)
+        {
+            const uint32_t StepMilliseconds = NextGameStep(Remaining, FramePeriod, false);
+            const std::optional<std::pair<int32_t, int32_t>> Jump = Art.Step(Menu, State, Pending, Random, int32_t(StepMilliseconds));
+            if (Jump)
+            {
+                SetScreenCursor(Window, Jump->first, Jump->second);
+                Mouse = *Jump;
+            }
+
+            Pending = { .MouseX = Mouse.first, .MouseY = Mouse.second };
+        }
+
+        if (Renderer.BeginFrame())
+        {
+            for (const FHudSprite& Sprite : Art.Draw(Menu, State))
+            {
+                DrawHudSprite(Renderer, Sprite.Sheet == EHudSheet::VMenu ? Sheets.VMenu : Sheets.Menu, Sprite);
+            }
+
+            Renderer.EndFrame();
+        }
+
+        if (State.Result)
+        {
+            break;
+        }
+    }
+
+    glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    Cursor = std::pair(State.CursorX, State.CursorY);
+    return State.Result;
+}
+
+// MenuCreate at 004209b0's rectangle for the menus: from 270, 90 to the screen's bottom right, items 45 pixels apart.
+constexpr int32_t MenuLeft = 270;
+constexpr int32_t MenuTop = 90;
+constexpr int32_t MenuStepY = 45;
+
+// MenuAsk at 004228a0: a question with two answers, 30 pixels right of the menu and from 120 down, its title in font 2. True for the first answer.
+// ponytail: MenuExplode at 00421460 sets off explosions over the menu after "Yes, bye.", and the bip sounds wait for audio.
+std::optional<bool> Confirm(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, std::string Title,
+    std::string Yes, std::string No, const size_t DefaultItem)
+{
+    constexpr int32_t Indent = 30;
+    constexpr int32_t Top = 120;
+    constexpr size_t TitleFont = 2;
+    const FMenu Menu{
+        .Left = MenuLeft + Indent,
+        .Top = Top,
+        .Right = int32_t(ScreenWidth),
+        .Bottom = int32_t(ScreenHeight),
+        .StepY = MenuStepY,
+        .Title = std::move(Title),
+        .TitleFont = TitleFont,
+        .Items = { { .Text = std::move(Yes) }, { .Text = std::move(No) } },
+        .DefaultItem = DefaultItem,
+    };
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
+    return Item ? std::optional(*Item == 0) : std::nullopt;
+}
+
+// The default session (session\<name>\default), which EngineRunLevel writes through SessionWrite at 0042ad70 as a level starts: the level and the player
+// brought into it, for Restart Level and Retry Level. ponytail: kept in memory until the saved sessions are written to disk.
+struct FDefaultSession
+{
+    std::string LevelPath;
+    std::string LevelName;
+    std::optional<FCarriedPlayer> Carried;
+    uint32_t Clock = 0;
+    float Energy = 0.f;
+    float Shield = 0.f;
+};
+
+// SessionDescribeDefault at 00427ad0: the session's help text, naming the difficulty through DifficultyName at 00403310; the port plays Normal, the original's default.
+std::string SessionHelp(const FDefaultSession& Session)
+{
+    constexpr uint32_t MillisecondsPerHour = 3600000;
+    constexpr uint32_t MillisecondsPerMinute = 60000;
+    return std::format("{}   ({}:{}:{})\nEnergy : {}\nShield : {}\nDifficulty : Normal ...\n", Session.LevelName, Session.Clock / MillisecondsPerHour,
+        Session.Clock % MillisecondsPerHour / MillisecondsPerMinute, Session.Clock % MillisecondsPerMinute / MillisecondsPerSecond, int32_t(Session.Energy),
+        int32_t(Session.Shield));
+}
+
+enum class EMenuChoice : uint8_t
+{
+    NewGame,
+    RestartLevel,
+    Quit,
+};
+
+// MenuMain at 004271a0, the main menu. Load Game finds no saved session; Options and Extras open nothing yet. RandomNext's draws here do not matter,
+// since every level reseeds the generator.
+EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FDefaultSession* const Session)
+{
+    enum EItem : size_t
+    {
+        RestartItem,
+        NewGameItem,
+        LoadItem,
+        OptionsItem,
+        ExtrasItem,
+        ExitItem,
+    };
+    const FMenu Menu{
+        .Left = MenuLeft,
+        .Top = MenuTop,
+        .Right = int32_t(ScreenWidth),
+        .Bottom = int32_t(ScreenHeight),
+        .StepY = MenuStepY,
+        .Items = {
+            Session ? FMenuItem{ .Text = "Restart Level", .Help = SessionHelp(*Session) } : FMenuItem{},
+            { .Text = "Start New Game" },
+            { .Text = "Load Game", .Help = "No saved session." },
+            { .Text = "Options", .Help = "Video, Audio, Control, User settings, Language." },
+            { .Text = "Extras", .Help = "Scores, Credits, Intro, Slide Show, Demo." },
+            { .Text = "Exit" },
+        },
+        .DefaultItem = ExitItem,
+        .StartItem = Session ? RestartItem : NewGameItem,
+    };
+    const FMenuSheets Sheets = CreateMenuSheets(Renderer, Art);
+    FRandom Random;
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (;;)
+    {
+        const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
+        if (!Item)
+        {
+            return EMenuChoice::Quit;
+        }
+
+        if (*Item == RestartItem && Session)
+        {
+            constexpr size_t NoThanks = 1;
+            const std::optional<bool> Retry = Confirm(Window, Renderer, Art, Sheets, Random, "Retry level ?", "Yes please !", "No thanks.", NoThanks);
+            if (!Retry || *Retry)
+            {
+                return Retry ? EMenuChoice::RestartLevel : EMenuChoice::Quit;
+            }
+        }
+        else if (*Item == NewGameItem)
+        {
+            return EMenuChoice::NewGame;
+        }
+        else if (*Item == ExitItem)
+        {
+            constexpr size_t YesBye = 0;
+            const std::optional<bool> Exit = Confirm(Window, Renderer, Art, Sheets, Random, "Exit Now ?", "Yes, bye.", "No !", YesBye);
+            if (!Exit || *Exit)
+            {
+                return EMenuChoice::Quit;
+            }
+        }
+    }
+}
+
+// How a level ends: through a lift to NextLevel, back to its start, to the main menu, or with the window closed.
+enum class ELevelEnd : uint8_t
+{
+    Lift,
+    Restart,
+    Menu,
+    Quit,
+};
+
+struct FLevelEnd
+{
+    ELevelEnd Kind = ELevelEnd::Quit;
+    std::string NextLevel;
+};
+
+// MenuGame at 004223e0, the menu Escape opens during a level: Resume Game, Options, Retry Level (shown while there is a default session, which a
+// running level always has) and End Game. Options opens nothing yet.
+std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random)
+{
+    enum EItem : size_t
+    {
+        ResumeItem,
+        OptionsItem,
+        RetryItem,
+        EndItem,
+    };
+    const FMenu Menu{
+        .Left = MenuLeft,
+        .Top = MenuTop,
+        .Right = int32_t(ScreenWidth),
+        .Bottom = int32_t(ScreenHeight),
+        .StepY = MenuStepY,
+        .Items = {
+            { .Text = "Resume Game" },
+            { .Text = "Options", .Help = "Video, Audio, Control, User settings, Language." },
+            { .Text = "Retry Level" },
+            { .Text = "End Game" },
+        },
+        .DefaultItem = ResumeItem,
+    };
+
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (;;)
+    {
+        const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
+        if (!Item)
+        {
+            return ELevelEnd::Quit;
+        }
+
+        if (*Item == ResumeItem)
+        {
+            return std::nullopt;
+        }
+
+        if (*Item == RetryItem)
+        {
+            constexpr size_t NoThanks = 1;
+            const std::optional<bool> Retry = Confirm(Window, Renderer, Art, Sheets, Random, "Retry level ?", "Yes please !", "No thanks.", NoThanks);
+            if (!Retry || *Retry)
+            {
+                return Retry ? ELevelEnd::Restart : ELevelEnd::Quit;
+            }
+        }
+        else if (*Item == EndItem)
+        {
+            // The first answer is also the default, so Escape twice ends the game.
+            constexpr size_t Yes = 0;
+            const std::optional<bool> End = Confirm(Window, Renderer, Art, Sheets, Random, "End this Game ?", "Yes", "No", Yes);
+            if (!End || *End)
+            {
+                return End ? ELevelEnd::Menu : ELevelEnd::Quit;
+            }
+        }
+    }
+}
+
+// One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a
+// menu ends or restarts the level. Session becomes the level's default session.
+std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
+    const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
+    FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FDefaultSession>& Session)
 {
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
     if (!Level)
@@ -889,9 +1241,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
     std::optional<FMovementClass> PlayerClass;
     std::optional<FPlayerState> Player;
     std::optional<FTerrainCollision> Terrain;
-    const GLFWvidmode* const DisplayMode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-    const uint32_t RefreshMillihertz = DisplayMode && DisplayMode->refreshRate > 0 ? uint32_t(DisplayMode->refreshRate) * MillihertzPerHertz : 0;
-    const uint32_t FramePeriod = FramePeriodMilliseconds(RefreshMillihertz);
+    const uint32_t FramePeriod = DisplayFramePeriod();
     std::optional<FCombat> Combat;
     // Session +0x101c: the last step, which the draw pass plays again.
     uint32_t LastStepMilliseconds = 0;
@@ -985,6 +1335,16 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
         }
     }
 
+    Session = FDefaultSession{
+        .LevelPath = LevelPath,
+        .LevelName = Level->Name,
+        .Carried = Carried,
+        .Clock = Combat ? Combat->Clock : 0,
+        .Energy = Inventory.Energy,
+        .Shield = Inventory.Shield,
+    };
+    std::optional<FMenuSheets> MenuSheets;
+    bool bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
     double CameraX = PlayerObject != Level->Objects.end() ? PlayerObject->X - ScreenWidth * 0.5 : 0.0;
     double CameraY = PlayerObject != Level->Objects.end() ? PlayerObject->Y - ScreenHeight * 0.5 : 0.0;
     std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
@@ -1047,10 +1407,30 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
     while (!glfwWindowShouldClose(Window))
     {
         glfwPollEvents();
-        // ponytail: Esc quits straight away until the original pause menu is ported.
-        if (glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        // Escape (EngineEscape at 00445b40) opens the game menu, or ends the game at once for a dead player; the menu's steps do not count as game time.
+        const bool bEscapePressed = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS && !bEscapeDown;
+        bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+        if (bEscapePressed && DeathTimer)
         {
-            glfwSetWindowShouldClose(Window, GLFW_TRUE);
+            *DeathTimer = 0;
+        }
+        else if (bEscapePressed && MenuArt)
+        {
+            if (!MenuSheets)
+            {
+                MenuSheets = CreateMenuSheets(Renderer, *MenuArt);
+            }
+
+            FRandom MenuRandom;
+            const std::optional<ELevelEnd> End = RunGameMenu(Window, Renderer, *MenuArt, *MenuSheets, Combat ? Combat->Random : MenuRandom);
+            if (End)
+            {
+                return FLevelEnd{ .Kind = *End };
+            }
+
+            bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+            Clock = FFrameClock(FramePeriod);
+            Clock.Poll(ClockMilliseconds());
         }
 
         const bool bNextPressed = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS && !bNextKeyDown;
@@ -1060,7 +1440,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
             const size_t Next = (CurrentIndex + 1) % DebugLevels.size();
             std::printf("Debug: level %zu of %zu\n", Next + 1, DebugLevels.size());
             Carried.reset();
-            return std::optional(DebugLevels[Next]);
+            return FLevelEnd{ .Kind = ELevelEnd::Lift, .NextLevel = DebugLevels[Next] };
         }
 
         // FUN_0043b5c0's weapon actions: Tab is action-next-weapon and 1 to 9 are action-weapon-1 to 9 (FUN_0043bad0 skips the slot in hand).
@@ -1224,13 +1604,11 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
             }
         }
 
-        // Game over (EngineGameOver at 00445a40): the game-over image, then the menu. ponytail: there is no menu yet, so the level starts over without the
-        // carried player.
+        // Game over (EngineGameOver at 00445a40): the game-over image, then the menu.
         if (DeathTimer && *DeathTimer <= 0)
         {
             ShowImage(Window, Renderer, Archive, "common\\data\\extra\\game-over.gaf");
-            Carried.reset();
-            return std::optional(LevelPath);
+            return FLevelEnd{ .Kind = ELevelEnd::Menu };
         }
 
         if (Player)
@@ -1439,12 +1817,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                                             : Hud.Sheet == EHudSheet::Icons  ? IconSheet
                                             : Hud.Sheet == EHudSheet::Surprise ? SurpriseSheet
                                                                              : ColorSheet;
-                const Gaf::FAnimationFrame& Frame = Hud.Frame;
-                if (Frame.BitmapIndex != 0)
-                {
-                    Renderer.DrawSprite(Sheet, Frame.BitmapIndex - 1, Hud.X + float(Frame.OffsetX), Hud.Y + float(Frame.OffsetY), Frame.bMirrorX, Frame.bMirrorY,
-                        Hud.Alpha < 1.f ? ESpriteBlend::Alpha : FrameBlend(Frame), 1.f, 1.f, Hud.VisibleColumns, Hud.Diffuse, Hud.Specular, Hud.Alpha);
-                }
+                DrawHudSprite(Renderer, Sheet, Hud);
             }
         };
 
@@ -1479,7 +1852,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
         }
 
         // EngineRunLevel ends the game after a starred lift: the registered game's two ending pages over theend.tga (FUN_00402890), then the
-        // score table and the menu. ponytail: there is no menu yet, so a new game starts at the first level.
+        // score table and the menu. ponytail: the score table waits for the scores.
         if (NextLevel && NextLevel->starts_with('*'))
         {
             constexpr int32_t FirstPageLeft = 0x46;
@@ -1490,8 +1863,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                 ShowTextPage(Window, Renderer, Archive, *Panel, "common\\data\\extra\\theend.tga", "common\\data\\extra\\theend-en-2.txt", SecondPageLeft);
             }
 
-            Carried.reset();
-            return DebugLevels.empty() ? std::optional<std::string>() : std::optional(DebugLevels.front());
+            return FLevelEnd{ .Kind = ELevelEnd::Menu };
         }
 
         // The level ends after the frame in which the player took a lift.
@@ -1506,11 +1878,11 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                 .WeaponSlots = Combat ? Combat->PlayerSlotStates : std::vector<FWeaponState>{},
                 .Clock = Combat ? Combat->Clock : 1,
             };
-            return NextLevel;
+            return FLevelEnd{ .Kind = ELevelEnd::Lift, .NextLevel = *NextLevel };
         }
     }
 
-    return std::optional<std::string>();
+    return FLevelEnd{};
 }
 }
 
@@ -1523,6 +1895,8 @@ int main(const int ArgCount, char** const Args)
     bool bVerifyGafs = false;
     bool bVerifyLevels = false;
     bool bVerifyGame = false;
+    // Development aid: --level and --start skip the main menu at startup.
+    bool bSkipMenu = false;
     // Development aid: --dump-gaf PATH lists an archive GAF's animations with their frame counts and durations.
     std::optional<std::string> DumpGafPath;
     // Holds the trigger down, for checking shots and explosions without a keyboard.
@@ -1552,10 +1926,12 @@ int main(const int ArgCount, char** const Args)
         else if (std::strcmp(Args[Index], "--level") == 0 && Index + 1 < ArgCount)
         {
             LevelPath = Args[++Index];
+            bSkipMenu = true;
         }
         else if (float X = 0.f, Y = 0.f; std::strcmp(Args[Index], "--start") == 0 && Index + 1 < ArgCount && std::sscanf(Args[Index + 1], "%f,%f", &X, &Y) == 2)
         {
             Start = { X, Y };
+            bSkipMenu = true;
             ++Index;
         }
         else
@@ -1677,7 +2053,14 @@ int main(const int ArgCount, char** const Args)
     {
         std::fprintf(stderr, "No panel: %s\n", Panel.error().c_str());
     }
+    std::expected<FMenuArt, std::string> MenuArt = FMenuArt::Load(Archive);
+    if (!MenuArt)
+    {
+        std::fprintf(stderr, "No menus: %s\n", MenuArt.error().c_str());
+    }
+
     std::optional<FCarriedPlayer> Carried;
+    std::optional<FDefaultSession> Session;
     // Every level in the archive by file name, so each tower's floors follow each other, for the debug next-level key.
     std::vector<std::string> DebugLevels;
     for (const std::string& Name : Archive.GetNames())
@@ -1695,26 +2078,57 @@ int main(const int ArgCount, char** const Args)
         std::printf("Debug level %zu: %s\n", Index + 1, DebugLevels[Index].c_str());
     }
 
+    // VzRun's loop (VzMenuLoop at 00447820): the main menu, then levels until a menu or the game's end brings it back. New Game starts at LevelPath.
     int Result = 0;
+    bool bMenu = MenuArt && !bSkipMenu;
     for (std::string Path = LevelPath;;)
     {
-        const std::expected<std::optional<std::string>, std::string> Next = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Carried, DebugLevels, Panel ? &*Panel : nullptr);
+        if (bMenu)
+        {
+            const EMenuChoice Choice = RunMainMenu(Window, Renderer, *MenuArt, Session ? &*Session : nullptr);
+            Renderer.ReleaseSpriteSheets();
+            if (Choice == EMenuChoice::Quit)
+            {
+                break;
+            }
+
+            Path = Choice == EMenuChoice::NewGame ? LevelPath : Session->LevelPath;
+            Carried = Choice == EMenuChoice::NewGame ? std::nullopt : Session->Carried;
+            bMenu = false;
+        }
+
+        const std::expected<FLevelEnd, std::string> End = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Carried, DebugLevels, Panel ? &*Panel : nullptr,
+            MenuArt ? &*MenuArt : nullptr, Session);
         Renderer.ReleaseSpriteSheets();
         // --start places the player in the first level only.
         Start.reset();
-        if (!Next)
+        if (!End)
         {
-            std::fprintf(stderr, "%s\n", Next.error().c_str());
+            std::fprintf(stderr, "%s\n", End.error().c_str());
             Result = 1;
             break;
         }
 
-        if (!*Next)
+        if (End->Kind == ELevelEnd::Quit)
         {
             break;
         }
 
-        Path = **Next;
+        if (End->Kind == ELevelEnd::Lift)
+        {
+            Path = End->NextLevel;
+        }
+        else if (End->Kind == ELevelEnd::Restart)
+        {
+            Path = Session->LevelPath;
+            Carried = Session->Carried;
+        }
+        else
+        {
+            bMenu = MenuArt.has_value();
+            Path = LevelPath;
+            Carried.reset();
+        }
     }
 
     Renderer.Shutdown();

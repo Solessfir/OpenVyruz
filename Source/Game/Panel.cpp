@@ -66,6 +66,13 @@ bool ShieldLow(const FPanelValues& Values)
     return Values.ShieldMax != 0.f && Values.Shield / Values.ShieldMax <= ShieldLowRatio;
 }
 
+// The x87 multiply-then-divide of a bar, truncated by __ftol.
+int32_t BarColumn(const uint32_t Width, const float Value, const float Max)
+{
+    return Max == 0.f ? 0 : int32_t(double(Width) * double(Value) / double(Max));
+}
+}
+
 std::optional<std::vector<Font::FFont>> LoadGafFonts(FResourceArchive& Archive, const std::string_view Path)
 {
     const std::optional<std::vector<uint8_t>> File = Archive.Read(Path);
@@ -82,10 +89,7 @@ std::vector<uint32_t> BitmapWidthsOf(const std::vector<Gaf::FFrame>& Bitmaps)
 
     return Widths;
 }
-constexpr uint32_t FirstFrame = 1;
-constexpr uint32_t CurrentFrame = 0;
-
-std::expected<std::pair<std::vector<Gaf::FFrame>, std::vector<Gaf::FAnimation>>, std::string> LoadGaf(FResourceArchive& Archive, const std::string_view Path)
+std::expected<std::pair<std::vector<Gaf::FFrame>, std::vector<Gaf::FAnimation>>, std::string> LoadHudGaf(FResourceArchive& Archive, const std::string_view Path)
 {
     const std::optional<std::vector<uint8_t>> File = Archive.Read(Path);
     std::optional<std::vector<Gaf::FFrame>> Bitmaps = File ? Gaf::LoadFrames(*File) : std::nullopt;
@@ -98,18 +102,48 @@ std::expected<std::pair<std::vector<Gaf::FFrame>, std::vector<Gaf::FAnimation>>,
     return std::pair(std::move(*Bitmaps), std::move(*Animations));
 }
 
-// The x87 multiply-then-divide of a bar, truncated by __ftol.
-int32_t BarColumn(const uint32_t Width, const float Value, const float Max)
+void AppendText(std::vector<FHudSprite>& Out, const EHudSheet Sheet, const Font::FFont& Font, const std::span<const Gaf::FFrame> Bitmaps,
+    const std::span<const uint32_t> BitmapWidths, const int32_t X, const int32_t Y, const std::string_view Text, const Font::FColor& Color,
+    const std::optional<int32_t> WrapRight)
 {
-    return Max == 0.f ? 0 : int32_t(double(Width) * double(Value) / double(Max));
+    // DrawTexturedPolygon gives modes 4 and 5 a fixed alpha of 0x80.
+    constexpr uint32_t HalfAlphaDrawMode = 4;
+    constexpr uint32_t ColorKeyBit = 1;
+    constexpr float HalfAlpha = float(0x80) / 255.f;
+    const Font::FColor Combined = Font.Color.Combine(Color);
+    const bool bHalfAlpha = (Font.DrawMode & ~ColorKeyBit) == HalfAlphaDrawMode;
+    for (const Font::FPlacedGlyph& Glyph : Font::LayoutText(Font, Text, X, Y, BitmapWidths, WrapRight))
+    {
+        if (Glyph.BitmapIndex == 0 || Glyph.BitmapIndex > Bitmaps.size())
+        {
+            continue;
+        }
+
+        // The sprite draw adds the bitmap's trim, which the glyph position already includes.
+        const Gaf::FFrame& Bitmap = Bitmaps[Glyph.BitmapIndex - 1];
+        Out.push_back({
+            .Sheet = Sheet,
+            .Frame = { .BitmapIndex = Glyph.BitmapIndex, .OffsetX = -Bitmap.TrimX, .OffsetY = -Bitmap.TrimY, .DrawFlags = Font.DrawMode },
+            .X = float(Glyph.X),
+            .Y = float(Glyph.Y),
+            .Diffuse = Combined.Diffuse,
+            .Specular = Combined.Specular,
+            .Alpha = bHalfAlpha ? HalfAlpha : 1.f,
+        });
+    }
 }
+
+namespace
+{
+constexpr uint32_t FirstFrame = 1;
+constexpr uint32_t CurrentFrame = 0;
 }
 
 std::expected<FPanel, std::string> FPanel::Load(FResourceArchive& Archive)
 {
-    auto Panel = LoadGaf(Archive, PanelPath);
-    auto VPanel = Panel ? LoadGaf(Archive, VPanelPath) : std::unexpected(Panel.error());
-    auto Bonus = VPanel ? LoadGaf(Archive, BonusPath) : std::unexpected(VPanel.error());
+    auto Panel = LoadHudGaf(Archive, PanelPath);
+    auto VPanel = Panel ? LoadHudGaf(Archive, VPanelPath) : std::unexpected(Panel.error());
+    auto Bonus = VPanel ? LoadHudGaf(Archive, BonusPath) : std::unexpected(VPanel.error());
     if (!Bonus)
     {
         return std::unexpected(Bonus.error());
@@ -132,7 +166,7 @@ std::expected<FPanel, std::string> FPanel::Load(FResourceArchive& Archive)
     Result.BonusFonts = std::move(*BonusFonts);
     Result.BitmapWidths = BitmapWidthsOf(Result.Bitmaps);
     Result.BonusBitmapWidths = BitmapWidthsOf(Result.BonusBitmaps);
-    if (auto Surprise = LoadGaf(Archive, SurprisePath))
+    if (auto Surprise = LoadHudGaf(Archive, SurprisePath))
     {
         Result.SurpriseBitmaps = std::move(Surprise->first);
     }
@@ -140,7 +174,7 @@ std::expected<FPanel, std::string> FPanel::Load(FResourceArchive& Archive)
     static_assert(WeaponIconPaths.size() == WeaponIconCount);
     for (size_t Icon = 0; Icon < WeaponIconCount; ++Icon)
     {
-        auto Gaf = LoadGaf(Archive, WeaponIconPaths[Icon]);
+        auto Gaf = LoadHudGaf(Archive, WeaponIconPaths[Icon]);
         if (!Gaf || Gaf->second.empty())
         {
             continue;
@@ -222,31 +256,9 @@ void FPanel::DrawText(std::vector<FHudSprite>& Out, const EHudSheet Sheet, const
 {
     const bool bBonus = Sheet == EHudSheet::Bonus;
     const std::vector<Font::FFont>& SheetFonts = bBonus ? BonusFonts : Fonts;
-    const std::vector<Gaf::FFrame>& SheetBitmaps = GetBitmaps(Sheet);
-    if (Font == 0 || Font > SheetFonts.size())
+    if (Font != 0 && Font <= SheetFonts.size())
     {
-        return;
-    }
-
-    const Font::FFont& Selected = SheetFonts[Font - 1];
-    const Font::FColor Combined = Selected.Color.Combine(Color);
-    for (const Font::FPlacedGlyph& Glyph : Font::LayoutText(Selected, Text, X, Y, bBonus ? BonusBitmapWidths : BitmapWidths, WrapRight))
-    {
-        if (Glyph.BitmapIndex == 0 || Glyph.BitmapIndex > SheetBitmaps.size())
-        {
-            continue;
-        }
-
-        // The sprite draw adds the bitmap's trim, which the glyph position already includes.
-        const Gaf::FFrame& Bitmap = SheetBitmaps[Glyph.BitmapIndex - 1];
-        Out.push_back({
-            .Sheet = Sheet,
-            .Frame = { .BitmapIndex = Glyph.BitmapIndex, .OffsetX = -Bitmap.TrimX, .OffsetY = -Bitmap.TrimY, .DrawFlags = Selected.DrawMode },
-            .X = float(Glyph.X),
-            .Y = float(Glyph.Y),
-            .Diffuse = Combined.Diffuse,
-            .Specular = Combined.Specular,
-        });
+        AppendText(Out, Sheet, SheetFonts[Font - 1], GetBitmaps(Sheet), bBonus ? BonusBitmapWidths : BitmapWidths, X, Y, Text, Color, WrapRight);
     }
 }
 
