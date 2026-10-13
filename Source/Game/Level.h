@@ -74,6 +74,8 @@ struct FLevelObject
     bool bDirectional = false;
     // Collected pickups and destroyed objects stay in the list so indices remain stable.
     bool bRemoved = false;
+    // Object +0x128 bit 0x20: a Two-pieces object's first death left its lower half, which no longer acts and can be destroyed again.
+    bool bWrecked = false;
     // A tank's 1-based top pose, the frame of its top animation; zero until its behaviour turns it.
     int TopPose = 0;
     std::string SubType;

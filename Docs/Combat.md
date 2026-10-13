@@ -54,7 +54,11 @@ The first object lands on the wreck's truncated position. Each later one is plac
 - `dx < 0`: it goes to `-dx`, mirrored right.
 - `dx > 0`: `r` and `-left` grow by 10 and the row changes: 0 becomes -10, -10 becomes 10, and 10 becomes 0 with the object at `left`; otherwise it goes to `dx = 0`.
 
-The new objects are not activated, so they draw no bob phase. Gold boxes leave `Gold` (500 money), and many classes drop a `Surprise` power-up by chance.
+The new objects are not activated, so they draw no bob phase.
+
+## Wrecks
+
+A class with `Two-pieces` (class `+0x20` bit 2: tanks and turrets) dies twice. On the first death `EngineUpdateObjects` calls `ObjectDestroy` with its keep flag: the explosions go off and the reward is paid, but nothing drops and the enemy count stays. The object becomes a wreck (object `+0x128` bit `0x20`): its energy and shield go back to the class's initial values, and its behaviour becomes plain Fixed (8), so it neither moves nor looks for the player. `ObjectDraw` leaves out a wreck's upper half, a tank's top or a turret's gun, and keeps the turret's base (the animation after its 24 gun poses) and the shadow. The second death destroys it for good. Gold boxes leave `Gold` (500 money), and many classes drop a `Surprise` power-up by chance.
 
 ## Turrets
 
@@ -76,7 +80,7 @@ The port runs the original incremental route search from collision centre to col
 - The idle look-around of fixed objects (`FixedIdleLookAround`, `00444a40`), with its saved random state.
 - Drawing turret bases, the player's shove and absorption, the HUD and the player's death.
 - Automatic weapon switching when the stock is empty.
-- Water splashes, two-piece wrecks, what a surprise does when collected, and sounds.
+- Water splashes, what a surprise does when collected, and sounds.
 - Blasts hurting pickups.
 - Drawing visible ammo.
 

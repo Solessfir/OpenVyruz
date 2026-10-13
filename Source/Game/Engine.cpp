@@ -3517,7 +3517,8 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
     std::optional<std::vector<FPathObstacle>> Obstacles;
     for (FObjectBody& Body : Bodies)
     {
-        if (!Body.Actor || Level.Objects[Body.ObjectIndex].bRemoved)
+        // A wreck's behaviour is plain Fixed, which neither moves nor looks for a target.
+        if (!Body.Actor || Level.Objects[Body.ObjectIndex].bRemoved || Level.Objects[Body.ObjectIndex].bWrecked)
         {
             continue;
         }
@@ -3593,7 +3594,7 @@ void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrai
     std::optional<std::vector<FPathObstacle>> Obstacles;
     for (FObjectBody& Body : Bodies)
     {
-        if (!Body.Turret)
+        if (!Body.Turret || Level.Objects[Body.ObjectIndex].bWrecked)
         {
             continue;
         }
@@ -3987,7 +3988,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
     int Hunters = int(std::ranges::count_if(Bodies, [&](const FObjectBody& Body) { return IsHunter(Body) && !Level.Objects[Body.ObjectIndex].bRemoved; }));
     // The dropped objects join the level once the destroyed ones are gone, so no object reference outlives the list growing.
     std::vector<FDrop> Drops;
-    std::erase_if(Bodies, [&](const FObjectBody& Body)
+    std::erase_if(Bodies, [&](FObjectBody& Body)
     {
         // Objects die in their next update once damage has taken their energy to zero.
         if (!Body.bDamaged || 0.f < Body.Energy)
@@ -3996,9 +3997,16 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         }
 
         FLevelObject& Object = Level.Objects[Body.ObjectIndex];
-        Object.bRemoved = true;
-        DropContents(Combat.Random, Object, Drops);
-        if (IsHunter(Body) && --Hunters == 0)
+        // A Two-pieces object's first death keeps it as a wreck (ObjectDestroy with its keep flag): it explodes and pays its reward, but drops
+        // nothing and still counts as an enemy.
+        const bool bFirstOfTwo = !Object.bWrecked && ParseLevelFloat(Object.Properties.Find("Two-pieces")).value_or(0.f) != 0.f;
+        Object.bRemoved = !bFirstOfTwo;
+        if (!bFirstOfTwo)
+        {
+            DropContents(Combat.Random, Object, Drops);
+        }
+
+        if (!bFirstOfTwo && IsHunter(Body) && --Hunters == 0)
         {
             // The player's name at session +0x2754 starts as Jack. ponytail: the 100000 bonus is only printed here.
             constexpr int32_t LastKillX = 0x46;
@@ -4057,6 +4065,21 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
                 .bTypewriter = true,
                 .Font = NameFont,
             }, EMessagePlacement::Replace);
+        }
+
+        if (bFirstOfTwo)
+        {
+            // The wreck starts over with the class's initial energy and shield.
+            const auto Initial = [&](const std::string_view Kind)
+            {
+                const FLevelPropertyBlock* const Block = FindBlock(Object.Properties, Kind);
+                return Block ? ParseLevelFloat(Block->Find("Initial")).value_or(0.f) : 0.f;
+            };
+            Object.bWrecked = true;
+            Body.Energy = Initial("Energy");
+            Body.Shield = Initial("Shield");
+            Body.bDamaged = false;
+            return false;
         }
 
         return true;
@@ -4319,6 +4342,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     std::set<std::string> CopNames;
     size_t Destroyed = 0;
     size_t Dropped = 0;
+    size_t Wrecks = 0;
     size_t Effects = 0;
     // A direct cardinal route locks, a diagonal route is rejected, and an overlapping target aborts; each attempt refills the scan timer.
     const std::array<FCollisionPoint, 3> SearchTargets = {
@@ -4337,7 +4361,9 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         } };
         const FPlayerState Target{ .Center = SearchTargets[Index] };
         const FTerrainCollision Terrain;
-        const FLevel Level;
+        // The turret's own level object.
+        FLevel Level;
+        Level.Objects.resize(1);
         StepTurrets(Check, StepMilliseconds, Terrain, Level, Bodies, Target);
         if (!Bodies.front().Turret->bSearching || Bodies.front().Turret->bLocked || Bodies.front().Turret->ScanTimer != ScanDelay)
         {
@@ -4501,12 +4527,44 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         ++Levels;
         Shots += LevelShots;
         Destroyed += BodyCount - Bodies.size();
+
+        // The first live turret is finished off twice: the first death must leave a wreck that stays, the second must remove it.
+        const auto Turret = std::ranges::find_if(Bodies, [&](const FObjectBody& Body) { return Body.Turret && !Level->Objects[Body.ObjectIndex].bWrecked; });
+        if (Turret != Bodies.end() && ParseLevelFloat(Level->Objects[Turret->ObjectIndex].Properties.Find("Two-pieces")).value_or(0.f) != 0.f)
+        {
+            const size_t TurretIndex = Turret->ObjectIndex;
+            const FPlayerTarget Target{ .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
+            const auto Kill = [&]
+            {
+                const auto Body = std::ranges::find(Bodies, TurretIndex, &FObjectBody::ObjectIndex);
+                if (Body != Bodies.end())
+                {
+                    Body->Energy = 0.f;
+                    Body->bDamaged = true;
+                }
+
+                StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Target, Messages);
+            };
+            Kill();
+            if (!Level->Objects[TurretIndex].bWrecked || Level->Objects[TurretIndex].bRemoved)
+            {
+                return std::unexpected(std::format("{}: a destroyed turret left no wreck", Name));
+            }
+
+            ++Wrecks;
+            Kill();
+            if (!Level->Objects[TurretIndex].bRemoved)
+            {
+                return std::unexpected(std::format("{}: a turret wreck survived its second death", Name));
+            }
+        }
+
         Dropped += Combat->CreatedObjects.size();
     }
 
-    if (Dropped == 0)
+    if (Dropped == 0 || Wrecks == 0)
     {
-        return std::unexpected("no destroyed object dropped anything");
+        return std::unexpected(std::format("{} objects dropped, {} wrecks", Dropped, Wrecks));
     }
 
     if (Duels != 0 && DuelShots == 0)
@@ -4519,7 +4577,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         return std::unexpected(std::format("no cop fired in {} duels", CopDuels));
     }
 
-    return std::format("{} levels, {} player shots, {} turret shots while spinning, {} objects destroyed, {} objects dropped, at least {} effects; {} turret duels: {} shots, {:.0f} damage taken; "
+    return std::format("{} levels, {} player shots, {} turret shots while spinning, {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; {} turret duels: {} shots, {:.0f} damage taken; "
         "{} cop duels ({} classes): {} shots",
-        Levels, Shots, TurretShots, Destroyed, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots);
+        Levels, Shots, TurretShots, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots);
 }

@@ -41,6 +41,7 @@ constexpr uint32_t AdditiveDrawMode = 6;
 constexpr uint32_t InverseSourceDrawMode = 8;
 constexpr int FourWayDirectionCount = 4;
 constexpr std::string_view TankKind = "tank";
+constexpr std::string_view TurretKind = "turret";
 
 // ObjectDraw at 00431ae0 draws a walker's body (kind 0x19) 32 pixels above its other sprites.
 float BodyLift(const FLevelObject& Object, const bool bShadow)
@@ -305,6 +306,8 @@ struct FObjectSprite
     // A Use-delta-packing lift or gate stores later frames as changes over the first, which ObjectDraw (00431ae0, FUN_00433710) draws
     // underneath first.
     bool bDeltaBase = false;
+    // A turret's fixed base: the animation after its 24 top poses, drawn under the top (ObjectDraw, kind 0x1e).
+    bool bTurretBase = false;
     Gaf::FAnimationFrame Frame;
     float X = 0.f;
     float Y = 0.f;
@@ -608,6 +611,14 @@ std::expected<void, std::string> AddObjectSprites(FObjectSprites& Result, FResou
                 Top.Frame = GafAnimations[TopIndex].Frames[Index - size_t(Object.GafIndex - 1)];
                 Result.Sprites.push_back(Top);
             }
+
+            if (!bShadow && Object.SubType == TurretKind && TopIndex < GafAnimations.size() && !GafAnimations[TopIndex].Frames.empty())
+            {
+                FObjectSprite Base = Result.Sprites.back();
+                Base.bTurretBase = true;
+                Base.Frame = GafAnimations[TopIndex].Frames.front();
+                Result.Sprites.insert(Result.Sprites.end() - 1, Base);
+            }
         }
     }
 
@@ -666,6 +677,16 @@ void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std
             const int Direction = Object.Direction < ObjectDirectionCount ? Object.Direction : 0;
             const size_t Frame = Object.TopPose > 0 ? size_t(Object.TopPose - 1) : size_t(Direction);
             Sprite.Frame = Sprites.Animations[Sprite.SheetIndex][size_t(Object.GafIndex - 1 + ObjectDirectionCount)].Frames[Frame];
+        }
+
+        if (Sprite.bTurretBase)
+        {
+            Sprite.Frame = Sprites.Animations[Sprite.SheetIndex][size_t(Object.GafIndex - 1 + ObjectDirectionCount)].Frames.front();
+        }
+        // A wreck has lost its upper half: a tank's top or a turret's gun.
+        else if (Object.bWrecked && !Sprite.bShadow && (Sprite.bTop || Object.SubType == TurretKind))
+        {
+            Sprite.Frame = {};
         }
 
         const uint32_t DrawMode = Sprite.Frame.DrawFlags & AnimationBlendMask;
@@ -1000,7 +1021,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                 FLevelObject& Object = Level->Objects[Body.ObjectIndex];
                 Object.X = Body.State.Position.X;
                 Object.Y = Body.State.Position.Y;
-                // A turret draws its rotating top; the fixed base (animation 25) is not drawn yet.
+                // A turret turns its top; its base sprite stays fixed.
                 if (Body.Turret)
                 {
                     Object.Direction = Body.Turret->Direction;
