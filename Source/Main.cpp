@@ -2274,6 +2274,15 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // Object +0x170, which 3do::CreateObject starts at 50; ObjectDraw counts it up to 49 for a visible object and draws it opaque from there.
     constexpr int FullFade = 49;
     int PlayerFade = FullFade + 1;
+    // The same counter for the other objects, by object index; invisible enemies fade to nothing, and ObjectActivate (0043c150) starts them there.
+    std::vector<int> ObjectFades(Level->Objects.size(), FullFade + 1);
+    for (const FObjectBody& Body : Bodies)
+    {
+        if (Body.bInvisible)
+        {
+            ObjectFades[Body.ObjectIndex] = 0;
+        }
+    }
     // Object +0xcc of the dead player: EngineUpdateObjects ends the game when it runs out.
     constexpr int32_t DeathMilliseconds = 10000;
     std::optional<int32_t> DeathTimer;
@@ -2958,6 +2967,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         const float PlayerAlpha = std::max(MinPlayerAlpha, float(PlayerFade) * FadeAlphaStep);
+        for (const FObjectBody& Body : Bodies)
+        {
+            int& Fade = ObjectFades[Body.ObjectIndex];
+            Fade = Body.bInvisible ? std::max(0, Fade - 1) : Fade < FullFade ? Fade + 1 : Fade;
+        }
+
         // The player's layers from its shadow GAF (AnimInitializeGraphics at 00417b30, kind 0x18), one frame per pose and left out while it fades (ObjectDraw at 00431ae0): the reactor glow under the body and over it while the reactor timer runs, grey as bright as the speed is a share of Thrust.Max, unless Reactor FX is off, and the front light, off while the motor is blocked or with low details.
         if (Player && PlayerFade >= FullFade)
         {
@@ -3026,14 +3041,21 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             const float OffsetX = Scale.X != 1.f ? std::trunc(float(Frame.OffsetX) * Scale.X) : float(Frame.OffsetX);
             const float OffsetY = Scale.Y != 1.f ? std::trunc(float(Frame.OffsetY) * Scale.Y) : float(Frame.OffsetY);
             const bool bFadingPlayer = Sprite.ObjectIndex == PlayerIndex && PlayerFade < FullFade;
+            const int ObjectFade = Sprite.ObjectIndex < ObjectFades.size() && Sprite.ObjectIndex != PlayerIndex ? ObjectFades[Sprite.ObjectIndex] : FullFade;
+            if (ObjectFade == 0)
+            {
+                return;
+            }
+
+            const bool bFadingObject = ObjectFade < FullFade;
             // DrawAnimationFrame at 0045eab0: a frame's event flag 4 sets the diffuse colour to the event value, scaled by the colour the draw passes.
             // The player's light layers fade by pose this way.
             constexpr uint32_t DiffuseEventFlag = 4;
             constexpr uint32_t ColorMask = 0xffffff;
             const uint32_t Diffuse = (Frame.EventFlags & DiffuseEventFlag) != 0 ? ModulateColor(uint32_t(Frame.EventValue) & ColorMask, Sprite.Diffuse) : Sprite.Diffuse;
             Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + OffsetX - OriginX, Sprite.Y + OffsetY - OriginY,
-                Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, Diffuse, 0,
-                bFadingPlayer ? PlayerAlpha : 1.f);
+                Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer || bFadingObject ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, Diffuse, 0,
+                bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : 1.f);
         };
         const auto DrawMapRow = [&](const int64_t Row, const std::optional<int32_t> Depth)
         {

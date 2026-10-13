@@ -408,6 +408,10 @@ struct FObjectBody
     bool bPlayerDirectFireOnly = false;
     // Ignore-same-class-objects: it passes through objects of its own class.
     bool bIgnoreSameClass = false;
+    // Object flag 8, from the class's Invisible (ObjectInitialize at 00419580): ObjectDraw fades it out.
+    // Visible-when-firing (class +0x1c bit 0x400) shows it while it shoots and hides it again otherwise (SeekerEngage at 0042caa0).
+    bool bInvisible = false;
+    bool bVisibleWhenFiring = false;
     std::vector<FAbsorption> Absorptions;
     // Every TYPE Explosion block: the Boom-fx objects spawned on destruction and the blasts they carry.
     std::vector<FExplosionBlock> Explosions;

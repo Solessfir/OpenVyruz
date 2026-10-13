@@ -1021,6 +1021,8 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
         .bIndestructible = Number(&Properties, "Indestructible") != 0.f,
         .bPlayerDirectFireOnly = Number(&Properties, "Player-direct-fire-only") != 0.f,
         .bIgnoreSameClass = Number(&Properties, "Ignore-same-class-objects") != 0.f,
+        .bInvisible = Number(&Properties, "Invisible") != 0.f,
+        .bVisibleWhenFiring = Number(&Properties, "Visible-when-firing") != 0.f,
     };
     for (const FLevelPropertyBlock& Child : Properties.Children)
     {
@@ -2205,8 +2207,7 @@ FCollisionPoint ObjectPosition(const FLevel& Level, const std::vector<FObjectBod
     return BodyOf[Index] ? BodyOf[Index]->State.Position : FCollisionPoint{ .X = Level.Objects[Index].X, .Y = Level.Objects[Index].Y };
 }
 
-// DoorFindHolder at 00443430: something that may pass within two cells of the door. A key or code can only be carried by the player.
-// ponytail: invisibility is not ported, so invisible objects are not left out.
+// DoorFindHolder at 00443430: something that may pass within two cells of the door. A key or code can only be carried by the player, and invisible objects (flag 8) are left out.
 EHolder FindHolder(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const FWorldCell Door, const int Id)
 {
     constexpr int SensorCells = 2;
@@ -2225,6 +2226,7 @@ EHolder FindHolder(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf,
     {
         const FLevelObject& Object = Level.Objects[Index];
         if (!Object.bRemoved && !std::ranges::contains(NonSensingKinds, Object.SubType) && !(Index == Player.ObjectIndex && Player.State.bInvisible) &&
+            !(BodyOf[Index] && BodyOf[Index]->bInvisible) &&
             Near(ObjectPosition(Level, BodyOf, Player, Index)))
         {
             return Index == Player.ObjectIndex ? EHolder::Player : EHolder::Other;
@@ -4660,7 +4662,13 @@ void Engage(FCombat* const Combat, FObjectBody& Body, FRouteWork& Work, FSeeker*
     }
 
     const FWeaponClass* const Weapon = Seeker->Weapon ? &Combat->Weapons[*Seeker->Weapon] : nullptr;
-    if (AimAndFire(*Combat, Body, Actor, *Seeker, *Target))
+    const bool bFiring = AimAndFire(*Combat, Body, Actor, *Seeker, *Target);
+    if (Body.bVisibleWhenFiring)
+    {
+        Body.bInvisible = !bFiring;
+    }
+
+    if (bFiring)
     {
         if (Weapon)
         {
@@ -5297,10 +5305,16 @@ void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrai
                 {
                     Turret.bTrigger = WeaponReady(Combat, Turret.Weapon) && Direction == Turret.Direction;
                     UpdateSlope(Turret.Weapon, Weapon, true);
+                    // SeekerEngage shows the turret while SeekerAimAndFire has it aimed in range, whether or not the weapon is ready.
+                    if (Body.bVisibleWhenFiring)
+                    {
+                        Body.bInvisible = Direction != Turret.Direction;
+                    }
                 }
                 else
                 {
                     bEngaged = false;
+                    Body.bInvisible = Body.bInvisible || Body.bVisibleWhenFiring;
                 }
             }
         }
@@ -5688,7 +5702,6 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         }
 
         // ObjectDestroy (00437d40) hands each TYPE Explosion block to a new Boom-fx object at the same spot.
-        // ponytail: two-piece wrecks that stay behind and surprise drops are not ported.
         for (const FExplosionBlock& Explosion : Body.Explosions)
         {
             SpawnEffect(Combat, Explosion.BoomEffect, Body.State.Position, Body.Altitude, Explosion.Damage, Explosion.Zone);
