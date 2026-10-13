@@ -126,6 +126,7 @@ project "Vyruz"
 
     filter "system:windows"
         entrypoint "mainCRTStartup"
+        files { "Resources/Windows/Vyruz.rc" }
         includedirs { path.join(VulkanSdk or "", "Include") }
         libdirs { path.join(VulkanSdk or "", "Lib") }
         links { "vulkan-1" }

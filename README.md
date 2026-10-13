@@ -46,6 +46,13 @@ make config=development Vyruz -j"$(nproc)"
 
 The executable is written to `Binaries/linux/Development/Vyruz`.
 
+The window's app id is `openvyruz`, so the compositor shows the icon once the desktop entry and icon are installed:
+
+```bash
+install -Dm644 Resources/Linux/openvyruz.desktop ~/.local/share/applications/openvyruz.desktop
+install -Dm644 Resources/Linux/openvyruz.png ~/.local/share/icons/hicolor/256x256/apps/openvyruz.png
+```
+
 From Windows, `wsl -d archlinux -- bash Scripts/WslCheck.sh [gcc|clang]` builds a copy of the tree inside WSL and runs the archive checks.
 
 ## Running
@@ -80,6 +87,7 @@ Without a verify flag the window shows a level's map and placed objects, and the
 | `Docs\Combat.md` | Random generator, weapons, shots, area damage and destruction |
 | `Docs\PathSearch.md` | Incremental obstacle-corner route search and the fixed-seeker caller |
 | `Docs\Audio.md` | The channel mixer, music, menu, motor and animation sounds |
+| `Resources\` | The app icon: the Windows `.ico` and `.rc` linked into the exe, and the Linux desktop entry and icon |
 | `External\` | Third-party code: GLFW as a submodule, miniaudio vendored |
 
 ## Original Module Map

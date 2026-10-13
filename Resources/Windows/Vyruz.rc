@@ -1,0 +1,2 @@
+// GLFW uses the icon named GLFW_ICON for its windows, so this one also covers the title bar and taskbar.
+GLFW_ICON ICON "Vyruz.ico"

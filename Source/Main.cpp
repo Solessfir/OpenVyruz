@@ -3353,6 +3353,10 @@ int main(const int ArgCount, char** const Args)
         return 1;
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    // Wayland compositors and X11 window managers find the icon through the desktop entry named after this id (Resources/Linux/openvyruz.desktop).
+    constexpr const char* AppId = "openvyruz";
+    glfwWindowHintString(GLFW_WAYLAND_APP_ID, AppId);
+    glfwWindowHintString(GLFW_X11_CLASS_NAME, AppId);
     GLFWwindow* const Window = glfwCreateWindow(static_cast<int>(ScreenWidth) * 2, static_cast<int>(ScreenHeight) * 2, "Vyruz", nullptr, nullptr);
     if (!Window)
     {
