@@ -90,8 +90,8 @@ public:
 
     // RunMenu at 00421050 places the cursor on the start item.
     FMenuState Start(const FMenu& Menu) const;
-    // The update pass of MenuStep at 00421780: one random draw for the flash, the cursor animation, and the input. Returns a point for the cursor
-    // to jump to after an arrow key.
+    // The update pass of MenuStep at 00421780: one random draw for the flash, the cursor animation, and the input.
+    // Returns a point for the cursor to jump to after an arrow key.
     std::optional<std::pair<int32_t, int32_t>> Step(const FMenu& Menu, FMenuState& State, const FMenuInput& Input, FRandom& Random, int32_t StepMilliseconds) const;
     // The draw pass of MenuStep at 00421780.
     std::vector<FHudSprite> Draw(const FMenu& Menu, FMenuState& State) const;

@@ -17,8 +17,7 @@
 class FResourceArchive;
 struct FLevel;
 
-// The GAFs the panel draws from: Common\Data\Panel\panel.gaf, its v-panel.gaf companion, solid colours for the radar dots, and
-// Common\Data\Extra\v-bonus.gaf, whose fonts print the floating messages.
+// The GAFs the panel draws from: Common\Data\Panel\panel.gaf, its v-panel.gaf companion, solid colours for the radar dots, and Common\Data\Extra\v-bonus.gaf, whose fonts print the floating messages.
 enum class EHudSheet : uint8_t
 {
     Panel,
@@ -94,8 +93,8 @@ struct FRadarDot
     ERadarDot Kind = ERadarDot::Other;
 };
 
-// The panel (PanelUpdate at 00435000) in its full mode 5: score, shield and energy bars, weapon block, speed and radar, and the
-// position, kill, enemy and time screen. Corners are taken from the view size, which the original keeps at 640x480.
+// The panel (PanelUpdate at 00435000) in its full mode 5: score, shield and energy bars, weapon block, speed and radar, and the position, kill, enemy and time screen.
+// Corners are taken from the view size, which the original keeps at 640x480.
 class FPanel
 {
 public:
@@ -150,8 +149,7 @@ private:
     std::array<FSlot, SlotCount> Slots;
     // Session +0x22b8, one per weapon slot.
     std::array<FSlot, WeaponIconCount> Icons;
-    // Session +0x2578: what the panel shows, from 0 (nothing) to 5 (everything); PanelLoad starts at 5. +0x257c keeps the mode the map
-    // replaced and +0x2580 the cycling step.
+    // Session +0x2578: what the panel shows, from 0 (nothing) to 5 (everything); PanelLoad starts at 5. +0x257c keeps the mode the map replaced and +0x2580 the cycling step.
     int Mode = 5;
     int SavedMode = 5;
     int ModeStep = -1;

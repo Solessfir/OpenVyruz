@@ -142,8 +142,8 @@ constexpr FCollisionPoint WorldFromCollision(const FCollisionPoint Collision)
     };
 }
 
-// Exact bits of the world-space table at 0050d440 that WeaponFire (00443bd0) offsets the muzzle with: x, y per direction. It is the world
-// image of each facing vector, but rounded differently from what WorldFromCollision produces.
+// Exact bits of the world-space table at 0050d440 that WeaponFire (00443bd0) offsets the muzzle with: x, y per direction.
+// It is the world image of each facing vector, but rounded differently from what WorldFromCollision produces.
 constexpr std::array<uint32_t, ObjectDirectionCount * 2> WorldFacingBits = {
     0xBDB72DBC, 0x3D372DC9, 0xBD8186E9, 0x3D6058EB, 0xBD061898, 0x3D7A3A08, 0x00000000, 0x3D8186E9,
     0x3D061898, 0x3D7A3A08, 0x3D8186E9, 0x3D6058EB, 0x3DB72DBC, 0x3D372DC9, 0x3DE05921, 0x3D0186E9,
@@ -541,8 +541,7 @@ const FLevelPropertyBlock* FindItemBlock(const FLevelObject& Object)
     return nullptr;
 }
 
-// ponytail: crates also carry item blocks for the surprises they drop; the exe tells them apart by an item-attribute flag that is not decoded
-// yet, so pickups are recognised by being indestructible.
+// ponytail: crates also carry item blocks for the surprises they drop; the exe tells them apart by an item-attribute flag that is not decoded yet, so pickups are recognised by being indestructible.
 bool IsPickup(const FLevelObject& Object)
 {
     return Object.SubType == "item" && FindItemBlock(Object) && ParseLevelFloat(Object.Properties.Find("Indestructible")).value_or(0.f) != 0.f;
@@ -586,8 +585,7 @@ std::optional<FCollisionPoint> ParsePair(const std::string_view Text)
 
 int SelectHeliTilt(FActor& Actor, const float SpeedMagnitude)
 {
-    // Above each speed band's limit (2, 1 and 0.5 units per step) the counter climbs while at or below 24, 20 or 10 and otherwise drops,
-    // except in the fastest band where it holds; slower than that it settles around 5.
+    // Above each speed band's limit (2, 1 and 0.5 units per step) the counter climbs while at or below 24, 20 or 10 and otherwise drops, except in the fastest band where it holds; slower than that it settles around 5.
     constexpr std::array<std::pair<float, int>, 3> Bands = { { { 2.f, 24 }, { 1.f, 20 }, { 0.5f, 10 } } };
     constexpr int SlowLimit = 5;
     const auto Band = std::ranges::find_if(Bands, [SpeedMagnitude](const auto& Entry) { return Entry.first < SpeedMagnitude; });
@@ -851,8 +849,7 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
     const std::optional<FTerrainHit> TerrainHit = QueryTerrainCollision(Terrain, { .Center = Player.Center, .Radius = Class.Radius }, { .Center = Candidate, .Radius = Class.Radius },
         Class.bOverWater);
 
-    // ponytail: objects are scanned after the terrain in object order instead of interleaved through the sweep endpoints; the nearest contact
-    // still wins, so only exact ties between a wall and an object can resolve differently.
+    // ponytail: objects are scanned after the terrain in object order instead of interleaved through the sweep endpoints; the nearest contact still wins, so only exact ties between a wall and an object can resolve differently.
     std::optional<FCollisionPoint> Contact = TerrainHit ? std::optional(TerrainHit->Point) : std::nullopt;
     FObjectBody* HitBody = nullptr;
     for (FObjectBody& Body : Bodies)
@@ -1282,14 +1279,12 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
         return std::unexpected(Class.error());
     }
 
-    // The recording build used Friction-threshold 0.001, the value commented out in the shipped OBJECT.3DC: with 0.01 the first
-    // recorded forward step would not move at all.
+    // The recording build used Friction-threshold 0.001, the value commented out in the shipped OBJECT.3DC: with 0.01 the first recorded forward step would not move at all.
     constexpr float RecordingFrictionThreshold = 0.001f;
     Class->FrictionThreshold = { .X = RecordingFrictionThreshold, .Y = RecordingFrictionThreshold };
 
-    // Record times are clock readings at each step start. Recording caps steps at 10 ms, so a frame whose poll measured E ms
-    // produced ceil(E / 10) records with steps of 10 ms and a remainder; E is the gap since the previous frame's first record.
-    // ponytail: the 1 ms clock can misplace E by one millisecond, which accounts for most remaining coasting mismatches.
+    // Record times are clock readings at each step start.
+    // Recording caps steps at 10 ms, so a frame whose poll measured E ms produced ceil(E / 10) records with steps of 10 ms and a remainder; E is the gap since the previous frame's first record. ponytail: the 1 ms clock can misplace E by one millisecond, which accounts for most remaining coasting mismatches.
     std::vector<uint32_t> StepLengths(Records.size(), DemoStepMilliseconds);
     uint32_t PreviousFrameTime = Records.front().Time - DemoStepMilliseconds;
     for (size_t First = 0; First < Records.size();)
@@ -1310,8 +1305,7 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
     constexpr float CloseTolerance = 0.5f;
     size_t Exact = 0;
     size_t Close = 0;
-    // ponytail: the replay keeps to terrain until weapons and object movement exist; the demo shoots barrels and crates and shoves pallets,
-    // so the recorded path crosses where those objects started.
+    // ponytail: the replay keeps to terrain until weapons and object movement exist; the demo shoots barrels and crates and shoves pallets, so the recorded path crosses where those objects started.
     FPlayerState Player = SpawnPlayer(*Object, *Class);
     FPlayerState FreeRun = Player;
     FLevel PickupLevel = *Level;
@@ -1328,8 +1322,7 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
         const uint32_t Step = StepLengths[Index];
         const FPlayerCommand Command = PlayerCommandFromInput(Record.Input);
 
-        // Each step starts from the recorded state: an accepted move stores velocity = (14 / step) * centre delta, and the facing comes
-        // from the next record so that the turn-timer phase, which predates the recording, cannot leak in.
+        // Each step starts from the recorded state: an accepted move stores velocity = (14 / step) * centre delta, and the facing comes from the next record so that the turn-timer phase, which predates the recording, cannot leak in.
         Player.Position = { .X = Record.X, .Y = Record.Y };
         Player.Center = CollisionFromWorld(Player.Position);
         Player.Velocity = {};
@@ -1774,8 +1767,7 @@ void AddCentreMessage(FMessages& Messages, std::string Text, const uint32_t Diff
 }
 
 
-// FUN_0041cf40 for a newly collected surprise: the surprise in effect ends, the new one waits half a second, and its text and blinking icon
-// appear for as long as it lasts.
+// FUN_0041cf40 for a newly collected surprise: the surprise in effect ends, the new one waits half a second, and its text and blinking icon appear for as long as it lasts.
 namespace
 {
 void CollectSurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Type, FMessages& Messages)
@@ -2093,8 +2085,7 @@ std::vector<FObjectBob> ActivateObjects(FLevel& Level, const std::span<FObjectBo
     return Bobs;
 }
 
-// ObjectCarriesKey at 0043dcb0: the newest carried key with the id decides; a code also needs all of its parts (ObjectFindCompleteCode at 00439270), counted as the first part
-// says and including part 1.
+// ObjectCarriesKey at 0043dcb0: the newest carried key with the id decides; a code also needs all of its parts (ObjectFindCompleteCode at 00439270), counted as the first part says and including part 1.
 bool CarriesKey(const std::vector<FCarriedKey>& Keys, const int Id)
 {
     const auto Newest = std::ranges::find(Keys.rbegin(), Keys.rend(), Id, &FCarriedKey::Id);
@@ -2193,8 +2184,8 @@ FBox CircleBox(const FCollisionPoint Center, const float Radius)
     return { .MinX = Center.X - Radius, .MinY = Center.Y - Radius, .MaxX = Center.X + Radius, .MaxY = Center.Y + Radius };
 }
 
-// ObjectOverlapsSolid at 00405df0: whether a solid object in the body's cell or the cells around it overlaps the body's box. Lying items are left
-// out.
+// ObjectOverlapsSolid at 00405df0: whether a solid object in the body's cell or the cells around it overlaps the body's box.
+// Lying items are left out.
 bool ObjectOverlapsSolid(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const FObjectBody& Door)
 {
     const FWorldCell DoorCell = CellOf(Door.State.Position);
@@ -2227,8 +2218,7 @@ bool ObjectOverlapsSolid(const FLevel& Level, const std::vector<FObjectBody*>& B
     return false;
 }
 
-// The key part of the gate and lift updates: Destroy-key takes every key or code part with the id from the holder (ObjectDestroyKeys at 0043dd20),
-// which DoorAnnounceKeyUse (00443500) announces when it is the player, and without Key-always-needed the door forgets its id.
+// The key part of the gate and lift updates: Destroy-key takes every key or code part with the id from the holder (ObjectDestroyKeys at 0043dd20), which DoorAnnounceKeyUse (00443500) announces when it is the player, and without Key-always-needed the door forgets its id.
 void UseKey(FDoor& Door, FPlayerInventory& Inventory, const EHolder Holder, FMessages& Messages)
 {
     constexpr uint32_t PlainColor = 0xffffff;
@@ -2329,8 +2319,9 @@ void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
     StartDoorAnimation(Door, ClosedAnimation);
 }
 
-// ObjectUpdateLevelExit at 00442bf0. A lift leaves when nothing stands on it and comes back after its delay; the player rides it once fully
-// inside its box, which returns true. A negative Reward is its fare.
+// ObjectUpdateLevelExit at 00442bf0.
+// A lift leaves when nothing stands on it and comes back after its delay; the player rides it once fully inside its box, which returns true.
+// A negative Reward is its fare.
 bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player,
     const int32_t Step, FMessages& Messages)
 {
@@ -2935,9 +2926,9 @@ Sound::FMixer* AnimationMixer = nullptr;
 // SoundSetListener's position, which the positional sounds measure from (DAT_00519430).
 FSoundEmitter Listener;
 
-// SoundDistanceVolume at 0045e4e0: full volume while the emitter lies within the descriptor's inner box (+0x28) on every axis, nothing beyond its
-// outer box (+0x34). In between the original scales by the distance between two radii (+0x40, +0x44) that AnimStampSoundChannels (00417a20) never sets, so the
-// division by zero leaves nothing there either. The boxes are DAT_0050d420 (400 on each axis) and DAT_0050d430 (800).
+// SoundDistanceVolume at 0045e4e0: full volume while the emitter lies within the descriptor's inner box (+0x28) on every axis, nothing beyond its outer box (+0x34).
+// In between the original scales by the distance between two radii (+0x40, +0x44) that AnimStampSoundChannels (00417a20) never sets, so the division by zero leaves nothing there either.
+// The boxes are DAT_0050d420 (400 on each axis) and DAT_0050d430 (800).
 int PositionalVolume(const FSoundEmitter& Emitter, const int Volume)
 {
     constexpr float InnerBox = 400.f;
@@ -2993,8 +2984,8 @@ FSoundEmitter MakeSoundEmitter(const std::string_view ChannelRange, const std::s
     return Emitter;
 }
 
-// AnimationFrameSound (0045ea70) picks a frame's sample by event flag 1 and its event value, and AnimationPlaySound (0045e6e0) plays it. The
-// descriptor's volume is the sound-fx channel volume when the class was set up (SoundGetVolume(2) in AnimStampSoundChannels (00417a20)).
+// AnimationFrameSound (0045ea70) picks a frame's sample by event flag 1 and its event value, and AnimationPlaySound (0045e6e0) plays it.
+// The descriptor's volume is the sound-fx channel volume when the class was set up (SoundGetVolume(2) in AnimStampSoundChannels (00417a20)).
 void PlayFrameSound(const Gaf::FAnimation& Animation, const Gaf::FAnimationFrame& Frame, FSoundTrack& Track, const FSoundEmitter* const Emitter)
 {
     constexpr uint32_t SoundEventFlag = 1;
@@ -3149,8 +3140,8 @@ std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, 
             .Emitter = MakeSoundEmitter(Object.Properties.Find("Sample-channel-range"), Object.Properties.Find("Sample-channel-priority"), Object.X, Object.Y,
                 Object.Altitude),
         };
-        // AnimInitializeGraphics shows the last frame of the animation for the activation state, and the timer starts full. Its fresh animation
-        // instance has no position yet (ObjectDraw gives it one), so a sound on that frame plays from the origin.
+        // AnimInitializeGraphics shows the last frame of the animation for the activation state, and the timer starts full.
+        // Its fresh animation instance has no position yet (ObjectDraw gives it one), so a sound on that frame plays from the origin.
         const bool bOpen = (Door.Flags & DoorOpen) != 0;
         FSoundEmitter Fresh = Door.Emitter;
         Fresh.X = Fresh.Y = Fresh.Altitude = 0.f;
@@ -3266,9 +3257,7 @@ std::expected<void, std::string> ArmSeeker(FCombat& Combat, const FLevel& Level,
 
 namespace
 {
-// surprise::FUN_0041c390: what a surprise does when it starts, unless another is in effect.
-// ponytail: the screen effects (darkness, extasy, gamma flashes, screen shake), Touch-and-destroy's and Invulnerability's attached FX, Time-warp's
-// trails, and how Triple-fire and Circular-fire change a shot are not ported; their flags are kept for when they are.
+// surprise::FUN_0041c390: what a surprise does when it starts, unless another is in effect. ponytail: the screen effects (darkness, extasy, gamma flashes, screen shake), Touch-and-destroy's and Invulnerability's attached FX, Time-warp's trails, and how Triple-fire and Circular-fire change a shot are not ported; their flags are kept for when they are.
 void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
     const ESurprise Type)
 {
@@ -3772,9 +3761,8 @@ std::expected<void, std::string> ArmSeeker(FCombat& Combat, const FLevel& Level,
 
 namespace
 {
-// LevelStartMapAnimations at 0041f0b0, which VzLoadLevel runs after its reseed and before EngineActivateObjects: every .3DX descriptor whose GAF
-// lies two folders below an Anim directory (Level3dxResolveEntry's kind 1) starts its named animation on RandomRange(1, frames). A name the
-// GAF lacks drops the descriptor without a draw. ponytail: the map animations themselves are not drawn yet, so the frames only keep the draws.
+// LevelStartMapAnimations at 0041f0b0, which VzLoadLevel runs after its reseed and before EngineActivateObjects: every .3DX descriptor whose GAF lies two folders below an Anim directory (Level3dxResolveEntry's kind 1) starts its named animation on RandomRange(1, frames).
+// A name the GAF lacks drops the descriptor without a draw. ponytail: the map animations themselves are not drawn yet, so the frames only keep the draws.
 void StartMapAnimations(const FLevel& Level, FResourceArchive& Archive, FRandom& Random)
 {
     std::unordered_map<int, std::vector<Gaf::FAnimation>> Loaded;
@@ -4410,8 +4398,7 @@ int AimDirection(const FObjectBody& Body)
     return Actor.bTwoPieces ? (Actor.TopPose - 1) / Actor.PosesPerDirection : Body.State.Direction;
 }
 
-// SeekerAimAndFire at 0042d2d0 for a body without a turret top: inside the weapon's Fire-Range, facing the target and not turning, the trigger
-// is pulled once the weapon's Delay has passed.
+// SeekerAimAndFire at 0042d2d0 for a body without a turret top: inside the weapon's Fire-Range, facing the target and not turning, the trigger is pulled once the weapon's Delay has passed.
 bool AimAndFire(const FCombat& Combat, const FObjectBody& Body, FActor& Actor, const FSeeker& Seeker, const FPlayerState& Target)
 {
     if (!OnLastSegment(Seeker.Work))
@@ -4453,8 +4440,7 @@ bool AimAndFire(const FCombat& Combat, const FObjectBody& Body, FActor& Actor, c
     return true;
 }
 
-// SeekerEngage at 0042caa0: turn toward the segment and drive along it; within Min-distance of the target, face it, back off when too close
-// and fire.
+// SeekerEngage at 0042caa0: turn toward the segment and drive along it; within Min-distance of the target, face it, back off when too close and fire.
 void Engage(FCombat* const Combat, FObjectBody& Body, FRouteWork& Work, FSeeker* const Seeker, const FPlayerState* const Target, const int32_t Step)
 {
     FActor& Actor = *Body.Actor;
@@ -4760,9 +4746,7 @@ bool StartPatrolLeg(FPatrol& Patrol, const FObjectBody& Body, const FLevel& Leve
     return Patrol.Work.Search.Start(Body.State.Center, CollisionFromWorld(Patrol.Goal));
 }
 
-// FUN_0042e040: a destination drawn at random from open ground in the window around the actor, retrying the last one once if its route
-// did not reach its last segment.
-// ponytail: the multiplayer reseed of the generator (session flags 0x18000) and the object check inside FUN_0042c130 are not ported.
+// FUN_0042e040: a destination drawn at random from open ground in the window around the actor, retrying the last one once if its route did not reach its last segment. ponytail: the multiplayer reseed of the generator (session flags 0x18000) and the object check inside FUN_0042c130 are not ported.
 bool StartRandomLeg(FRandomMove& Move, const FObjectBody& Body, const FTerrainCollision& Terrain, FRandom& Random)
 {
     const bool bRouteDone = Move.Work.Route && OnLastSegment(Move.Work);
@@ -5102,10 +5086,9 @@ struct FDrop
     float Y = 0.f;
 };
 
-// ObjectDropContents at 00437f80: a destroyed object leaves its class's HAVE objects, then each RANDOM one whose draw RandomRange(1, Out-of)
-// does not exceed its Chance. The class loader prepends both lists, so the last declared, and the derived class's before its parent's, come
-// first. The first object lands on the wreck and the others around it, alternately left and right and then in rows 10 pixels apart.
-// ponytail: objects carried at object +0x11c are not dropped, and a demo recording or replay would skip the RANDOM draws.
+// ObjectDropContents at 00437f80: a destroyed object leaves its class's HAVE objects, then each RANDOM one whose draw RandomRange(1, Out-of) does not exceed its Chance.
+// The class loader prepends both lists, so the last declared, and the derived class's before its parent's, come first.
+// The first object lands on the wreck and the others around it, alternately left and right and then in rows 10 pixels apart. ponytail: objects carried at object +0x11c are not dropped, and a demo recording or replay would skip the RANDOM draws.
 void DropContents(FRandom& Random, const FLevelObject& Object, std::vector<FDrop>& Drops)
 {
     constexpr int32_t FirstRing = 0x20;
@@ -5395,8 +5378,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         }
 
         FLevelObject& Object = Level.Objects[Body.ObjectIndex];
-        // A Two-pieces object's first death keeps it as a wreck (ObjectDestroy with its keep flag): it explodes and pays its reward, but drops
-        // nothing and still counts as an enemy.
+        // A Two-pieces object's first death keeps it as a wreck (ObjectDestroy with its keep flag): it explodes and pays its reward, but drops nothing and still counts as an enemy.
         const bool bFirstOfTwo = !Object.bWrecked && ParseLevelFloat(Object.Properties.Find("Two-pieces")).value_or(0.f) != 0.f;
         Object.bRemoved = !bFirstOfTwo;
         if (!bFirstOfTwo)
@@ -5733,8 +5715,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
 {
     // The check ignores the floating messages it raises.
     FMessages Messages;
-    // Every level's player spins on the spot for a few seconds with the trigger held, while the turrets that see it shoot back; each level must
-    // load its weapons and the player must fire.
+    // Every level's player spins on the spot for a few seconds with the trigger held, while the turrets that see it shoot back; each level must load its weapons and the player must fire.
     constexpr uint32_t StepMilliseconds = 14;
     constexpr uint32_t DurationMilliseconds = 6000;
     constexpr float SpriteSize = 64.f;
@@ -5971,8 +5952,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         Dropped += Combat->CreatedObjects.size();
         Combat->CreatedObjects.clear();
 
-        // Nine in ten generators must give birth within 20 seconds while the player waits at the start; the others have something standing on
-        // them, which holds a birth back (ObjectOverlapsSolid).
+        // Nine in ten generators must give birth within 20 seconds while the player waits at the start; the others have something standing on them, which holds a birth back (ObjectOverlapsSolid).
         constexpr uint32_t GeneratorMilliseconds = 20000;
         std::set<size_t> Parents;
         const FPlayerState Waiting = SpawnPlayer(*PlayerObject, *Class);

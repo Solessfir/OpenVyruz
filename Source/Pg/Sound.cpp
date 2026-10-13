@@ -102,8 +102,8 @@ struct FSoundRecord
 };
 static_assert(sizeof(FSoundRecord) == 36);
 
-// The device layer (SoundDeviceOpen (0047e9c0)) turns a volume step n = volume >> 8 into 873 * ln((n + 1) / 256) hundredths of a decibel, truncated, with
-// step 0 silent (-10000) and step 255 at full level. Pan attenuates the far side by the step of its distance from the far end.
+// The device layer (SoundDeviceOpen (0047e9c0)) turns a volume step n = volume >> 8 into 873 * ln((n + 1) / 256) hundredths of a decibel, truncated, with step 0 silent (-10000) and step 255 at full level.
+// Pan attenuates the far side by the step of its distance from the far end.
 constexpr int VolumeSteps = 256;
 constexpr int VolumeShift = 8;
 constexpr int PanShift = 7;

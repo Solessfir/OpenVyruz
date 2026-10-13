@@ -10,8 +10,7 @@ namespace Sound
 class FMixer;
 }
 
-// UpdateAnimation at 0045e7e0 holds each frame for its duration in ticks; VzRun fixes the tick at 14 ms through AnimationSetFixedPeriod
-// (0045e4c0), so the display period never applies.
+// UpdateAnimation at 0045e7e0 holds each frame for its duration in ticks; VzRun fixes the tick at 14 ms through AnimationSetFixedPeriod (0045e4c0), so the display period never applies.
 inline constexpr int32_t AnimationPeriodMilliseconds = 14;
 
 // __ftol truncates into 64 bits and its callers keep the low half; NaN and out-of-range values give the integer indefinite, whose low half is zero.
@@ -21,9 +20,8 @@ constexpr int32_t TruncateLow(const double Value)
     return Value > -Limit && Value < Limit ? int32_t(uint32_t(uint64_t(int64_t(Value)))) : 0;
 }
 
-// An object that plays its animation's sounds where it stands. AnimInitializeGraphics (00417b30, AnimStampSoundChannels (00417a20)) stamps the class's
-// Sample-channel-range and Sample-channel-priority on its GAF's sound descriptors, and ObjectDraw hands UpdateAnimation the object's position and
-// altitude, which makes the sounds positional (AnimationPlaySound at 0045e6e0).
+// An object that plays its animation's sounds where it stands.
+// AnimInitializeGraphics (00417b30) stamps, through AnimStampSoundChannels (00417a20), the class's Sample-channel-range and Sample-channel-priority on its GAF's sound descriptors, and ObjectDraw hands UpdateAnimation the object's position and altitude, which makes the sounds positional (AnimationPlaySound at 0045e6e0).
 struct FSoundEmitter
 {
     float X = 0.f;
@@ -56,8 +54,7 @@ void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animat
 FAnimationPlayback StartAnimation(const Gaf::FAnimation& Animation, const FSoundEmitter* Emitter = nullptr);
 // ObjectDraw at 00431ae0 shows a chosen frame by stepping back to the one before it and replaying the time left, which lands on it.
 void ShowFrame(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, uint32_t Frame, const FSoundEmitter* Emitter = nullptr);
-// UpdateAnimation's sound part, for animations stepped elsewhere: a frame with event flag 1 starts its GAF's sample, and a positional sound
-// follows its emitter while it plays.
+// UpdateAnimation's sound part, for animations stepped elsewhere: a frame with event flag 1 starts its GAF's sample, and a positional sound follows its emitter while it plays.
 void PlayFrameSound(const Gaf::FAnimation& Animation, const Gaf::FAnimationFrame& Frame, FSoundTrack& Track, const FSoundEmitter* Emitter);
 void FollowFrameSound(FSoundTrack& Track, const FSoundEmitter* Emitter);
 // The mixer that frames with a sound event play on; none leaves animations silent, as the verify modes run them.

@@ -205,8 +205,7 @@ int VerifyGafs(FResourceArchive& Archive)
             continue;
         }
 
-        // A frame with a sound event (flag 1) plays its GAF's SMP_ sample by event value; AnimationFrameSound (0045ea70) skips a zero value or a missing sample, which
-        // panel.gaf, v-panel.gaf and circular-fx.gaf have.
+        // A frame with a sound event (flag 1) plays its GAF's SMP_ sample by event value; AnimationFrameSound (0045ea70) skips a zero value or a missing sample, which panel.gaf, v-panel.gaf and circular-fx.gaf have.
         constexpr uint32_t SoundEventFlag = 1;
         for (const Gaf::FAnimation& Animation : Gaf->Animations)
         {
@@ -364,8 +363,7 @@ struct FObjectSprite
     bool bShadow = false;
     // A tank's turret top: the animation after its 24 body poses, one frame per top pose (ObjectDraw at 00431ae0, kind 0x20).
     bool bTop = false;
-    // A Use-delta-packing lift or gate stores later frames as changes over the first, which ObjectDraw (00431ae0, FUN_00433710) draws
-    // underneath first.
+    // A Use-delta-packing lift or gate stores later frames as changes over the first, which ObjectDraw (00431ae0, FUN_00433710) draws underneath first.
     bool bDeltaBase = false;
     // A turret's fixed base: the animation after its 24 top poses, drawn under the top (ObjectDraw, kind 0x1e).
     bool bTurretBase = false;
@@ -463,9 +461,8 @@ std::vector<std::optional<FActorAnimation>> CreateActorAnimations(const std::spa
     return Result;
 }
 
-// The actor kinds of ObjectDraw (00431ae0), which runs for every object in the view's cells once per step in the update pass and again in the frame's
-// draw pass; both advance walks by the step. Cops, jeeps, tanks and helis show their pose as a frame of a fixed animation; jeep and tank
-// animations have a single looping frame, so playing them changes nothing.
+// The actor kinds of ObjectDraw (00431ae0), which runs for every object in the view's cells once per step in the update pass and again in the frame's draw pass; both advance walks by the step.
+// Cops, jeeps, tanks and helis show their pose as a frame of a fixed animation; jeep and tank animations have a single looping frame, so playing them changes nothing.
 void AnimateActors(std::vector<std::optional<FActorAnimation>>& Actors, const std::span<FObjectBody> Bodies, const FLevel& Level, const FObjectSprites& Sprites,
     const FViewCells View, const int32_t StepMilliseconds)
 {
@@ -589,9 +586,7 @@ void DrawHudSprite(FRenderer& Renderer, const FSpriteSheet& Sheet, const FHudSpr
     }
 }
 
-// The map's picture (MapToggle at 00436460 with GobRenderMap at 0046b120): every MAP_ layer from the first, each block stretched into its cell's share of a screen-sized
-// bitmap, which starts black; pixels left at 0x800 are transparent. ponytail: point-samples the level instead of stretching block by block, so cell
-// edges may round a pixel differently.
+// The map's picture (MapToggle at 00436460 with GobRenderMap at 0046b120): every MAP_ layer from the first, each block stretched into its cell's share of a screen-sized bitmap, which starts black; pixels left at 0x800 are transparent. ponytail: point-samples the level instead of stretching block by block, so cell edges may round a pixel differently.
 Gaf::FFrame RenderLevelMap(const FLevel& Level)
 {
     constexpr uint16_t MapColorKey = 0x800;
@@ -902,8 +897,7 @@ void ShowImage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& 
     }
 }
 
-// The story and ending screens' text page (FUN_004027f0 with the callback at 00402640): a full-screen Targa image and a text in v-bonus.gaf font 4
-// with word wrap from Left, 100 to the screen's right edge, until a key or mouse button goes down (FUN_00401880).
+// The story and ending screens' text page (FUN_004027f0 with the callback at 00402640): a full-screen Targa image and a text in v-bonus.gaf font 4 with word wrap from Left, 100 to the screen's right edge, until a key or mouse button goes down (FUN_00401880).
 void ShowTextPage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FPanel& Panel, const std::string_view ImagePath,
     const std::string_view TextPath, const int32_t Left)
 {
@@ -1058,8 +1052,8 @@ FMenuSheets CreateMenuSheets(FRenderer& Renderer, const FMenuArt& Art)
     return { .Menu = Renderer.CreateSpriteSheet(Art.GetBitmaps(EHudSheet::Menu)), .VMenu = Renderer.CreateSpriteSheet(Art.GetBitmaps(EHudSheet::VMenu)) };
 }
 
-// RunMenu at 00421050: steps and draws a menu until an item is chosen, or nullopt when the window closes. A menu shown again keeps the
-// cursor where its last run left it (menu +0x20).
+// RunMenu at 00421050: steps and draws a menu until an item is chosen, or nullopt when the window closes.
+// A menu shown again keeps the cursor where its last run left it (menu +0x20).
 std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, const FMenu& Menu, FRandom& Random,
     std::optional<std::pair<int32_t, int32_t>>& Cursor)
 {
@@ -1072,8 +1066,8 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
 
     SetScreenCursor(Window, State.CursorX, State.CursorY);
     glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
-    // PgPoll reports presses, so a key held from before the menu does nothing. Escape and Backspace choose the default item, Space and Return
-    // the selected one, and the left button the one under the cursor.
+    // PgPoll reports presses, so a key held from before the menu does nothing.
+    // Escape and Backspace choose the default item, Space and Return the selected one, and the left button the one under the cursor.
     static constexpr std::array<int, 7> Keys = { GLFW_KEY_ESCAPE, GLFW_KEY_BACKSPACE, GLFW_KEY_SPACE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_UP, GLFW_KEY_DOWN };
     constexpr size_t MouseButton = Keys.size();
     const auto ReadDown = [Window]
@@ -1250,8 +1244,7 @@ std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Render
     return Item && *Item < std::min(Settings.size(), MaxSessions) ? Item : std::nullopt;
 }
 
-// The credits (ShowCredits at 00402990 with the scroller at 00402400): credits.gaf, and credits-en.txt in v-menu.gaf font 4 rising from the bottom of the clip
-// 380, 0 to 639, 479 by half a pixel per step, until it has passed the top or a key or mouse button goes down.
+// The credits (ShowCredits at 00402990 with the scroller at 00402400): credits.gaf, and credits-en.txt in v-menu.gaf font 4 rising from the bottom of the clip 380, 0 to 639, 479 by half a pixel per step, until it has passed the top or a key or mouse button goes down.
 void ShowCredits(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art)
 {
     constexpr int32_t ClipLeft = 380;
@@ -1318,8 +1311,8 @@ void ShowCredits(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive
     }
 }
 
-// The slide show (ShowSlides at 00404aa0): vz-slide.rsc's slides\slide-001.tga to slide-031.tga, each centred for up to 4 seconds, round again while any showed,
-// until a key or mouse button goes down. The archive sits beside vz-data.rsc in any case.
+// The slide show (ShowSlides at 00404aa0): vz-slide.rsc's slides\slide-001.tga to slide-031.tga, each centred for up to 4 seconds, round again while any showed, until a key or mouse button goes down.
+// The archive sits beside vz-data.rsc in any case.
 void ShowSlides(GLFWwindow* const Window, FRenderer& Renderer, const std::filesystem::path& DataFolder)
 {
     constexpr int LastSlide = 0x1f;
@@ -1383,8 +1376,8 @@ void ShowSlides(GLFWwindow* const Window, FRenderer& Renderer, const std::filesy
     Renderer.ReleaseSpriteSheets();
 }
 
-// The score table (ScoreShowTable at 00401c40 with ScoreDrawLoop at 00401670): score.gaf, then the table, until a key or mouse button goes down. Record, when given, joins
-// vz.sco first (SaveScores at 0043e470 with its second argument set), and its row is brightened.
+// The score table (ScoreShowTable at 00401c40 with ScoreDrawLoop at 00401670): score.gaf, then the table, until a key or mouse button goes down.
+// Record, when given, joins vz.sco first (SaveScores at 0043e470 with its second argument set), and its row is brightened.
 void ShowScores(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, const std::optional<FScoreRecord>& Record)
 {
     const std::filesystem::path Path = UserDataDirectory() / "vz.sco";
@@ -1421,8 +1414,7 @@ void ShowScores(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive&
     }
 }
 
-// MenuOptions at 004229a0, the options: Video, Audio, Control, User settings and Language, then Back, the default. ponytail: their own menus wait for the
-// settings they change; the port keeps the highest detail preset, the default keys, Normal difficulty and English.
+// MenuOptions at 004229a0, the options: Video, Audio, Control, User settings and Language, then Back, the default. ponytail: their own menus wait for the settings they change; the port keeps the highest detail preset, the default keys, Normal difficulty and English.
 void RunOptionsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random)
 {
     const FMenu Menu{
@@ -1453,9 +1445,8 @@ void RunOptionsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuAr
     }
 }
 
-// MenuExtras at 00427820, the extras: Scores, Credits, Intro, Slide Show while vz-slide.rsc is there, and Demo, then Back, the default. The original's
-// Russian build prints this menu's title and its Scores and Intro items in Russian even in English. ponytail: the scores table, the intro and
-// demo is played by the main menu's caller.
+// MenuExtras at 00427820, the extras: Scores, Credits, Intro, Slide Show while vz-slide.rsc is there, and Demo, then Back, the default.
+// The original's Russian build prints this menu's title and its Scores and Intro items in Russian even in English. ponytail: the scores table, the intro and demo is played by the main menu's caller.
 bool RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random,
     const std::filesystem::path& DataFolder)
 {
@@ -1533,8 +1524,9 @@ enum class EMenuChoice : uint8_t
     Quit,
 };
 
-// MenuMain at 004271a0, the main menu. Options and Extras open nothing yet. RandomNext's draws here do not matter, since every level reseeds the
-// generator.
+// MenuMain at 004271a0, the main menu.
+// Options and Extras open nothing yet.
+// RandomNext's draws here do not matter, since every level reseeds the generator.
 EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, const FSession* const Session,
     const std::filesystem::path& SessionFolder, const std::filesystem::path& DataFolder, FSession& Chosen)
 {
@@ -1655,8 +1647,8 @@ struct FLevelEnd
     std::string NextLevel;
 };
 
-// MenuGame at 004223e0, the menu Escape opens during a level: Resume Game, Options, Retry Level (shown while there is a default session, which a
-// running level always has) and End Game. Options opens nothing yet.
+// MenuGame at 004223e0, the menu Escape opens during a level: Resume Game, Options, Retry Level (shown while there is a default session, which a running level always has) and End Game.
+// Options opens nothing yet.
 std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random)
 {
     enum EItem : size_t
@@ -1727,16 +1719,14 @@ struct FSettings
 {
     std::filesystem::path Folder;
     std::string PlayerName;
-    // use-mouse (keyword 0x124) makes the mouse the input device (session +0x165c = 3) and turns the absolute command on: the ship turns toward
-    // the sight, the left button fires, the right one thrusts, Down backs off and Left and Right strafe.
+    // use-mouse (keyword 0x124) makes the mouse the input device (session +0x165c = 3) and turns the absolute command on: the ship turns toward the sight, the left button fires, the right one thrusts, Down backs off and Left and Right strafe.
     bool bMouse = false;
     FVideoDetails Details;
     FAudioSettings Audio;
 };
 
-// One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a
-// menu ends or restarts the level. A level loaded from a session takes its objects from Restore; any other becomes the default session, in
-// Session and on disk.
+// One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a menu ends or restarts the level.
+// A level loaded from a session takes its objects from Restore; any other becomes the default session, in Session and on disk.
 std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
     const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
     FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, const FSettings& Settings,
@@ -1764,8 +1754,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         PlayerObject->Y = Y;
     }
 
-    // Level view: MAP_ layers drawn bottom-up with the placed objects. The player drives with the original movement code; levels
-    // without a player fall back to scrolling with the arrow keys.
+    // Level view: MAP_ layers drawn bottom-up with the placed objects.
+    // The player drives with the original movement code; levels without a player fall back to scrolling with the arrow keys.
     const FSpriteSheet Blocks = Renderer.CreateSpriteSheet(Level->Blocks);
     std::expected<FObjectSprites, std::string> Objects = CreateObjectSprites(Archive, Renderer, *Level);
     if (!Objects)
@@ -1797,8 +1787,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     }
 
     std::optional<std::string> NextLevel;
-    // The panel's sheets, and one single-pixel frame per radar dot colour: PanelDrawRadar plots palette indices 0xf9 to 0xfc, which ColorMapInit
-    // (0046eb60) sets to red, green, yellow and blue from DAT_0051bff8.
+    // The panel's sheets, and one single-pixel frame per radar dot colour: PanelDrawRadar plots palette indices 0xf9 to 0xfc, which ColorMapInit (0046eb60) sets to red, green, yellow and blue from DAT_0051bff8.
     const FSpriteSheet PanelSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Panel)) : FSpriteSheet{};
     const FSpriteSheet VPanelSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::VPanel)) : FSpriteSheet{};
     const FSpriteSheet BonusSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Bonus)) : FSpriteSheet{};
@@ -1979,8 +1968,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 Settings.PlayerName));
     };
     const std::vector<FSavingPlot> SavingPlots = FindSavingPlots(*Level);
-    // SessionLoad (0042ba00) in mode 0 leaves a count running, so the plot a saved session starts on does not save again until the player
-    // leaves it. The original keeps the done bit from its last save; the port sets it, as after the save that wrote the session.
+    // SessionLoad (0042ba00) in mode 0 leaves a count running, so the plot a saved session starts on does not save again until the player leaves it.
+    // The original keeps the done bit from its last save; the port sets it, as after the save that wrote the session.
     FSavingState Saving{ .bCounting = Restore && Restore->Objects, .bDone = Restore && Restore->Objects };
     // The level objects follow their bodies and the player after the steps; a session written during the steps needs them too.
     const auto SyncObjects = [&]
@@ -2091,8 +2080,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     std::optional<uint32_t> HeardWeaponSwitches;
     // Session +0x2090: the shield alarm's repeat timer.
     int32_t ShieldAlarmTimer = 0;
-    // EngineApplyDisplayAndCursor (0042f2d0) loads Data\Menu\cursor.gaf's sight (session +0x25b8) for the mouse; EngineRunLevel plays it by the last step and draws it at
-    // the mouse after everything else. Any other device hides the cursor altogether.
+    // EngineApplyDisplayAndCursor (0042f2d0) loads Data\Menu\cursor.gaf's sight (session +0x25b8) for the mouse; EngineRunLevel plays it by the last step and draws it at the mouse after everything else.
+    // Any other device hides the cursor altogether.
     const std::optional<FObjectGaf> SightGaf = Settings.bMouse ? LoadObjectGaf(Archive, "common\\data\\menu\\cursor.gaf") : std::nullopt;
     const Gaf::FAnimation* const Sight = SightGaf && !SightGaf->Animations.empty() ? &SightGaf->Animations.front() : nullptr;
     FAnimationPlayback SightPlayback = Sight ? StartAnimation(*Sight) : FAnimationPlayback{};
@@ -2123,8 +2112,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
         }
 
-        // EnginePause (0043b8d0): action-pause (P) closes an open map, or freezes the game (session +0x20 bit 0x1000000) under pause.gaf until P
-        // again; meanwhile only P is read and the clock's time is dropped.
+        // EnginePause (0043b8d0): action-pause (P) closes an open map, or freezes the game (session +0x20 bit 0x1000000) under pause.gaf until P again; meanwhile only P is read and the clock's time is dropped.
         const bool bPausePressed = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS && !bPauseKeyDown;
         bPauseKeyDown = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS;
         if (bPausePressed && Player && !Demo)
@@ -2194,8 +2182,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 return FLevelEnd{ .Kind = ELevelEnd::Lift, .NextLevel = DebugLevels[Next] };
             }
 
-            // EngineReadActionKeys (0043b5c0) with the default keys of DAT_00509298: Backspace is action-next-weapon and 1 to 9 are action-weapon-1 to
-            // 9 (FUN_0043bad0 skips the slot in hand); Tab is action-cycle-panels, Left Shift stepping back, and M is action-map.
+            // EngineReadActionKeys (0043b5c0) with the default keys of DAT_00509298: Backspace is action-next-weapon and 1 to 9 are action-weapon-1 to 9 (FUN_0043bad0 skips the slot in hand); Tab is action-cycle-panels, Left Shift stepping back, and M is action-map.
             const bool bTabPressed = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS && !bTabDown;
             bTabDown = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
             if (bTabPressed && Panel && !Demo)
@@ -2246,8 +2233,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         while (RemainingMilliseconds != 0)
         {
             const uint32_t StepMilliseconds = NextGameStep(RemainingMilliseconds, FramePeriod, Demo != nullptr);
-            // DemoReplayStep (004291d0) takes the next record's input once the game clock reaches its time, staying on the last record; then
-            // EngineReplayActionKeys (0043bb00) replays its actions, of which 0x8000 (action-menu) ends the demo.
+            // DemoReplayStep (004291d0) takes the next record's input once the game clock reaches its time, staying on the last record; then EngineReplayActionKeys (0043bb00) replays its actions, of which 0x8000 (action-menu) ends the demo.
             uint32_t DemoInput = 0;
             if (Demo && Combat && Player)
             {
@@ -2315,10 +2301,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                     StepCodeTimeouts(Inventory, *Level, Messages, StepMilliseconds);
 
-                    // ReadPlayerInput: Reversed-commands swaps left with right and the two strafes; Blocked-motor ignores every command. The default
-                    // strafes are Left Shift with an arrow, which then does not turn (InputActionPressed at 0041d4c0); A and D strafe too.
-                    // With the mouse as device (DAT_00509368's defaults) Left and Right strafe on their own, the right button thrusts (Up too), and
-                    // the turn comes from the sight unless that side strafes.
+                    // ReadPlayerInput: Reversed-commands swaps left with right and the two strafes; Blocked-motor ignores every command.
+                    // The default strafes are Left Shift with an arrow, which then does not turn (InputActionPressed at 0041d4c0); A and D strafe too.
+                    // With the mouse as device (DAT_00509368's defaults) Left and Right strafe on their own, the right button thrusts (Up too), and the turn comes from the sight unless that side strafes.
                     const FSurpriseState& Surprises = Inventory.Surprises;
                     const bool bShift = Pressed(GLFW_KEY_LEFT_SHIFT) || Settings.bMouse;
                     const bool bLeftKey = Pressed(GLFW_KEY_LEFT);
@@ -2347,8 +2332,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     const bool bStrafeRight = Surprises.bReversed ? bSideLeft : bSideRight;
                     FPlayerCommand Command = Surprises.bBlockedMotor ? FPlayerCommand{}
                                                                       : PlayerCommandFromKeys(bForward, Pressed(GLFW_KEY_DOWN), bLeft, bRight, bStrafeLeft, bStrafeRight);
-                    // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its
-                    // velocity in collision units, and drives with the replayed input.
+                    // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its velocity in collision units, and drives with the replayed input.
                     if (Demo && DemoCursor >= 1)
                     {
                         const FDemoRecord& Placed = (*Demo)[DemoCursor - 1];
@@ -2577,8 +2561,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
-        // ShieldAlarmUpdate (0043e370), each frame: with the panel in mode 0 or 1 and the shield at 1% or less, shield-alarm.wav sounds once a second and, with
-        // HUD Green Info, "DANGER : SHIELD IS LOW" stays up at 100, 100; the other modes show the bars' own warning.
+        // ShieldAlarmUpdate (0043e370), each frame: with the panel in mode 0 or 1 and the shield at 1% or less, shield-alarm.wav sounds once a second and, with HUD Green Info, "DANGER : SHIELD IS LOW" stays up at 100, 100; the other modes show the bars' own warning.
         if (Player && Panel && !DeathTimer && Panel->GetMode() <= 1)
         {
             constexpr float AlarmRatio = 0.01f;
@@ -2615,8 +2598,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
-        // EngineRunLevel runs the motor (PlayerUpdateMotorSound (00445c50)) while the player lives and no lift is taking it away. The darkness and the extasy surprises
-        // play their own tunes (SurpriseStart at 0041c390) and give the previous one back when they end (SurpriseEnd).
+        // EngineRunLevel runs the motor (PlayerUpdateMotorSound (00445c50)) while the player lives and no lift is taking it away.
+        // The darkness and the extasy surprises play their own tunes (SurpriseStart at 0041c390) and give the previous one back when they end (SurpriseEnd).
         if (GameAudio && Player && PlayerClass)
         {
             if (Inventory.Energy > 0.f && !NextLevel)
@@ -2740,8 +2723,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             std::stable_sort(Sprites.begin(), Sprites.end(), [](const FObjectSprite& A, const FObjectSprite& B) { return SpriteDrawsBefore(A.Depth, B.Depth); });
         }
 
-        // ObjectDraw's fade (object +0x170): an invisible player fades out by one step a frame, down to a quarter of full alpha, and back in once
-        // visible again, drawing in mode 3 until the counter is full.
+        // ObjectDraw's fade (object +0x170): an invisible player fades out by one step a frame, down to a quarter of full alpha, and back in once visible again, drawing in mode 3 until the counter is full.
         constexpr float FadeAlphaStep = 0.02f;
         constexpr float MinPlayerAlpha = 0.25f;
         if (Player && Player->bInvisible)
@@ -2754,9 +2736,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         const float PlayerAlpha = std::max(MinPlayerAlpha, float(PlayerFade) * FadeAlphaStep);
-        // The player's layers from its shadow GAF (AnimInitializeGraphics at 00417b30, kind 0x18), one frame per pose and left out while it fades
-        // (ObjectDraw at 00431ae0): the reactor glow under the body and over it while the reactor timer runs, grey as bright as the speed is a share
-        // of Thrust.Max, unless Reactor FX is off, and the front light, off while the motor is blocked or with low details.
+        // The player's layers from its shadow GAF (AnimInitializeGraphics at 00417b30, kind 0x18), one frame per pose and left out while it fades (ObjectDraw at 00431ae0): the reactor glow under the body and over it while the reactor timer runs, grey as bright as the speed is a share of Thrust.Max, unless Reactor FX is off, and the front light, off while the motor is blocked or with low details.
         if (Player && PlayerFade >= FullFade)
         {
             const auto Shadow = Objects->SheetIndices.find(PlayerObject->ShadowGafPath);
@@ -2933,8 +2913,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             DrawHud(Panel->Draw(PanelValues(), Radar, int(ScreenWidth), int(ScreenHeight), Combat ? Combat->MiscRandom : NoMiscRandom));
             Panel->PostWarnings(PanelValues(), Messages);
             PayForMap();
-            // PanelUpdate with HUD Green Info: while locked, one of four warnings by the game clock, held ten seconds; with the bars showing a
-            // shield at 1% or less, Shield Low, held fifteen.
+            // PanelUpdate with HUD Green Info: while locked, one of four warnings by the game clock, held ten seconds; with the bars showing a shield at 1% or less, Shield Low, held fifteen.
             if (Settings.Details.bGreenInfo)
             {
                 const FPanelValues Values = PanelValues();
@@ -2961,8 +2940,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             GameAudio->UpdateVoices();
         }
 
-        // PanelDrawBigRadar (004362a0) after the panel: the map, then icons scaled from the level's size, the player's (animation 21) and every lift's
-        // (23, lift) and saving plot's (25, saveuk), each list from its last.
+        // PanelDrawBigRadar (004362a0) after the panel: the map, then icons scaled from the level's size, the player's (animation 21) and every lift's (23, lift) and saving plot's (25, saveuk), each list from its last.
         if (bMapShown && MapSheet && Panel && Player)
         {
             constexpr size_t PlayerIcon = 21;
@@ -3042,8 +3020,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             FpsFrames = 0;
         }
 
-        // EngineRunLevel ends the game after a starred lift: the registered game's two ending pages over theend.tga (FUN_00402890), then the
-        // score table and the menu.
+        // EngineRunLevel ends the game after a starred lift: the registered game's two ending pages over theend.tga (FUN_00402890), then the score table and the menu.
         if (NextLevel && NextLevel->starts_with('*'))
         {
             constexpr int32_t FirstPageLeft = 0x46;
@@ -3248,9 +3225,8 @@ int main(const int ArgCount, char** const Args)
         std::fprintf(stderr, "No menus: %s\n", MenuArt.error().c_str());
     }
 
-    // ConfigLoad (0042f570) reads vzconf.txt from the game folder, else the archive's VZCONF.TXT: session-name names the session folder and the
-    // player, use-keyboard, use-joypad and use-mouse choose the input device, the last set one winning, and the detail keywords set the Video
-    // Details options. A flag is set when its value reads as a non-zero number (atoi).
+    // ConfigLoad (0042f570) reads vzconf.txt from the game folder, else the archive's VZCONF.TXT: session-name names the session folder and the player, use-keyboard, use-joypad and use-mouse choose the input device, the last set one winning, and the detail keywords set the Video Details options.
+    // A flag is set when its value reads as a non-zero number (atoi).
     FSettings Settings{ .PlayerName = "Player" };
     {
         struct FDetailKey

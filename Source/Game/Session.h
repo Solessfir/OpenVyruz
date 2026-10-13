@@ -61,9 +61,8 @@ struct FSession
     std::optional<std::vector<FSessionObject>> Objects;
 };
 
-// Level3doWrite (004163a0) visits the grid from its last row and column back to the first, each cell's newest object first, so a level
-// loaded from the session activates its objects in that order. Objects carried keys refer to are kept as removed; KeyObjects maps the
-// keys' object indices to the snapshot's.
+// Level3doWrite (004163a0) visits the grid from its last row and column back to the first, each cell's newest object first, so a level loaded from the session activates its objects in that order.
+// Objects carried keys refer to are kept as removed; KeyObjects maps the keys' object indices to the snapshot's.
 std::vector<FSessionObject> CaptureObjects(const FLevel& Level, std::span<const FObjectBody> Bodies, std::span<const FDoor> Doors, std::vector<FCarriedKey>& Keys);
 // Replaces the level's objects with the snapshot's, as loading the session's .3DO would create them.
 void RestoreObjects(FLevel& Level, std::span<const FSessionObject> Objects);
@@ -87,6 +86,5 @@ bool WriteSavedSession(const std::filesystem::path& Directory, const FSession& S
 
 class FResourceArchive;
 
-// The --verify-game check: every level's objects survive a session written and read back, with the removed ones gone, an object created during
-// play and changed doors; and a saving plot counts down, refuses without the cash and saves once with it.
+// The --verify-game check: every level's objects survive a session written and read back, with the removed ones gone, an object created during play and changed doors; and a saving plot counts down, refuses without the cash and saves once with it.
 std::expected<std::string, std::string> VerifySessions(FResourceArchive& Archive);

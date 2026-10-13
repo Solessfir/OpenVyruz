@@ -126,8 +126,7 @@ struct FPlayerState
     bool bPushed = false;
     // Object flag 8: seekers and gates do not find the object, and the player takes no damage.
     bool bInvisible = false;
-    // Object +0x258: forward thrust sets it to a second and every other step runs it down (EngineUpdateObjects at 004406e0); ObjectDraw shows
-    // the player's reactor glow while it lasts.
+    // Object +0x258: forward thrust sets it to a second and every other step runs it down (EngineUpdateObjects at 004406e0); ObjectDraw shows the player's reactor glow while it lasts.
     uint32_t ReactorMilliseconds = 0;
 };
 
@@ -216,8 +215,7 @@ struct FWeaponState
     float Slope = 0.f;
     // Weapon flag 1, flipped on every shot of an Alternated-fire weapon.
     bool bAlternateSide = false;
-    // The trigger was pulled since the last frame's weapon sounds, and the owner's object flags 0x10000 and 0x20000 (ObjectsUpdateWeaponSounds
-    // at 0043df70): its start sound or its fire sound is under way.
+    // The trigger was pulled since the last frame's weapon sounds, and the owner's object flags 0x10000 and 0x20000 (ObjectsUpdateWeaponSounds at 0043df70): its start sound or its fire sound is under way.
     bool bSoundTrigger = false;
     bool bSoundStarting = false;
     bool bSoundFiring = false;
@@ -330,8 +328,7 @@ struct FActor
     bool bTwoPieces = false;
     // Tanks, walkers and spiders scale the segment pull by 0.01 (DAT_005095b8) in ObjectComputeDisplacement.
     float CorrectionScale = 1.f;
-    // Spiders (kind 0x1f) stop only at every sixth pose, drive only when stopped there, take only straight axis routes to a target and never
-    // thrust for their seeker.
+    // Spiders (kind 0x1f) stop only at every sixth pose, drive only when stopped there, take only straight axis routes to a target and never thrust for their seeker.
     bool bSpider = false;
     int TopPose = 1;
     int TopTargetPose = 1;
@@ -489,8 +486,8 @@ enum EDoorFlag : uint32_t
     DoorNeedsCode = 0x100,
 };
 
-// A gate (TYPE Gate, attribute kind 4) or a lift (TYPE Lift, kind 3). The object's first animation leads to open or present, its second
-// to closed or away; each plays once and holds its last frame.
+// A gate (TYPE Gate, attribute kind 4) or a lift (TYPE Lift, kind 3).
+// The object's first animation leads to open or present, its second to closed or away; each plays once and holds its last frame.
 struct FDoor
 {
     size_t ObjectIndex = 0;
@@ -507,8 +504,7 @@ struct FDoor
     std::array<Gaf::FAnimation, 2> Animations;
     size_t Animation = 0;
     FAnimationPlayback Playback;
-    // Where its animation sounds play from, with its class's sample channels. ponytail: the original advances these Graphic-update-needed animations in the
-    // object update, outside ObjectDraw's position copy; whether their instance position lags behind the object is not checked in the running game.
+    // Where its animation sounds play from, with its class's sample channels. ponytail: the original advances these Graphic-update-needed animations in the object update, outside ObjectDraw's position copy; whether their instance position lags behind the object is not checked in the running game.
     FSoundEmitter Emitter;
 };
 
@@ -548,8 +544,7 @@ struct FAmmoClass
     float DamageZone = 0.f;
     uint32_t DamageAfter = 0;
     std::string HitEffect;
-    // The damage and area weapon selection lists (FUN_00437740): the TYPE Ammo block's, or the largest of the class's Ammo and Explosion blocks
-    // when either is zero.
+    // The damage and area weapon selection lists (FUN_00437740): the TYPE Ammo block's, or the largest of the class's Ammo and Explosion blocks when either is zero.
     int ListedDamage = 0;
     int ListedArea = 0;
     // Usable-when-invisible (the ammo attribute's flag 8): only such ammo fires while the player is invisible.
@@ -602,8 +597,8 @@ struct FProjectile
     size_t Owner = 0;
 };
 
-// The Video Details options (session +0x27e0) that the port follows. ConfigLoad (0042f570) sets them from vzconf.txt's shadow, reactor-fx,
-// hud-green-info, translucent-panel, tv-borders and low-details (or high-details) keywords; the defaults are the Max preset (MenuVideoDetails at 004235a0).
+// The Video Details options (session +0x27e0) that the port follows.
+// ConfigLoad (0042f570) sets them from vzconf.txt's shadow, reactor-fx, hud-green-info, translucent-panel, tv-borders and low-details (or high-details) keywords; the defaults are the Max preset (MenuVideoDetails at 004235a0).
 struct FVideoDetails
 {
     // Flag 2: object shadows.
@@ -629,8 +624,8 @@ struct FCombat
     // The player's ADD Weapon entries, as indices into Weapons, and the one in hand.
     std::vector<size_t> PlayerWeapons;
     FWeaponState PlayerWeapon;
-    // Session +0x1028: the 1-based weapon slot in hand; a slot past the player's weapons leaves it unarmed. Each ADD Weapon keeps its own
-    // trigger state, which PlayerSlotStates holds for the slots not in hand.
+    // Session +0x1028: the 1-based weapon slot in hand; a slot past the player's weapons leaves it unarmed.
+    // Each ADD Weapon keeps its own trigger state, which PlayerSlotStates holds for the slots not in hand.
     size_t PlayerSlot = 1;
     // Counts PlayerSelectWeapon's switches, each of which plays weapon-switch.wav.
     uint32_t WeaponSwitches = 0;
@@ -643,8 +638,7 @@ struct FCombat
     std::vector<FEffectClass> EffectClasses;
     std::vector<FEffect> Effects;
     FRandom Random;
-    // Session +0x259c, the Misc stream of EngineCreateRandomStreams (0043c7a0), which EngineRunLevel seeds like the shared generator; the panel's weapon lights draw
-    // from it (RandomPushStream at 00428e20, RandomPopStream at 00428eb0).
+    // Session +0x259c, the Misc stream of EngineCreateRandomStreams (0043c7a0), which EngineRunLevel seeds like the shared generator; the panel's weapon lights draw from it (RandomPushStream at 00428e20, RandomPopStream at 00428eb0).
     FRandom MiscRandom;
     // Session +0x20 bit 0x200000: EngineUpdateObjects clears it, and SeekerUpdate sets it for a seeker engaging the player.
     bool bPlayerLocked = false;
@@ -701,9 +695,7 @@ static_assert(sizeof(FDemoRecord) == 20);
 std::expected<std::vector<FDemoRecord>, std::string> LoadDemo(FResourceArchive& Archive);
 // Demo semantics of ReplayPlayerInput (00438800): strafing cancels turning.
 FPlayerCommand PlayerCommandFromInput(uint32_t InputBits);
-// With the mouse as input device, the turn of InputReadDirection (0041d7e0) toward the sight, given the screen vector from the player to it:
-// the short way round (DirectionTurnCommand at 00436600), none when the sight lies straight behind or, while the player moves, within one
-// direction of its facing.
+// With the mouse as input device, the turn of InputReadDirection (0041d7e0) toward the sight, given the screen vector from the player to it: the short way round (DirectionTurnCommand at 00436600), none when the sight lies straight behind or, while the player moves, within one direction of its facing.
 EPlayerTurn TurnTowardSight(const FPlayerState& Player, FCollisionPoint ScreenVector);
 
 std::expected<FMovementClass, std::string> ReadMovementClass(const FLevelObject& Object);
@@ -715,8 +707,7 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, size_t Index);
 // Every generator's birth cycle for one step; new products join Bodies and Combat.CreatedObjects.
 void StepGenerators(FCombat& Combat, FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTarget& Player, uint32_t StepMilliseconds);
 std::vector<FPickup> CreatePickups(const FLevel& Level);
-// The 1-based slot "next weapon" moves to (FUN_004376a0): the first after the one in hand, wrapping after slot 9, whose ammo stock is not empty,
-// or the one in hand when none is.
+// The 1-based slot "next weapon" moves to (FUN_004376a0): the first after the one in hand, wrapping after slot 9, whose ammo stock is not empty, or the one in hand when none is.
 size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inventory);
 // The player's death branch of EngineUpdateObjects (004406e0): ObjectDestroy keeps the player object but sets off its explosions.
 void ExplodePlayer(FCombat& Combat, FCollisionPoint Position, float Altitude);
@@ -742,8 +733,7 @@ struct FWorldCell
 
 FWorldCell CellOf(FCollisionPoint World);
 
-// A Saving-zone object (class flag 0x4000000) and the Saving-plot object at its exact position, which EngineUpdateObjects looks for in the
-// zone's cell; a zone without one does nothing but keep the count going.
+// A Saving-zone object (class flag 0x4000000) and the Saving-plot object at its exact position, which EngineUpdateObjects looks for in the zone's cell; a zone without one does nothing but keep the count going.
 struct FSavingPlot
 {
     size_t Zone = 0;
@@ -761,18 +751,18 @@ struct FSavingState
     std::optional<size_t> Plot;
 };
 
-// SavingPlotUpdate at 0042a3b0 for each zone the living player touches, and SavingPlotLeave at 0042a650 once it touches none: after 5.5 seconds
-// on a plot the plot's cost (its negative Reward) is paid and the session is saved. True when the session is to be written now.
+// SavingPlotUpdate at 0042a3b0 for each zone the living player touches, and SavingPlotLeave at 0042a650 once it touches none: after 5.5 seconds on a plot the plot's cost (its negative Reward) is paid and the session is saved.
+// True when the session is to be written now.
 bool StepSavingPlots(FSavingState& State, std::span<const FSavingPlot> Plots, const FLevel& Level, const FPlayerState& Player, float PlayerRadius,
     FPlayerInventory& Inventory, FMessages& Messages, uint32_t NowMilliseconds, std::string_view PlayerName);
 
-// FUN_00439510 for the player after its surprises: a complete code with a timeout counts down on its first part, warns, and at the end goes
-// back into the level (or is destroyed without Reactivate-after).
+// FUN_00439510 for the player after its surprises: a complete code with a timeout counts down on its first part, warns, and at the end goes back into the level (or is destroyed without Reactivate-after).
 void StepCodeTimeouts(FPlayerInventory& Inventory, FLevel& Level, FMessages& Messages, uint32_t StepMilliseconds);
 void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
     FMessages& Messages, uint32_t StepMilliseconds);
-// One game step of the player's part of EngineUpdateObjects (004406e0). Bodies are the other collidable objects; Self skips one of them. Returns
-// the body the move ran into, if any.
+// One game step of the player's part of EngineUpdateObjects (004406e0).
+// Bodies are the other collidable objects; Self skips one of them.
+// Returns the body the move ran into, if any.
 const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
     const FLevel& Level, std::span<FObjectBody> Bodies = {}, const FObjectBody* Self = nullptr);
 // Moves pushed bodies for one step, in object order.
@@ -780,24 +770,21 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
 void StepActors(FCombat* Combat, std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
     const FPlayerState* Player);
 void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
-// Every gate and lift of the level, in their activation state (AnimInitializeGraphics at 00417b30): open ones are passable and show the
-// last frame of their first animation.
+// Every gate and lift of the level, in their activation state (AnimInitializeGraphics at 00417b30): open ones are passable and show the last frame of their first animation.
 std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, FResourceArchive& Archive, std::span<FObjectBody> Bodies);
-// One step of every gate (GateUpdate at 00443620) and lift (ObjectUpdateLevelExit at 00442bf0) after its animation advances. Returns the
-// lift the player has taken, if any.
+// One step of every gate (GateUpdate at 00443620) and lift (ObjectUpdateLevelExit at 00442bf0) after its animation advances.
+// Returns the lift the player has taken, if any.
 const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, std::span<FObjectBody> Bodies, const FPlayerTarget& Player,
     uint32_t StepMilliseconds, FMessages& Messages);
 // The player's contact with a closed lift or gate tells it what the door is waiting for.
 void ReportDoorContact(std::span<const FDoor> Doors, const FObjectBody& Body, const FPlayerState& Player, const FPlayerInventory& Inventory, FMessages& Messages);
 // ObjectUpdateLevelExit names the next level within the current zone, or within the lift's Scenery when the zone changes.
 std::string NextLevelPath(std::string_view CurrentPath, const FDoor& Lift);
-// Activates the level's objects, which draws each bob's phase and sets its first altitude, then loads the player's weapons, arms the level's
-// turrets and loads every FX class the level's ammo and explosions can spawn.
+// Activates the level's objects, which draws each bob's phase and sets its first altitude, then loads the player's weapons, arms the level's turrets and loads every FX class the level's ammo and explosions can spawn.
 // A demo's playback reseeds the generator (DemoStartPlayback at 00429110) after the map animations' draws and before the objects activate.
 std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObject& Player, FResourceArchive& Archive, std::vector<FObjectBody>& Bodies,
     bool bDemo = false);
-// The bob part of the per-step update pass: every object in the view's cells bobs as ObjectSelectBobMode (00433f40) decides, which changes the altitude its
-// shots start from.
+// The bob part of the per-step update pass: every object in the view's cells bobs as ObjectSelectBobMode (00433f40) decides, which changes the altitude its shots start from.
 void StepObjectBobs(FCombat& Combat, FLevel& Level, std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, FViewCells View);
 // One step of the player's weapon: the slope ramp, then a shot when the trigger is held and the weapon's delay has passed (WeaponFire at 00443bd0).
 // SpriteSize is the smaller side of the player's current frame, which picks the random muzzle distance.
@@ -806,8 +793,7 @@ void StepPlayerWeapon(FCombat& Combat, bool bFire, const FPlayerState& Player, c
 // The seeker scan, top rotation and fire decision of every turret (SeekerUpdate at 0042c5a0), then its weapon update.
 void StepTurrets(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level, std::vector<FObjectBody>& Bodies,
     const FPlayerState& Player);
-// Moves every shot, detonating it against terrain, bodies or the ground, then runs the effects and their blasts; destroyed bodies are removed,
-// spawn their Boom-fx and pay their Reward.
+// Moves every shot, detonating it against terrain, bodies or the ground, then runs the effects and their blasts; destroyed bodies are removed, spawn their Boom-fx and pay their Reward.
 void StepProjectiles(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
     const FPlayerTarget& Player, FMessages& Messages);
 std::expected<void, std::string> VerifyPlayerMovement();

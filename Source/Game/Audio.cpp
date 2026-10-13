@@ -60,8 +60,8 @@ void SetVoiceClock(const uint32_t Clock)
 
 void StepPlayerVoices(const uint32_t Clock, const bool bFiring)
 {
-    // DAT_00523810 and DAT_00523814: the last update without and with fire, or the last line they brought. Like the originals they outlive the
-    // level.
+    // DAT_00523810 and DAT_00523814: the last update without and with fire, or the last line they brought.
+    // Like the originals they outlive the level.
     static uint32_t LastQuiet = 0;
     static uint32_t LastFire = 0;
     constexpr uint32_t PickMask = 7;

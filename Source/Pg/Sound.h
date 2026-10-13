@@ -45,8 +45,9 @@ public:
     // Opens the default output device; without one every call is ignored.
     bool Open();
 
-    // SoundPlay (0045f7e0): the first idle channel of Mask, else the one playing the lowest priority not above Priority (the one closest to its end on a
-    // tie). Volume and pan replace the channel's own when given. Returns the 1-based channel, or 0 when none could take it.
+    // SoundPlay (0045f7e0): the first idle channel of Mask, else the one playing the lowest priority not above Priority (the one closest to its end on a tie).
+    // Volume and pan replace the channel's own when given.
+    // Returns the 1-based channel, or 0 when none could take it.
     uint32_t Play(std::shared_ptr<const FSample> Sample, bool bLoop, uint32_t Priority, uint32_t Mask, std::optional<int> Volume = std::nullopt,
         std::optional<int> Pan = std::nullopt);
     // SoundChannelPlaying (0045fb70).

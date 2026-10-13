@@ -108,15 +108,10 @@ slot 1 LZSS stream          (back-to-back BMP_ pixel chunks)
 slot 2 LZSS stream          (20-byte runtime surface records)
 ```
 Each descriptor slot is 24 bytes:
-`[constant=256, 0, 0, compressed_size, decompressed_size, 0]`. Populated
-streams follow the descriptor in slot order and start on 4-byte boundaries.
+`[constant=256, 0, 0, compressed_size, decompressed_size, 0]`. Populated streams follow the descriptor in slot order and start on 4-byte boundaries.
 
-Slot 0 has one 44-byte (`11 x int32`) record per frame. Confirmed fields are
-`[1, width, height, 0, trim_x, trim_y, 0, -(trim_x+width),
--(trim_y+height), 0, 0]`. The old extractor discarded `trim_x/trim_y`, causing
-tightly cropped directional frames to wobble when centered independently.
-`vyruz_gaf_extract.py --atlas ... --canvas 96x96` restores those crops to a
-common frame before atlas packing.
+Slot 0 has one 44-byte (`11 x int32`) record per frame. Confirmed fields are `[1, width, height, 0, trim_x, trim_y, 0, -(trim_x+width), -(trim_y+height), 0, 0]`. The old extractor discarded `trim_x/trim_y`, causing tightly cropped directional frames to wobble when centered independently.
+`vyruz_gaf_extract.py --atlas ... --canvas 96x96` restores those crops to a common frame before atlas packing.
 
 `ANM_` slot 0 contains 32-byte animation records: frame count, flags, loop start, and five reserved words. `StartAnimation` (`0045e770`) copies the flags to the instance: `2` restarts at the loop start after the last frame, `0x20` plays back and forth, `0x40` runs backwards; without them the animation ends. Slot 2 concatenates their 28-byte visual frame records in animation order: 1-based GOB index (zero is invisible), signed X/Y hotspot offsets, draw flags, event flags, event value, and duration. `UpdateAnimation` (`0045e7e0`) negates the hotspot X for draw flag `0x100` and Y for `0x200`.
 
@@ -128,10 +123,7 @@ The object draw passes the full animation draw flags to the bitmap renderer. `Dr
 
 Depth sorting is only the queue order. `LevelCompositeSprites` (`00420070`) first calls `LevelFlushSpriteLayer` (`0041fec0`) for layer 3 with a threshold beyond the visible region, drawing all `In-ground` decals before the remaining sprite layers. It then interleaves terrain with layers 1, 2, and 0. A flat sort across all four layers incorrectly draws floor decals over nearby shadows, producing bright speckles.
 
-Some animation GAFs also carry an `SMP_` entry containing uncompressed sound
-effects. Slot 0 holds a 76-byte play descriptor per sample, zero on disk and filled in by the game ([Audio.md](Audio.md#animation-sounds)); slot 1 holds the samples back to back.
-Each sample is a `SND_` record with this 36-byte header followed by
-interleaved PCM (unsigned 8-bit or signed little-endian 16-bit):
+Some animation GAFs also carry an `SMP_` entry containing uncompressed sound effects. Slot 0 holds a 76-byte play descriptor per sample, zero on disk and filled in by the game ([Audio.md](Audio.md#animation-sounds)); slot 1 holds the samples back to back. Each sample is a `SND_` record with this 36-byte header followed by interleaved PCM (unsigned 8-bit or signed little-endian 16-bit):
 
 | Offset | Size | Type | Field |
 |---|---|---|---|
@@ -145,13 +137,7 @@ interleaved PCM (unsigned 8-bit or signed little-endian 16-bit):
 | `+0x1C` | 4 | `uint32` | Channel count |
 | `+0x20` | 4 | `uint32` | PCM frame count |
 
-Meaningful PCM bytes are `frame_count * channels * (bits / 8)`; the declared
-byte count can include up to two alignment bytes. `EXPLO.GAF` contains four
-such samples. Its ANM visual records are seven `int32` values, and the sound
-trigger fields map animation index 1 (`Explosion`, `Big-Explosion`, and
-`Medium-Explosion`) to sample 4, while animation index 5 (`Small-Explosion`)
-maps to sample 1. Both trigger on their corresponding animation frame, not when
-the object is first spawned.
+Meaningful PCM bytes are `frame_count * channels * (bits / 8)`; the declared byte count can include up to two alignment bytes. `EXPLO.GAF` contains four such samples. Its ANM visual records are seven `int32` values, and the sound trigger fields map animation index 1 (`Explosion`, `Big-Explosion`, and `Medium-Explosion`) to sample 4, while animation index 5 (`Small-Explosion`) maps to sample 1. Both trigger on their corresponding animation frame, not when the object is first spawned.
 
 Every object GAF has a `V-`-prefixed shadow variant (e.g. `V-TURRET-ROCKET-UDG.GAF`) - smaller, sparser, same format.
 
@@ -210,22 +196,15 @@ Loaded by the generic `GafLoad` (`00453960`); `GafReadData` dispatches each DATA
 ```
 slot[i] @ i*24: [ constant=256, 0, 0, compressed_size, decompressed_size, 0 ]   i = 0..3
 ```
-Unused slots are all-zero. Streams for populated slots follow the descriptor
-in slot order. Advance by `align_up(compressed_size, 4)` after each stream:
-`FUN_0049ae30` reads a whole number of dwords, so ignoring this padding corrupts
-later slots even when decompression appears to return the expected byte count.
+Unused slots are all-zero. Streams for populated slots follow the descriptor in slot order. Advance by `align_up(compressed_size, 4)` after each stream:
+`FUN_0049ae30` reads a whole number of dwords, so ignoring this padding corrupts later slots even when decompression appears to return the expected byte count.
 
-**BLK_**: one populated slot decompresses to a flat, back-to-back array of
-`BMP_` chunks - uniform 64x32px blocks, same header format as sprite chunks,
-`signature = 0x00000311`. Tile count varies per file (T1C1: 673, T3H3:
-634, T2P1: 835, T3U3: 713). Other populated slots are small index/header
-tables.
+**BLK_**: one populated slot decompresses to a flat, back-to-back array of `BMP_` chunks - uniform 64x32px blocks, same header format as sprite chunks, `signature = 0x00000311`. Tile count varies per file (T1C1: 673, T3H3:
+634, T2P1: 835, T3U3: 713). Other populated slots are small index/header tables.
 
 BLK_ slot 0 contains one 16-byte record per bitmap: `uint32 flags`, `int32 offset_x`, `int32 offset_y`, `int32 depth`. `GafParseSlot0` (`0047b830`) and `FUN_0046bb30` copy the final word to the runtime block at `+0x20`. Every campaign level uses depths -1 through 4. This depth is separate from the MAP_ layer index and controls terrain/object occlusion.
 
-**MAP_ is the exact static visual map.** It is not a semantic tilemap and is
-not superseded by `.3DI`. Descriptor slot 0 decompresses to this 24-byte
-header:
+**MAP_ is the exact static visual map.** It is not a semantic tilemap and is not superseded by `.3DI`. Descriptor slot 0 decompresses to this 24-byte header:
 
 | Index | Type | Field |
 |---:|---|---|
@@ -236,21 +215,14 @@ header:
 | 4 | `uint32` | grid height |
 | 5 | `uint32` | reserved; normally 0, `0xCCCCCCCC` in DEMO |
 
-Descriptor slot 3 is exactly
-`layer_count * grid_width * grid_height` little-endian `uint32` values. It is
-layer-major, then row-major inside each layer. Value `0` is transparent/empty;
-a nonzero value is a **1-based index** into the decompressed BLK bitmap table.
-Draw layers from 0 upward, alpha-compositing each referenced 64x32 BLK at:
+Descriptor slot 3 is exactly `layer_count * grid_width * grid_height` little-endian `uint32` values. It is layer-major, then row-major inside each layer. Value `0` is transparent/empty; a nonzero value is a **1-based index** into the decompressed BLK bitmap table. Draw layers from 0 upward, alpha-compositing each referenced 64x32 BLK at:
 
 ```text
 cell_index = y * grid_width + x
 position   = (x * 64, y * 32)
 ```
 
-This reproduces the original static level image exactly. The MAP layers are
-render strata, not named gameplay layers: do not assume that a particular
-plane means ground, wall, roof, or collision. The header viewport fields are
-the original render-cache dimensions and must not be used to rescale the map.
+This reproduces the original static level image exactly. The MAP layers are render strata, not named gameplay layers: do not assume that a particular plane means ground, wall, roof, or collision. The header viewport fields are the original render-cache dimensions and must not be used to rescale the map.
 
 With objects present, the game first copies its precomposited level surface, then `LevelCompositeSprites` (`00420070`) draws terrain in diagonal depth bands. At each row boundary `R`, `FUN_0041fd40` draws rows `R-5` through `R-1` at block depths 4 through 0, respectively. This pass uses only MAP_ planes 2 onward: the first two planes stay in the background, otherwise ordinary floor tiles incorrectly cut off crate sprites. It then flushes sprite layers 1, 2 and 0 whose depth key is strictly below `R * 32 * 4`. Ground decals (sprite layer 3) precede these bands. Drawing all MAP_ layers before objects makes a ship or crate behind a building appear on its roof.
 
@@ -264,9 +236,7 @@ Examples:
 
 ## .3DC - Object Class Library
 
-Plain text, line-terminated block grammar with format version `1.3`. Values end
-at the newline; they must not be parsed as a whitespace-only token stream.
-Supported forms across all shipped `.3DC`, `.3DO`, and `.3DP` files are:
+Plain text, line-terminated block grammar with format version `1.3`. Values end at the newline; they must not be parsed as a whitespace-only token stream. Supported forms across all shipped `.3DC`, `.3DO`, and `.3DP` files are:
 
 ```text
 BLOCK-KIND [ ... ]
@@ -276,14 +246,8 @@ field = x, y
 DIRECTIVE optional arguments
 ```
 
-`TYPE Explosion [ ... ]`, `ADD Weapon [ ... ]`, and similar constructs are
-named blocks (`kind=TYPE`, `name=Explosion`), not a block called `TYPE` and not
-part of the preceding field. Repeated fields and blocks are significant:
-patrol paths repeat `Point`, and classes may contain multiple `TYPE Explosion`
-or `ADD Weapon` blocks. Bare directives include `HAVE`, `RANDOM`,
-`Override-Attributes`, `override-random-objects`, and `override-objects`.
-`DIFFICULTY.3DC` is the one library that also uses repeated top-level
-assignments.
+`TYPE Explosion [ ... ]`, `ADD Weapon [ ... ]`, and similar constructs are named blocks (`kind=TYPE`, `name=Explosion`), not a block called `TYPE` and not part of the preceding field. Repeated fields and blocks are significant: patrol paths repeat `Point`, and classes may contain multiple `TYPE Explosion` or `ADD Weapon` blocks. Bare directives include `HAVE`, `RANDOM`, `Override-Attributes`, `override-random-objects`, and `override-objects`.
+`DIFFICULTY.3DC` is the one library that also uses repeated top-level assignments.
 
 `DEFAULT-PROPERTY` supplies per-library class defaults. `OBJECT-CLASS` fields include `Name`, `GAF-name`, `Behaviour`, scalar `Bounding-Box-Size`, and optional `Derived-From`. `LoadObjectClassLibrary` (`0040a010`) starts with the library defaults, then replaces the entire class record with the resolved parent's record when `Derived-From` is present, then applies the class fields. Unrelated child-library defaults therefore do not survive inheritance. `.3DO` instance overrides are applied last. Class `TYPE` and `ADD` blocks add repeated attributes; instance `TYPE` overrides select the first unused matching inherited attribute. `Override-Attributes` clears inherited attributes. Missing parents, cycles, duplicate class definitions, and missing instance classes are errors.
 
@@ -291,22 +255,15 @@ assignments.
 
 `AnimInitializeGraphics` (`00417b30`) gives the player and other 24-direction subtypes consecutive body animations, with a single shadow animation. Heli uses four body animations and one shadow; `HeliSelectBodyPose` (`004334e0`) selects its body pose from movement speed and accumulated state, starting at pose zero. Spider uses four body and four shadow animations, selected by `direction / 6`. Unspecified startup direction is zero (SW).
 
-Known files per zone: `DECOR.3DC`, `ITEM.3DC`, `SPECIFIC.3DC`. For T1U1 the
-compiler loads all eight `COMMON` libraries plus those three `UNDERGROUND`
-libraries. The resulting graph has 416 classes and resolves all 793 instances
-without duplicate definitions, missing parents, or missing instance classes.
+Known files per zone: `DECOR.3DC`, `ITEM.3DC`, `SPECIFIC.3DC`. For T1U1 the compiler loads all eight `COMMON` libraries plus those three `UNDERGROUND` libraries. The resulting graph has 416 classes and resolves all 793 instances without duplicate definitions, missing parents, or missing instance classes.
 
 ## .3DX - Tile / Texture Manifest
 
 Plain text, line-based (not block grammar). Per level. Two sections:
 1. Ordered GAF file list (count + paths) - animated map assets used by the level.
-2. Texture list (count + entries) - one line per semantic tile descriptor, in
-   `.3DI` `tile_id` order (1-based). Each line is `<flag> <ref>`.
+2. Texture list (count + entries) - one line per semantic tile descriptor, in `.3DI` `tile_id` order (1-based). Each line is `<flag> <ref>`.
 
-`flag = 0` means `ref` is normally a static `.tga` path. A **nonzero flag is a
-1-based index into the preceding GAF list**, not a boolean. For an animated
-entry, `ref` may be only a short alias and may not equal the GAF basename;
-resolve its semantic folder and animation asset through `gaf_files[flag - 1]`.
+`flag = 0` means `ref` is normally a static `.tga` path. A **nonzero flag is a 1-based index into the preceding GAF list**, not a boolean. For an animated entry, `ref` may be only a short alias and may not equal the GAF basename; resolve its semantic folder and animation asset through `gaf_files[flag - 1]`.
 
 The file starts with a `1.0` version line ("Unknown .3dx file format" otherwise); `#` starts a comment anywhere on a line. GAF paths are absolute editor paths (`d:\vzed\levels\game\underground\data\anim\obstacle\rightbeton.gaf`); `LevelLoad3dx` (`00429d80`) keeps the last three components under the zone data folder, giving the archive path `UNDERGROUND\DATA\ANIM\OBSTACLE\RIGHTBETON.GAF`. This resolves every GAF of all 25 levels. A descriptor's semantic type is the name of the folder holding its file (`...\bitmap\rightwall\gouffre002.tga` -> `RightWall`), matched against the names registered by `VzCreateTypeTable`; every descriptor of every level resolves to one of the 15 terrain types.
 
@@ -314,9 +271,7 @@ The file starts with a `1.0` version line ("Unknown .3dx file format" otherwise)
 
 ## .3DI - Sparse Tilemap
 
-Binary. Depends on: `.3DX` (`tile_id` descriptor resolution). This is the
-semantic/gameplay grid used for collision and animated-map placement. It is
-not the exact static visual map; that comes from `.3DG` MAP_ layers.
+Binary. Depends on: `.3DX` (`tile_id` descriptor resolution). This is the semantic/gameplay grid used for collision and animated-map placement. It is not the exact static visual map; that comes from `.3DG` MAP_ layers.
 
 ```
 header: 4 bytes
@@ -328,8 +283,7 @@ records: repeating 6 bytes until EOF
   uint16 tile_id  (1-based, indexes into .3DX texture list)
 ```
 
-Entry count is `(file_size - 4) / 6`. The header is not an entry count. Its
-grid-dimension formulas are:
+Entry count is `(file_size - 4) / 6`. The header is not an entry count. Its grid-dimension formulas are:
 
 ```text
 grid_width  = (world_extent_x >> 6) + 1
@@ -337,13 +291,7 @@ grid_height = (world_extent_y >> 5) + 1
 world_pos   = (x * 64, y * 32)
 ```
 
-These formulas match the `.3DG` MAP dimensions in all 25 levels. For T1U1,
-header `(5056, 4128)` gives an `80x130` grid. Multiple records may occupy one
-coordinate because the loader separates descriptors into four semantic slots.
-Records are stored in ascending `(x, y)` order, and every occupied coordinate
-satisfies `(x + y) % 2 == 0` in all 25 levels. This is a staggered isometric
-lattice. If an editor needs logical `128x64` diamond cells rather than the
-native preprojected coordinates, the lossless conversion is:
+These formulas match the `.3DG` MAP dimensions in all 25 levels. For T1U1, header `(5056, 4128)` gives an `80x130` grid. Multiple records may occupy one coordinate because the loader separates descriptors into four semantic slots. Records are stored in ascending `(x, y)` order, and every occupied coordinate satisfies `(x + y) % 2 == 0` in all 25 levels. This is a staggered isometric lattice. If an editor needs logical `128x64` diamond cells rather than the native preprojected coordinates, the lossless conversion is:
 
 ```text
 map_x = (x + y) >> 1
@@ -373,23 +321,17 @@ The semantic type IDs registered by `VzCreateTypeTable` (`00447430`) are:
 | 7 | Half-Roof | 15 | Water |
 | 8 | HorizontalWall | | |
 
-Slot assignment follows the semantic type, not source-record position. If a
-slot is already occupied, a later record for that cell overwrites it, matching
-the original loader.
+Slot assignment follows the semantic type, not source-record position. If a slot is already occupied, a later record for that cell overwrites it, matching the original loader.
 
 ## Original Static Terrain Collision
 
-The game contains no separate collision-map file. `FUN_0041ed30` derives a
-dense directional-marker grid from the four `.3DI` semantic slots, and
-`FUN_0041adb0` turns the surviving marker bytes into fixed collision lines.
+The game contains no separate collision-map file. `FUN_0041ed30` derives a dense directional-marker grid from the four `.3DI` semantic slots, and `FUN_0041adb0` turns the surviving marker bytes into fixed collision lines.
 This is the recovered algorithm:
 
 1. Start a zeroed `uint32[grid_width][grid_height]` marker grid.
 2. Traverse cells with `x` as the outer loop and `y` as the inner loop.
-3. Process each cell's slots in byte-offset order `+0,+6,+2,+4`, or logical
-   slot order `0,3,1,2`. This order matters because later semantics clear bits.
-4. For types 2, 3, 4, and 5, OR the following masks at offsets relative to the
-   semantic cell:
+3. Process each cell's slots in byte-offset order `+0,+6,+2,+4`, or logical slot order `0,3,1,2`. This order matters because later semantics clear bits.
+4. For types 2, 3, 4, and 5, OR the following masks at offsets relative to the semantic cell:
 
 ```text
 marker[x    ][y + 1] |= 0x1E
@@ -398,20 +340,16 @@ marker[x    ][y + 2] |= 0x87
 marker[x + 1][y + 2] |= 0xE1
 ```
 
-Types 6 and 8 OR only the lower `0x87/0xE1` pair. Type 10 clears all four
-corresponding masks. Type 7 clears only the lower pair. Type 15 ORs high bit
-`0x100` into all four cells; the later edge switch uses only the low byte.
+Types 6 and 8 OR only the lower `0x87/0xE1` pair. Type 10 clears all four corresponding masks. Type 7 clears only the lower pair. Type 15 ORs high bit `0x100` into all four cells; the later edge switch uses only the low byte.
 
-For each marker-grid cell, `FUN_0041adb0` recognizes only exact low-byte values
-`0x1E`, `0x78`, `0x87`, and `0xE1`. In native engine coordinates it emits:
+For each marker-grid cell, `FUN_0041adb0` recognizes only exact low-byte values `0x1E`, `0x78`, `0x87`, and `0xE1`. In native engine coordinates it emits:
 
 ```text
 0x1E / 0xE1: (64*(x+1), 32*y) -> (64*x,     32*(y+1))
 0x78 / 0x87: (64*x,     32*y) -> (64*(x+1), 32*(y+1))
 ```
 
-When the low byte is zero, the engine also synthesizes edges around slot-3
-Obstacle cells:
+When the low byte is zero, the engine also synthesizes edges around slot-3 Obstacle cells:
 
 ```text
 if y == 0:
@@ -428,14 +366,8 @@ elif x > 0 and y > 1 and slot3(x-1, y-2) == Obstacle:
     emit 0x1E at (x, y)
 ```
 
-`FUN_0041aa00` merges compatible neighboring line objects. The resulting fixed
-objects are inserted through `FUN_0040f090 -> FUN_0040ee40` into the collision
-manager at `session + 0x25AC`; `FUN_004105d0` performs movement-time
-broad-phase queries. Its endpoint scan starts at the old minimum bound when moving forward and the old maximum bound when moving backward. Starting at the leading bound skips walls already overlapping the actor's circle after a shallow contact.
-`FUN_00405df0` is actor-vs-actor AABB scanning and is not
-the static terrain rule. A Godot reimplementation was manually validated on
-T1U1 against the spawn bunker, entrance, exterior cliff boundary, and gameplay
-movement; the recovered lines aligned without a global offset.
+`FUN_0041aa00` merges compatible neighboring line objects. The resulting fixed objects are inserted through `FUN_0040f090 -> FUN_0040ee40` into the collision manager at `session + 0x25AC`; `FUN_004105d0` performs movement-time broad-phase queries. Its endpoint scan starts at the old minimum bound when moving forward and the old maximum bound when moving backward. Starting at the leading bound skips walls already overlapping the actor's circle after a shallow contact.
+`FUN_00405df0` is actor-vs-actor AABB scanning and is not the static terrain rule. A Godot reimplementation was manually validated on T1U1 against the spawn bunker, entrance, exterior cliff boundary, and gameplay movement; the recovered lines aligned without a global offset.
 
 ## .3DO - Object Placement (Level Layout)
 

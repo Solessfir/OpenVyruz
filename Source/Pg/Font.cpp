@@ -7,8 +7,8 @@
 
 namespace
 {
-// FNT_ slot 0: one record per font. GafParseSlot0 (0047b830) keeps the first word as the glyph count and copies the rest into the runtime
-// font from +0x18 on.
+// FNT_ slot 0: one record per font.
+// GafParseSlot0 (0047b830) keeps the first word as the glyph count and copies the rest into the runtime font from +0x18 on.
 struct FFontRecord
 {
     uint32_t GlyphCount;
@@ -150,8 +150,7 @@ std::vector<Font::FPlacedGlyph> Font::LayoutText(const FFont& Font, const std::s
     std::vector<FPlacedGlyph> Placed;
     int32_t Cursor = X;
     int32_t Line = Y;
-    // In game word wrap is off (FUN_0043be00 calls PgFontSetWordWrap), so a new line goes back to the starting column; with it on, a new line
-    // starts at the clip's left edge, which callers pass as X.
+    // In game word wrap is off (FUN_0043be00 calls PgFontSetWordWrap), so a new line goes back to the starting column; with it on, a new line starts at the clip's left edge, which callers pass as X.
     const auto BreakLine = [&]
     {
         Cursor = X;

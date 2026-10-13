@@ -60,16 +60,14 @@ constexpr size_t ScoreFont = 1;
 constexpr size_t SpeedFont = 2;
 constexpr size_t ScreenFont = 3;
 
-// The least panel mode of each block: the borders and text line from 1, the bars from 2, the score and weapon from 3, the speedometer and
-// radar from 4 and the screen at 5.
+// The least panel mode of each block: the borders and text line from 1, the bars from 2, the score and weapon from 3, the speedometer and radar from 4 and the screen at 5.
 constexpr int TextMode = 1;
 constexpr int BarsMode = 2;
 constexpr int ScoreMode = 3;
 constexpr int SpeedMode = 4;
 constexpr int ScreenMode = 5;
 
-// While the weapon in hand has rounds (its bound ammo stock, object +0x248, holds some), PanelUpdate shows the weapon lights only on one
-// RandomBelow(53) draw of the Misc stream in 53, in either pass.
+// While the weapon in hand has rounds (its bound ammo stock, object +0x248, holds some), PanelUpdate shows the weapon lights only on one RandomBelow(53) draw of the Misc stream in 53, in either pass.
 bool WeaponLightsShown(const FPanelValues& Values, FRandom& Misc)
 {
     constexpr int FlickerOdds = 0x35;
@@ -79,8 +77,7 @@ bool WeaponLightsShown(const FPanelValues& Values, FRandom& Misc)
 
 // "DANGER: SHIELD IS LOW" and the blinking warning start at 1 percent shield.
 constexpr float ShieldLowRatio = 0.01f;
-// The screen slot is drawn with draw mode 1, or 5 with option flag 0x10 ("Translucent Panel"): DrawTexturedPolygon gives mode 5 a fixed
-// alpha of 0x80.
+// The screen slot is drawn with draw mode 1, or 5 with option flag 0x10 ("Translucent Panel"): DrawTexturedPolygon gives mode 5 a fixed alpha of 0x80.
 constexpr uint32_t OpaqueScreenDrawMode = 1;
 constexpr uint32_t ScreenDrawMode = 5;
 constexpr float ScreenAlpha = float(0x80) / 255.f;

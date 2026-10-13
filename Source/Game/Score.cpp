@@ -23,8 +23,7 @@ enum class EScoreAlign : uint8_t
     Right,
 };
 
-// A column of the table at DAT_0050d070, as ScoreShowTable at 00401c40 fills it: its left edge, a header offset, its width (zero runs to the next column),
-// flags, alignment, header and value format, and the header and row colours (diffuse and specular) that ScoreRowColor at 00401350 blends.
+// A column of the table at DAT_0050d070, as ScoreShowTable at 00401c40 fills it: its left edge, a header offset, its width (zero runs to the next column), flags, alignment, header and value format, and the header and row colours (diffuse and specular) that ScoreRowColor at 00401350 blends.
 struct FScoreColumn
 {
     int32_t X = 0;

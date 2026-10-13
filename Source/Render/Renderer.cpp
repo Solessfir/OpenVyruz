@@ -12,8 +12,7 @@ namespace
 
 // ponytail: fixed pool, one set per sprite sheet; grow or go bindless when levels load more sheets than this.
 constexpr uint32_t MaxTextures = 1024;
-// Each frame sits inside a border of copies of its own edge pixels: at a non-integer letterbox scale a pixel centre on a frame edge can
-// sample one texel past it, which must not be a neighbour or a transparent gap.
+// Each frame sits inside a border of copies of its own edge pixels: at a non-integer letterbox scale a pixel centre on a frame edge can sample one texel past it, which must not be a neighbour or a transparent gap.
 constexpr uint32_t SheetBorder = 1;
 constexpr uint32_t SheetPadding = 2 * SheetBorder;
 

@@ -50,8 +50,7 @@ int32_t CursorRow(const FMenu& Menu, const int32_t CursorY)
     return (CursorY - Menu.Top + Menu.StepY) / Menu.StepY;
 }
 
-// The arrow keys of MenuStep at 00421780: the item above or below the one under the cursor; when the keys already chose it, or it is a gap, the next item
-// in that direction that has a text, wrapping around.
+// The arrow keys of MenuStep at 00421780: the item above or below the one under the cursor; when the keys already chose it, or it is a gap, the next item in that direction that has a text, wrapping around.
 std::optional<size_t> ArrowItem(const FMenu& Menu, const FMenuState& State, const bool bDown)
 {
     const int32_t Count = int32_t(Menu.Items.size());
