@@ -214,6 +214,8 @@ struct FWeaponState
 {
     // Index into FCombat::Weapons.
     size_t Weapon = 0;
+    // The object's own copy of the weapon's Delay, which the difficulty's nmy-fire-delay-ratio scales (FUN_0043c4a0); none uses the class's.
+    std::optional<uint32_t> Delay;
     uint32_t LastFireTime = 0;
     // Weapon flag 2 and the slope that WeaponRaiseSlope (0042c210) ramps while it is set.
     bool bTriggerHeld = false;
@@ -414,6 +416,9 @@ struct FObjectBody
     bool bVisibleWhenFiring = false;
     // Final-object (class +0x20 bit 0x20, only Final-PC): its death ends the game (FUN_0043db70).
     bool bFinalObject = false;
+    // The class's Shield.Max and Shield-up-step (object +0xe4): EngineUpdateObjects adds the step to the shield on each update, up to the maximum.
+    float ShieldMax = 0.f;
+    float ShieldUpStep = 0.f;
     std::vector<FAbsorption> Absorptions;
     // Every TYPE Explosion block: the Boom-fx objects spawned on destruction and the blasts they carry.
     std::vector<FExplosionBlock> Explosions;
@@ -487,7 +492,42 @@ struct FPlayerInventory
     float Weight = 1.f;
     // The shoves of this step's hits, for the caller to add to the player's velocity.
     FCollisionPoint Shove;
+    // The player's Shield-up-step (object +0xe4), which the difficulty scales and Auto Shield Up raises by 10.
+    float ShieldUpStep = 0.f;
 };
+
+// A difficulty level's values (DAT_0050d328, ten per level), which COMMON\DIFFICULTY.3DC overrides; ConfigLoad's difficulty-level picks one and copies it to session +0x26b8.
+// The mine count and item value ratios are loaded but read nowhere.
+struct FDifficulty
+{
+    float PlayerShieldMax = 10000.f;
+    float PlayerEnergyMax = 10000.f;
+    float ScanDelayRatio = 1.f;
+    float ScanRangeRatio = 1.f;
+    float EnemyShieldUpStepRatio = 1.f;
+    float PlayerShieldUpStepRatio = 1.f;
+    float MineRandomCountRatio = 1.f;
+    float EnemyFireDelayRatio = 1.f;
+    float ShieldUpItemValueRatio = 1.f;
+    float EnergyUpItemValueRatio = 1.f;
+};
+
+inline constexpr size_t DifficultyLevelCount = 4;
+// The table DIFFICULTY.3DC has been read into, and its default level (the file's last difficulty-level, Normal).
+struct FDifficultyTable
+{
+    std::array<FDifficulty, DifficultyLevelCount> Levels;
+    size_t DefaultLevel = 1;
+};
+
+struct FCombat;
+
+// The exe's own table, then the file's values over it.
+FDifficultyTable LoadDifficulties(std::string_view Text);
+// FUN_0043c4a0, which EngineActivateObjects runs on the player and on every hunter as a level starts.
+void ApplyDifficulty(const FDifficulty& Difficulty, const FCombat& Combat, std::span<FObjectBody> Bodies, FPlayerInventory& Inventory);
+// EngineUpdateObjects adds each fighting object's Shield-up-step to its shield, and the player's to its own, every update.
+void StepShields(std::span<FObjectBody> Bodies, const FLevel& Level, FPlayerInventory& Inventory);
 
 // TYPE Gate and TYPE Lift flags (attribute +0x10) as LoadObjectClassLibrary packs them.
 enum EDoorFlag : uint32_t

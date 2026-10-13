@@ -43,6 +43,18 @@ The `TYPE Ammo` attribute's flags decide what a contact does: `On-hit` (flag 1) 
 
 A class with `Invisible` (keyword `0x26`, class `+0x1c` bit `0x200`) starts with object flag 8 (`ObjectInitialize`, `00419580`). `ObjectDraw` leaves such an object out, unless its class has `Visible-when-firing` (keyword `0x4f`, bit `0x400`): then it fades with its counter (object `+0x170`) one step per frame toward hidden while flag 8 is set and back while it is clear. Every invisible class in the campaign (`Walker-Invisible`, the T3 roller scouts, the invisible turrets) has `Visible-when-firing`. `SeekerEngage` (`0042caa0`) clears flag 8 while `SeekerAimAndFire` has the object aimed at the player in range and sets it again otherwise, so these enemies show only while they shoot. `WeaponFire` refuses an invisible shooter's ammo unless it is `Usable-when-invisible`. A Two-pieces wreck becomes visible.
 
+## Shields and difficulty
+
+`EngineUpdateObjects` adds each cop's, the player's, walker's, burner's, jeep's, roller's, heli's, turret's, spider's and tank's `Shield-up-step` (object `+0xe4`) to its shield on every update, up to its class's `Shield.Max`. The player's class has a step of 0, so only Auto Shield Up (10 more while it lasts) restores its shield.
+
+The exe keeps four difficulty levels of ten values each (`DAT_0050d328`): player shield and energy maxima, and the ratios for the enemies' scan delay, scan range, shield-up step and fire delay, the player's shield-up step, the random mine count and the shield and energy item values. `LoadObjectClassLibrary` reads `COMMON\DIFFICULTY.3DC` over them (keywords `0x102` to `0x10c`: each `difficulty-level` line picks the level the following values go to, and the file ends on Normal), and `ConfigLoad` takes `difficulty-level` from `vzconf.txt` (`SetDifficulty`, `004032c0`) and copies that level to session `+0x26b8`. As each level starts, `EngineActivateObjects` hands it to `FUN_0043c4a0` for the player and every hunter:
+
+- The player: a positive shield maximum replaces the class's, the energy maximum does unless it is exactly 1, and the shield-up step is multiplied by its ratio.
+- Each seeker or tracker: its `Scan-Delay` and `Sensor-Range` are multiplied and truncated.
+- Each hunter: its shield-up step is multiplied, and its first weapon gets its own copy of the class with `Delay` multiplied and truncated.
+
+A ratio of exactly 1 leaves its value alone. Nothing reads the mine count or item value ratios.
+
 ## Fast kills
 
 When a blast from the player's shot finishes off a hunter, `AreaDamage` opens a 500 ms window (session `+0x2748` into `+0x274c`) with a count of one at `+0x2750`, or adds one while the window is open. `EngineRunLevel` counts the window down each step; once it is shorter than the step and the player lives, a count of two or more pays `((count - 2) * 5 + 10) * 1000` into the player's money and earnings, posts "Well done <name> !!!" and "Fast Kill Bonus +<amount> $" at 100, `height / 2 - 102` in v-bonus font 5, red `0xff2010`, for 8 seconds, fading every 10 ms, and queues one of Well Done, Yeepee, Come On, Ariba, Laugh, The Best, Want More and Hey by the game clock's low three bits, half a second later.

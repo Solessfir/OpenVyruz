@@ -1919,6 +1919,8 @@ struct FSettings
     FAudioSettings Audio;
     // gamma = red, green, blue (session +0x27d4): the user's gamma, which every ramp with Gamma FX sits on.
     std::array<int32_t, 3> Gamma{};
+    // difficulty-level (keyword 0x102, SetDifficulty at 004032c0) picks one of COMMON\DIFFICULTY.3DC's levels; DifficultyName names them Easy, Normal, Hard and Insane.
+    FDifficulty Difficulty;
 };
 
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a menu ends or restarts the level.
@@ -2006,6 +2008,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         FPlayerInventory Class = CreateInventory(*PlayerObject);
         Inventory.Absorptions = std::move(Class.Absorptions);
         Inventory.Weight = Class.Weight;
+        Inventory.ShieldUpStep = Class.ShieldUpStep;
     }
     if (PlayerObject != Level->Objects.end())
     {
@@ -2036,6 +2039,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             {
                 Combat = std::move(*Weapons);
                 Combat->Details = Settings.Details;
+                // EngineActivateObjects applies the difficulty (FUN_0043c4a0) to the player and every hunter as the level starts.
+                ApplyDifficulty(Settings.Difficulty, *Combat, Bodies, Inventory);
                 // The carried player object brings its weapons, loaded first and in the same order, and the game clock runs on.
                 if (Carried)
                 {
@@ -2776,6 +2781,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
 
                 StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
+                if (!DeathTimer)
+                {
+                    StepShields(Bodies, *Level, Inventory);
+                }
+
                 const FPlayerTarget Rider{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
                 StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &Rider);
                 if (const FDoor* const Lift = StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds, Messages); Lift && !NextLevel && !DeathTimer)
@@ -3999,6 +4009,9 @@ int main(const int ArgCount, char** const Args)
             return Number != 0;
         };
 
+        const std::optional<std::vector<uint8_t>> DifficultyFile = Archive.Read("common\\difficulty.3dc");
+        const FDifficultyTable Difficulties = LoadDifficulties(DifficultyFile ? std::string_view(reinterpret_cast<const char*>(DifficultyFile->data()), DifficultyFile->size()) : std::string_view());
+        size_t DifficultyLevel = Difficulties.DefaultLevel;
         std::string Text(reinterpret_cast<const char*>(Config->data()), Config->size());
         std::error_code Error;
         for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(DataPath->parent_path(), Error))
@@ -4034,6 +4047,11 @@ int main(const int ArgCount, char** const Args)
             {
                 Settings.PlayerName = std::string(Value);
             }
+            else if (int Level = 0; Key == "difficulty-level" && std::from_chars(Value.data(), Value.data() + Value.size(), Level).ec == std::errc{} && Level >= 0 &&
+                Level < int(DifficultyLevelCount))
+            {
+                DifficultyLevel = size_t(Level);
+            }
             else if (Key == "gamma")
             {
                 size_t Channel = 0;
@@ -4066,6 +4084,8 @@ int main(const int ArgCount, char** const Args)
                 Settings.Audio.*Volume->Field = std::clamp(Number, 0, Sound::MaxVolume);
             }
         }
+
+        Settings.Difficulty = Difficulties.Levels[DifficultyLevel];
     }
 
     if (Panel)

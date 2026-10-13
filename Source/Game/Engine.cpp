@@ -1042,6 +1042,8 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
         .bInvisible = Number(&Properties, "Invisible") != 0.f,
         .bVisibleWhenFiring = Number(&Properties, "Visible-when-firing") != 0.f,
         .bFinalObject = Number(&Properties, "Final-object") != 0.f,
+        .ShieldMax = Number(FindBlock(Properties, "Shield"), "Max"),
+        .ShieldUpStep = Number(&Properties, "Shield-up-step"),
     };
     Body.Absorptions = ReadAbsorptions(Properties);
 
@@ -1684,6 +1686,8 @@ void EndSurprise(FSurpriseState& State, const ESurprise Type, FPlayerState& Play
         return;
     }
 
+    // Auto Shield Up adds DAT_0050954c to the shield-up step for its time (SurpriseStart and SurpriseEnd).
+    constexpr float AutoShieldUpStep = 10.f;
     switch (Type)
     {
     case ESurprise::ReverseCommands:
@@ -1691,6 +1695,9 @@ void EndSurprise(FSurpriseState& State, const ESurprise Type, FPlayerState& Play
         break;
     case ESurprise::WeaponJam:
         State.JammedWeapon.reset();
+        break;
+    case ESurprise::AutoShieldUp:
+        Inventory.ShieldUpStep = std::max(Inventory.ShieldUpStep - AutoShieldUpStep, 0.f);
         break;
     case ESurprise::Extasy:
     case ESurprise::LowSpeed:
@@ -1808,6 +1815,7 @@ FPlayerInventory CreateInventory(const FLevelObject& Player)
         .ShieldMax = Value("Shield", "Max"),
         .Absorptions = ReadAbsorptions(Properties),
         .Weight = Value("Weight", "Initial") != 0.f ? Value("Weight", "Initial") : 1.f,
+        .ShieldUpStep = ParseLevelFloat(Properties.Find("Shield-up-step")).value_or(0.f),
     };
 
     // .3DO instances can override the starting Energy and Shield with plain fields.
@@ -2883,8 +2891,8 @@ void UpdateSlope(FWeaponState& State, const FWeaponClass& Weapon, const bool bHe
 // ObjectUpdateWeapon (00444ca0) fires once Delay milliseconds of game clock have passed since the last shot; the first shot is immediate.
 bool WeaponReady(const FCombat& Combat, const FWeaponState& State)
 {
-    const FWeaponClass& Weapon = Combat.Weapons[State.Weapon];
-    return State.LastFireTime == 0 || State.LastFireTime == Combat.Clock || Combat.Clock - State.LastFireTime >= Weapon.Delay;
+    const uint32_t Delay = State.Delay.value_or(Combat.Weapons[State.Weapon].Delay);
+    return State.LastFireTime == 0 || State.LastFireTime == Combat.Clock || Combat.Clock - State.LastFireTime >= Delay;
 }
 
 // WeaponFire at 00443bd0.
@@ -3398,6 +3406,12 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
         State.DecelerationStep = Class.DecelerationStep;
         Class.AccelerationStep = Class.AccelerationStep + Class.AccelerationStep;
         Class.DecelerationStep = Class.DecelerationStep + Class.DecelerationStep;
+        break;
+    }
+    case ESurprise::AutoShieldUp:
+    {
+        constexpr float AutoShieldUpStep = 10.f;
+        Inventory.ShieldUpStep += AutoShieldUpStep;
         break;
     }
     case ESurprise::LowSpeed:
@@ -6453,4 +6467,155 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     return std::format("{} levels, {} player shots, {} turret shots while spinning, {} grenades bounced, {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; "
         "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth",
         Levels, Shots, TurretShots, GrenadeBounces, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators);
+}
+
+FDifficultyTable LoadDifficulties(const std::string_view Text)
+{
+    // DAT_0050d328: Easy, Normal, Hard and Insane before the file.
+    FDifficultyTable Table{ .Levels = { {
+        { 20000.f, 20000.f, 1.f, 0.5f, 0.5f, 2.f, 0.f, 2.f, 0.5f, 0.5f },
+        { 10000.f, 10000.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f },
+        { 10000.f, 10000.f, 0.5f, 2.f, 3.f, 1.f, 2.f, 0.5f, 2.f, 2.f },
+        { 10000.f, 10000.f, 0.5f, 4.f, 6.f, 1.f, 4.f, 0.25f, 4.f, 4.f },
+    } } };
+
+    // LoadObjectClassLibrary (keywords 0x102 to 0x10c): difficulty-level picks the level the following values go to, and the last one stays the default.
+    constexpr std::array<std::pair<std::string_view, float FDifficulty::*>, 10> Fields = { {
+        { "player-shield-max", &FDifficulty::PlayerShieldMax },
+        { "player-nrj-max", &FDifficulty::PlayerEnergyMax },
+        { "nmy-scan-delay-ratio", &FDifficulty::ScanDelayRatio },
+        { "nmy-scan-range-ratio", &FDifficulty::ScanRangeRatio },
+        { "nmy-shield-up-step-ratio", &FDifficulty::EnemyShieldUpStepRatio },
+        { "player-shield-up-step-ratio", &FDifficulty::PlayerShieldUpStepRatio },
+        { "mine-random-count-ratio", &FDifficulty::MineRandomCountRatio },
+        { "nmy-fire-delay-ratio", &FDifficulty::EnemyFireDelayRatio },
+        { "shield-up-item-value-ratio", &FDifficulty::ShieldUpItemValueRatio },
+        { "nrj-up-item-value-ratio", &FDifficulty::EnergyUpItemValueRatio },
+    } };
+    size_t Level = Table.DefaultLevel;
+    for (const auto Part : std::views::split(Text, '\n'))
+    {
+        std::string_view Row(Part.begin(), Part.end());
+        Row = Row.substr(0, Row.find('#'));
+        const size_t Equals = Row.find('=');
+        if (Equals == std::string_view::npos)
+        {
+            continue;
+        }
+
+        const std::string Key = ToLowerName(std::string_view(Row.substr(0, Equals)));
+        const std::optional<float> Value = ParseLevelFloat(Row.substr(Equals + 1));
+        if (!Value)
+        {
+            continue;
+        }
+
+        if (Key == "difficulty-level")
+        {
+            if (*Value >= 0.f && *Value < float(DifficultyLevelCount))
+            {
+                Level = size_t(*Value);
+                Table.DefaultLevel = Level;
+            }
+
+            continue;
+        }
+
+        if (const auto Field = std::ranges::find(Fields, Key, &std::pair<std::string_view, float FDifficulty::*>::first); Field != Fields.end())
+        {
+            Table.Levels[Level].*(Field->second) = *Value;
+        }
+    }
+
+    return Table;
+}
+
+void ApplyDifficulty(const FDifficulty& Difficulty, const FCombat& Combat, const std::span<FObjectBody> Bodies, FPlayerInventory& Inventory)
+{
+    // The player: the class's shield and energy maxima, and its Shield-up-step scaled.
+    if (0.f < Difficulty.PlayerShieldMax)
+    {
+        Inventory.ShieldMax = Difficulty.PlayerShieldMax;
+        Inventory.Shield = std::min(Inventory.Shield, Inventory.ShieldMax);
+    }
+
+    if (Difficulty.PlayerEnergyMax != 1.f)
+    {
+        Inventory.EnergyMax = Difficulty.PlayerEnergyMax;
+        Inventory.Energy = std::min(Inventory.Energy, Inventory.EnergyMax);
+    }
+
+    if (Difficulty.PlayerShieldUpStepRatio != 1.f)
+    {
+        Inventory.ShieldUpStep *= Difficulty.PlayerShieldUpStepRatio;
+    }
+
+    // Every hunter: a seeker's or tracker's scan delay and sensor range, its Shield-up-step, and its own copy of its weapon's Delay.
+    const auto Scaled = [](const float Value, const float Ratio) { return TruncateLow(double(float(Value * Ratio))); };
+    for (FObjectBody& Body : Bodies)
+    {
+        if (!HuntsPlayer(Body))
+        {
+            continue;
+        }
+
+        FWeaponState* Weapon = nullptr;
+        if (Body.Actor && Body.Actor->Seeker)
+        {
+            FSeeker& Seeker = *Body.Actor->Seeker;
+            if (Difficulty.ScanDelayRatio != 1.f)
+            {
+                Seeker.Work.Interval = Scaled(float(Seeker.Work.Interval), Difficulty.ScanDelayRatio);
+            }
+
+            if (Difficulty.ScanRangeRatio != 1.f)
+            {
+                Seeker.SensorRange = float(Scaled(Seeker.SensorRange, Difficulty.ScanRangeRatio));
+            }
+
+            Weapon = Seeker.Weapon ? &Seeker.WeaponState : nullptr;
+        }
+        else if (Body.Turret)
+        {
+            if (Difficulty.ScanDelayRatio != 1.f)
+            {
+                Body.Turret->ScanDelay = Scaled(float(Body.Turret->ScanDelay), Difficulty.ScanDelayRatio);
+            }
+
+            if (Difficulty.ScanRangeRatio != 1.f)
+            {
+                Body.Turret->SensorRange = float(Scaled(Body.Turret->SensorRange, Difficulty.ScanRangeRatio));
+            }
+
+            Weapon = &Body.Turret->Weapon;
+        }
+
+        if (Difficulty.EnemyShieldUpStepRatio != 1.f)
+        {
+            Body.ShieldUpStep *= Difficulty.EnemyShieldUpStepRatio;
+        }
+
+        if (Weapon && Difficulty.EnemyFireDelayRatio != 1.f && Weapon->Weapon < Combat.Weapons.size())
+        {
+            Weapon->Delay = uint32_t(Scaled(float(Combat.Weapons[Weapon->Weapon].Delay), Difficulty.EnemyFireDelayRatio));
+        }
+    }
+}
+
+void StepShields(const std::span<FObjectBody> Bodies, const FLevel& Level, FPlayerInventory& Inventory)
+{
+    // Cops, the player, walkers, burners, jeeps, rollers, helis, turrets, spiders and tanks (the 0x1ff40 kinds).
+    constexpr std::array<std::string_view, 9> ShieldKinds = { "cop", "walker", "burner", "jeep", "roller", "heli", "turret", "spider", "tank" };
+    for (FObjectBody& Body : Bodies)
+    {
+        if (Body.ShieldUpStep != 0.f && !Level.Objects[Body.ObjectIndex].bRemoved && std::ranges::contains(ShieldKinds, Level.Objects[Body.ObjectIndex].SubType))
+        {
+            Body.Shield = std::min(Body.Shield + Body.ShieldUpStep, Body.ShieldMax);
+        }
+    }
+
+    if (Inventory.ShieldUpStep != 0.f)
+    {
+        Inventory.Shield = std::min(Inventory.Shield + Inventory.ShieldUpStep, Inventory.ShieldMax);
+    }
 }
