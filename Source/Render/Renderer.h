@@ -37,6 +37,8 @@ enum class ESpriteBlend : uint8_t
     InverseSourceColor,
     // Draw modes 2 and 3 blend by an alpha the caller gives.
     Alpha,
+    // Lifts the destination toward white by the source: destination + source * (1 - destination), for the gamma offsets.
+    Screen,
     Count,
 };
 

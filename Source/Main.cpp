@@ -2088,6 +2088,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     std::optional<FSpriteSheet> SightSheet;
     // FUN_00403b70 loads Data\Menu\pause.gaf's first animation, which FUN_00403d70 centres on the screen in draw mode 7.
     const std::optional<FObjectGaf> PauseGaf = LoadObjectGaf(Archive, "common\\data\\menu\\pause.gaf");
+    // EngineRunLevel shows Data\Extra\failed.gaf's skull when the player dies: animation 2 (its dark outline, mode 8) under animation 1, centred, until the game ends (FUN_004457f0).
+    const std::optional<FObjectGaf> FailedGaf = LoadObjectGaf(Archive, "common\\data\\extra\\failed.gaf");
+    std::optional<FSpriteSheet> FailedSheet;
+    // A white pixel that the gamma pass stretches over the screen.
+    std::optional<FSpriteSheet> WhiteSheet;
+    FDeathDrift DeathDrift;
     std::optional<FSpriteSheet> PauseSheet;
     // Backspace, then the digits 1 to 9.
     constexpr size_t WeaponKeyCount = 10;
@@ -2281,6 +2287,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             const auto Pressed = [Window](const int Key) { return glfwGetKey(Window, Key) == GLFW_PRESS; };
             if (Player)
             {
+                // EngineUpdateObjects clears the lock before its objects update, dead player or not; nothing locks onto a dead player again.
+                if (Combat)
+                {
+                    Combat->bPlayerLocked = false;
+                }
+
                 // The dead player's object skips its updates until the timer ends the game (game update result 0).
                 if (DeathTimer)
                 {
@@ -2289,13 +2301,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     {
                         break;
                     }
+
+                    StepDeathDrift(DeathDrift, *Player, *Level, StepMilliseconds);
                 }
                 else
                 {
-                    // EngineUpdateObjects clears the lock before its objects update; the player's update starts with its surprises (FUN_0041d290).
+                    // The player's update starts with its surprises (FUN_0041d290).
                     if (Combat)
                     {
-                        Combat->bPlayerLocked = false;
                         StepSurprises(*Combat, *Level, Bodies, *Player, *PlayerClass, Inventory, Messages, StepMilliseconds);
                     }
 
@@ -2415,9 +2428,18 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         ExplodePlayer(*Combat, Player->Position, PlayerObject->Altitude);
                         PlayerObject->bRemoved = true;
                         DeathTimer = DeathMilliseconds;
+                        Player->bDying = true;
                         if (GameAudio)
                         {
                             GameAudio->PlayDeath();
+                            GameAudio->StopMotor();
+                        }
+
+                        // With Gamma FX the screen turns red until the game ends.
+                        constexpr int32_t DeathRed = 0x50;
+                        if (Settings.Details.bGammaFx)
+                        {
+                            Inventory.Surprises.Gamma = { DeathRed, 0, 0 };
                         }
                     }
                 }
@@ -2914,7 +2936,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             Panel->PostWarnings(PanelValues(), Messages);
             PayForMap();
             // PanelUpdate with HUD Green Info: while locked, one of four warnings by the game clock, held ten seconds; with the bars showing a shield at 1% or less, Shield Low, held fifteen.
-            if (Settings.Details.bGreenInfo)
+            if (Settings.Details.bGreenInfo && !DeathTimer)
             {
                 const FPanelValues Values = PanelValues();
                 if (Values.bLocked)
@@ -2974,6 +2996,24 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
+        if (DeathTimer && FailedGaf && FailedGaf->Animations.size() >= 2)
+        {
+            if (!FailedSheet)
+            {
+                FailedSheet = Renderer.CreateSpriteSheet(FailedGaf->Bitmaps);
+            }
+
+            const float CentreX = float(int32_t(ScreenWidth) >> 1);
+            const float CentreY = float(int32_t(ScreenHeight) >> 1);
+            for (const size_t Animation : { size_t(1), size_t(0) })
+            {
+                if (!FailedGaf->Animations[Animation].Frames.empty())
+                {
+                    DrawHudSprite(Renderer, *FailedSheet, { .Frame = FailedGaf->Animations[Animation].Frames.front(), .X = CentreX, .Y = CentreY });
+                }
+            }
+        }
+
         if (Sight && Player)
         {
             if (!SightSheet)
@@ -3006,6 +3046,47 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 const float X = float((int32_t(ScreenWidth) - int32_t(Bitmap.Width)) / 2 - Bitmap.TrimX);
                 const float Y = float((int32_t(ScreenHeight) - int32_t(Bitmap.Height)) / 2 - Bitmap.TrimY);
                 Renderer.DrawSprite(*PauseSheet, Frame.BitmapIndex - 1, X, Y, false, false, FrameBlend(Frame));
+            }
+        }
+
+        // EngineRunLevel with Gamma FX, each frame unless a lift is taking the player: the gamma ramp takes the offsets (FUN_0045ffc0), a positive one lifting a channel toward white by offset / 256 of the way and a negative one scaling it by (offset + 255) / 256.
+        // While the player lives each offset then steps one toward zero; the dead player's red stays.
+        if (Settings.Details.bGammaFx && !NextLevel)
+        {
+            std::array<int32_t, 3>& Gamma = Inventory.Surprises.Gamma;
+            constexpr int32_t GammaLimit = 0xff;
+            const std::array<int32_t, 3> Shown = { std::clamp(Gamma[0], -GammaLimit, GammaLimit), std::clamp(Gamma[1], -GammaLimit, GammaLimit),
+                std::clamp(Gamma[2], -GammaLimit, GammaLimit) };
+            if (!DeathTimer)
+            {
+                for (int32_t& Channel : Gamma)
+                {
+                    Channel -= Channel > 0 ? 1 : Channel < 0 ? -1 : 0;
+                }
+            }
+
+            const auto Pack = [&](const auto Part) { return uint32_t(Part(Shown[0])) << 16 | uint32_t(Part(Shown[1])) << 8 | uint32_t(Part(Shown[2])); };
+            const uint32_t Lift = Pack([](const int32_t Offset) { return std::max(Offset, 0); });
+            const uint32_t Darken = Pack([](const int32_t Offset) { return Offset < 0 ? 1 - Offset : 0; });
+            if (Lift != 0 || Darken != 0)
+            {
+                if (!WhiteSheet)
+                {
+                    constexpr uint16_t White = 0x7fff;
+                    WhiteSheet = Renderer.CreateSpriteSheet({ Gaf::FFrame{ .Width = 1, .Height = 1, .Pixels = { White } } });
+                }
+
+                const float Width = float(ScreenWidth);
+                const float Height = float(ScreenHeight);
+                if (Lift != 0)
+                {
+                    Renderer.DrawSprite(*WhiteSheet, 0, 0.f, 0.f, false, false, ESpriteBlend::Screen, Width, Height, UINT32_MAX, Lift);
+                }
+
+                if (Darken != 0)
+                {
+                    Renderer.DrawSprite(*WhiteSheet, 0, 0.f, 0.f, false, false, ESpriteBlend::InverseSourceColor, Width, Height, UINT32_MAX, Darken);
+                }
             }
         }
 
@@ -3241,6 +3322,7 @@ int main(const int ArgCount, char** const Args)
             FDetailKey{ .Name = "hud-green-info", .Field = &FVideoDetails::bGreenInfo },
             FDetailKey{ .Name = "translucent-panel", .Field = &FVideoDetails::bTranslucentPanel },
             FDetailKey{ .Name = "tv-borders", .Field = &FVideoDetails::bTvBorders },
+            FDetailKey{ .Name = "gamma-fx", .Field = &FVideoDetails::bGammaFx },
             FDetailKey{ .Name = "low-details", .Field = &FVideoDetails::bLowDetails },
             FDetailKey{ .Name = "high-details", .Field = &FVideoDetails::bLowDetails, .bInverted = true },
         };

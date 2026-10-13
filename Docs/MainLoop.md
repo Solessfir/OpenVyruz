@@ -45,7 +45,25 @@ The port therefore cannot use a fixed tick and stay faithful: it must reproduce 
 
 The player dies like any object once its energy is spent: `EngineUpdateObjects` calls `ObjectDestroy` with its keep flag, so the player's `TYPE Explosion` blocks go off (the Vyruz's blasts reach 256 pixels) and the object stays, and sets its timer at object `+0xcc` to 10 seconds. While the timer runs the player's updates are skipped; when it runs out the game update returns 0. `EngineRunLevel` then ends the game with `EngineGameOver` (`00445a40`), which shows `tmp\game-over.gaf` centred for up to 5 seconds (any key or mouse button ends it, `ShowImageWait` at `00404950`), saves the score table `vz.sco` (`SaveScores`, `0043e470`) and clears the level name, so the menu follows. There are no lives.
 
-The port has no menu yet and starts the level over without the carried player.
+While the timer runs, `EngineRunLevel` (`0043e5f0`) plays out the death:
+
+- **No target**: `SeekerFindTarget` (`0042da80`) takes only objects whose `+0xcc` timer is below 1, and a seeker drops a target that moved, so the enemies stop hunting.
+- **The skull**: `FUN_004457f0` puts `Data\Extra\failed.gaf` at the screen's centre as two animation messages that last until the game ends: animation 2, a dark outline in draw mode 8, under animation 1, the skull.
+- **The motor** stops (`SoundStop(8)`).
+- **Red**: with Gamma FX on and a gamma ramp available, the gamma offsets (session `+0x25a0`) become 80, 0, 0. While the player is dead they are applied as they are and do not decay. See [Gamma flashes](#gamma-flashes).
+- **The drift**: after each update the dead player's position, which the view follows, moves at 0.5 pixels per update, then at 3 per 14 ms step (`3 / (14 / step)`), in a growing square: right, up, left, down. It turns, without moving that update, whenever the position leaves the level or the truncated X or Y is a multiple of the turn interval, which starts at 32 and grows by 30 with each turn.
+
+## Gamma flashes
+
+With Gamma FX (option flag `0x80`) and a gamma ramp, `EngineRunLevel` hands the gamma offsets (session `+0x25a0`, red, green, blue) to the ramp on every frame while no lift is taking the player (`FUN_0045ffc0`, clamped to ±255). On top of the user's own gamma (session `+0x27d4`), a positive offset lifts a channel toward white by `(255 - c) * offset >> 8` and a negative one scales it by `(offset + 255) >> 8` (`FUN_00460160`). While the player lives each offset then steps one toward zero per frame, and the ramp goes back to the user's gamma once all three reach zero. Flashes push all three offsets:
+
+| Event | Push | Clamp |
+|---|---|---|
+| A blast of 300 or more on the living player (`AreaDamage`) | 60, or 30 below 1000 | ±100 |
+| The trap surprise | 100 | ±150 |
+| The destroy-around surprise | 200 | ±150 |
+
+The port draws the offsets as a full-screen pass over the finished frame: a screen blend for positive offsets and an inverse-source darkening for negative ones. Its swapchain is UNORM, so the blend works on display values as the ramp did. It does not read the user's gamma setting.
 
 ## Object passes
 

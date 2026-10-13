@@ -7,6 +7,7 @@
 #include "Pg/Gaf.h"
 #include "Pg/Random.h"
 
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <optional>
@@ -126,6 +127,8 @@ struct FPlayerState
     bool bPushed = false;
     // Object flag 8: seekers and gates do not find the object, and the player takes no damage.
     bool bInvisible = false;
+    // Object +0xcc runs: the dead player waits for the game to end, and SeekerFindTarget (0042da80) takes no such object for a target.
+    bool bDying = false;
     // Object +0x258: forward thrust sets it to a second and every other step runs it down (EngineUpdateObjects at 004406e0); ObjectDraw shows the player's reactor glow while it lasts.
     uint32_t ReactorMilliseconds = 0;
 };
@@ -193,6 +196,8 @@ struct FSurpriseState
     float DecelerationStep = 0.f;
     float Elasticity = 0.f;
     FCollisionPoint Friction;
+    // Session +0x25a0: the red, green and blue gamma offsets that flashes push and each frame takes back by one (EngineRunLevel at 0043e5f0).
+    std::array<int32_t, 3> Gamma{};
     // Reload-weapons gives back the stocks it found when it ends.
     std::vector<float> SavedAmmo;
     // Invisible: the drone's body stays where it was (session +0x26ac) and the drone flies back to it in the last second (FUN_00445380).
@@ -613,6 +618,8 @@ struct FVideoDetails
     bool bTvBorders = true;
     // Flag 0x40 (Ground/Smoke details off): hides Is-detail classes and the player's front light.
     bool bLowDetails = false;
+    // Flag 0x80: the screen flashes and the death's red tint through the gamma ramp.
+    bool bGammaFx = true;
 };
 
 // The player's weapons (ADD Weapon blocks), the shots in flight and the game clock and random generator they use.
@@ -805,5 +812,17 @@ std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive)
 int CountEnemies(const FLevel& Level, std::span<const FObjectBody> Bodies);
 // Every level's gates close with nothing near and open for the player, and the player rides every usable lift.
 std::expected<std::string, std::string> VerifyDoors(FResourceArchive& Archive);
+// EngineRunLevel at 0043e5f0 moves the dead player's position, which the view follows, in a growing square: right, up, left, down.
+// It turns whenever a coordinate lands on a multiple of the turn interval or leaves the level.
+struct FDeathDrift
+{
+    float VelocityX = 0.5f;
+    float VelocityY = 0.f;
+    int32_t TurnInterval = 32;
+};
+void StepDeathDrift(FDeathDrift& Drift, FPlayerState& Player, const FLevel& Level, uint32_t StepMilliseconds);
+// The flashes that push the gamma offsets, each channel clamped to Limit.
+void PushGamma(std::array<int32_t, 3>& Gamma, int32_t Amount, int32_t Limit);
+
 // Replays the CAVE\DEMO.3DR inputs through StepPlayer and compares every step with the recorded position.
 std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archive);

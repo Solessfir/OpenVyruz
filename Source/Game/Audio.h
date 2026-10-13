@@ -128,8 +128,9 @@ public:
 
     // PlayerUpdateMotorSound (00445c50), every frame of a level: while the player's motor works its loop plays on channel 4, louder with speed, from a third of the sound-fx volume up; a blocked motor tries start-engine.wav when the player thrusts.
     void UpdateMotor(const FPlayerState& Player, float ThrustMax, bool bBlockedMotor, bool bThrusting);
-    // EngineRunLevel at 0043e5f0 stops the player's weapon and motor channels when the level ends.
+    // EngineRunLevel at 0043e5f0 stops the player's weapon and motor channels when the level ends, and the motor alone when the player dies.
     void StopLevelChannels();
+    void StopMotor();
 
     // ObjectsUpdateWeaponSounds (0043df70) for the player, each frame, on channel 2 at priority 0xbf.
     // Firing, a weapon with Fire-start-sound plays it first and its Fire-sound once that ends; one without plays Fire-sound straight away, looping with Fire-sound-loop, else again whenever it ends.

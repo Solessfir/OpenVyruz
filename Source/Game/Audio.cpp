@@ -292,6 +292,11 @@ void FAudio::StopLevelChannels()
     Mixer.Stop(ChannelBit(PlayerWeaponChannel) | ChannelBit(MotorChannel));
 }
 
+void FAudio::StopMotor()
+{
+    Mixer.Stop(ChannelBit(MotorChannel));
+}
+
 void FAudio::UpdatePlayerWeapon(const FWeaponClass& Weapon, const bool bFiring, const bool bStock, const float Rounds)
 {
     constexpr uint32_t PlayerWeaponPriority = 0xbf;

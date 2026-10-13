@@ -2472,8 +2472,17 @@ void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float
                 ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield, *Amount);
             }
 
-            // AreaDamage at 0043cb20: a blast of 300 or more makes a living player cry out three times in eight by the game clock.
+            // AreaDamage at 0043cb20: a blast of 300 or more flashes the screen (60, or 30 below 1000) and makes a living player cry out three times in eight by the game clock.
             constexpr float CryDamage = 300.f;
+            constexpr float StrongBlast = 1000.f;
+            constexpr int32_t StrongFlash = 60;
+            constexpr int32_t WeakFlash = 30;
+            constexpr int32_t BlastFlashLimit = 100;
+            if (CryDamage <= Damage && 0.f < Player.Inventory.Energy)
+            {
+                PushGamma(Player.Inventory.Surprises.Gamma, Damage < StrongBlast ? WeakFlash : StrongFlash, BlastFlashLimit);
+            }
+
             constexpr std::array Cries = { EVoice::Ooh, EVoice::Looser, EVoice::SadMan };
             constexpr uint32_t CryMask = 7;
             if (CryDamage <= Damage && 0.f < Player.Inventory.Energy)
@@ -3282,6 +3291,9 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
         Inventory.Shield = float(double(Inventory.Shield) * double(TrapScale));
         State.ShakeX = Combat.Random.Range(-ShakeRange, ShakeRange);
         State.ShakeY = Combat.Random.Range(-ShakeRange, ShakeRange);
+        constexpr int32_t TrapFlash = 100;
+        constexpr int32_t SurpriseFlashLimit = 150;
+        PushGamma(State.Gamma, TrapFlash, SurpriseFlashLimit);
         break;
     }
     case ESurprise::WeaponJam:
@@ -3348,6 +3360,9 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
 
         State.ShakeX = Combat.Random.Range(-ShakeRange, ShakeRange);
         State.ShakeY = Combat.Random.Range(-ShakeRange, ShakeRange);
+        constexpr int32_t DestroyFlash = 200;
+        constexpr int32_t SurpriseFlashLimit = 150;
+        PushGamma(State.Gamma, DestroyFlash, SurpriseFlashLimit);
         break;
     }
     case ESurprise::Invisible:
@@ -4545,12 +4560,59 @@ EPathStatus AdvanceRoute(FObjectBody& Body, FRouteWork& Work, std::optional<std:
     return Status;
 }
 
+}
+
+void PushGamma(std::array<int32_t, 3>& Gamma, const int32_t Amount, const int32_t Limit)
+{
+    for (int32_t& Channel : Gamma)
+    {
+        Channel = std::clamp(Channel + Amount, -Limit, Limit);
+    }
+}
+
+void StepDeathDrift(FDeathDrift& Drift, FPlayerState& Player, const FLevel& Level, const uint32_t StepMilliseconds)
+{
+    constexpr int32_t TurnIntervalStep = 30;
+    constexpr float DriftSpeed = 3.f;
+    const float X = Player.Position.X;
+    const float Y = Player.Position.Y;
+    const bool bOutside = X < 0.f || Y < 0.f || float(Level.WorldExtentX) <= X || float(Level.WorldExtentY) <= Y;
+    if (!bOutside && TruncateLow(X) % Drift.TurnInterval != 0 && TruncateLow(Y) % Drift.TurnInterval != 0)
+    {
+        Player.Position = { .X = X + Drift.VelocityX, .Y = Y + Drift.VelocityY };
+        Player.Center = CollisionFromWorld(Player.Position);
+        return;
+    }
+
+    // The turn itself does not move; the speed is 3 per 14 ms step (session +0x2744 is 14 / step).
+    const float Speed = DriftSpeed / float(ReferenceStepMilliseconds / double(StepMilliseconds));
+    Drift.TurnInterval += TurnIntervalStep;
+    if (Drift.VelocityX > 0.f)
+    {
+        Drift = { .VelocityX = 0.f, .VelocityY = -Speed, .TurnInterval = Drift.TurnInterval };
+    }
+    else if (Drift.VelocityX < 0.f)
+    {
+        Drift = { .VelocityX = 0.f, .VelocityY = Speed, .TurnInterval = Drift.TurnInterval };
+    }
+    else if (Drift.VelocityY > 0.f)
+    {
+        Drift = { .VelocityX = Speed, .VelocityY = 0.f, .TurnInterval = Drift.TurnInterval };
+    }
+    else if (Drift.VelocityY < 0.f)
+    {
+        Drift = { .VelocityX = -Speed, .VelocityY = 0.f, .TurnInterval = Drift.TurnInterval };
+    }
+}
+
+namespace
+{
 // SeekerFindTarget at 0042da80 for the player: alive, within Sensor-Range and within the vision cone around the body's facing.
 // ponytail: the grid-cell window around the seeker is replaced by the distance test it ends in; a player outside the window but in range is still found.
 // A guardian searches its Guardian Range in every direction instead.
 bool FindTarget(const FObjectBody& Body, const FSeeker& Seeker, const FPlayerState& Player)
 {
-    if (Player.bInvisible)
+    if (Player.bInvisible || Player.bDying)
     {
         return false;
     }
@@ -5003,7 +5065,7 @@ void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrai
                 Turret.ScanTimer += Turret.ScanDelay;
                 const bool bInRange = DistanceSquared <= float(int(Turret.SensorRange) * int(Turret.SensorRange));
                 const bool bInView = DirectionDistance(FindDirection(ToTarget), Turret.BaseDirection) <= Turret.VisionDirections;
-                if (bInRange && bInView && !Player.bInvisible && Turret.Search.Start(Body.State.Center, Player.Center))
+                if (bInRange && bInView && !Player.bInvisible && !Player.bDying && Turret.Search.Start(Body.State.Center, Player.Center))
                 {
                     Turret.bSearching = true;
                     Turret.SearchTimer = 0;

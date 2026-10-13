@@ -355,9 +355,15 @@ void FRenderer::CreatePipeline()
         // Original hardware blend states at 00496280: mode 6 adds light, mode 8 darkens with inverse source RGB, modes 2 and 4 blend by alpha.
         const bool bAdditive = Index == static_cast<size_t>(ESpriteBlend::Additive);
         const bool bAlpha = Index == static_cast<size_t>(ESpriteBlend::Alpha);
+        const bool bScreen = Index == static_cast<size_t>(ESpriteBlend::Screen);
         BlendAttachment.blendEnable = Index != static_cast<size_t>(ESpriteBlend::Opaque);
-        BlendAttachment.srcColorBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE : bAlpha ? VK_BLEND_FACTOR_SRC_ALPHA : VK_BLEND_FACTOR_ZERO;
-        BlendAttachment.dstColorBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE : bAlpha ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        BlendAttachment.srcColorBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE
+                                              : bAlpha  ? VK_BLEND_FACTOR_SRC_ALPHA
+                                              : bScreen ? VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR
+                                                        : VK_BLEND_FACTOR_ZERO;
+        BlendAttachment.dstColorBlendFactor = bAdditive || bScreen ? VK_BLEND_FACTOR_ONE
+                                              : bAlpha             ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+                                                                   : VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
         BlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
         BlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &PipelineInfo, nullptr, &SpritePipelines[Index]), "vkCreateGraphicsPipelines");
