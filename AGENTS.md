@@ -74,3 +74,5 @@ Implemented: Premake + GLFW + Vulkan window with letterboxed 640x480 space; `.rs
 Next: audio, then the intro and cutscenes, and the settings behind Options (difficulty from `COMMON\DIFFICULTY.3DC`, keys, details).
 
 Todo: sessions in the original's format (`session\<session-name>\default` and `s%03d` in the game folder: `last.txt`, the `<zone>-<level>.3do` snapshot with carried objects written before their carrier, and the `.tga` thumbnail), read and written, so the port and the original share one save folder. See [Docs/Menus.md](Docs/Menus.md#sessions).
+
+Todo: Gamma FX (`gamma-fx`, option flag `0x80`): the original fades the whole screen through the display's gamma ramp at level start and end (`EngineRunLevel`, `FUN_0041e5a0`), at game over (`EngineGameOver`), around surprises (`SurpriseStart`, `SurpriseEnd`) and in `FUN_00445dd0`. The port needs a screen-wide colour scale in the renderer and each call site's curve, duration and colour.
