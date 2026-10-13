@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -56,6 +57,9 @@ struct FHudSprite
     uint32_t Specular = 0;
     // Below one the sprite blends by this alpha (draw mode 3).
     float Alpha = 1.f;
+    // DrawAnimationFrame's stretch, which also scales the hotspot offset.
+    float ScaleX = 1.f;
+    float ScaleY = 1.f;
 };
 
 // What the panel shows of the player and the level.
@@ -74,6 +78,13 @@ struct FPanelValues
     uint32_t TimeMilliseconds = 0;
     // Session +0x1028, 1-based.
     size_t WeaponSlot = 0;
+    // The player's acceleration differs from its class's (object +0x1a4), as under the speed surprises.
+    bool bBoost = false;
+    // Session +0x20 bit 0x200000: a seeker engaged the player in the last step.
+    bool bLocked = false;
+    // A surprise is in effect (object +0xd4), and the time left of each one started, in milliseconds.
+    bool bSurprise = false;
+    std::vector<int32_t> SurpriseTimes;
 };
 
 struct FRadarDot
@@ -91,12 +102,19 @@ public:
     // PanelLoad at 00434d40 loads the panel GAFs and starts one animation per slot.
     static std::expected<FPanel, std::string> Load(FResourceArchive& Archive);
 
-    // The update pass (param 0): the animated slots advance by the step.
-    void Step(const FPanelValues& Values, int32_t StepMilliseconds);
+    // The update pass (param 0): the animated slots advance by the step. The weapon lights draw from the Misc random stream in both passes.
+    void Step(const FPanelValues& Values, int32_t StepMilliseconds, FRandom& Misc);
     // The draw pass, back to front.
-    std::vector<FHudSprite> Draw(const FPanelValues& Values, std::span<const FRadarDot> Radar, int ViewWidth, int ViewHeight) const;
-    // The draw pass also keeps the low shield warning up.
-    static void PostWarnings(const FPanelValues& Values, FMessages& Messages);
+    std::vector<FHudSprite> Draw(const FPanelValues& Values, std::span<const FRadarDot> Radar, int ViewWidth, int ViewHeight, FRandom& Misc) const;
+    // The draw pass also keeps the lock and low shield warnings up.
+    void PostWarnings(const FPanelValues& Values, FMessages& Messages) const;
+    // action-cycle-panels (PanelCycleModes at 0043ba30): the mode steps through 0 to 5 and back; Left Shift steps the other way without turning round.
+    void CyclePanels(bool bReverse);
+    // MapToggleWithPanel at 0043b570: the map shows the text-only mode 1 and gives the previous mode back when it closes.
+    void ShowMap(bool bShown);
+    int GetMode() const { return Mode; }
+    // A panel.gaf animation's current frame at X, Y, as the map's icons draw (PanelDrawMapIcon at 004363f0).
+    std::optional<FHudSprite> DrawAnimation(size_t Animation, float X, float Y) const;
     // A message's visible text in its font, as MessagesUpdate prints it.
     void DrawMessage(std::vector<FHudSprite>& Out, const FMessage& Message, int32_t X, int32_t Y, std::string_view Text) const;
     // A text page in a v-bonus.gaf font with word wrap inside Left, Top to Right, as the story and ending screens print it (FUN_004025b0).
@@ -131,6 +149,11 @@ private:
     std::array<FSlot, SlotCount> Slots;
     // Session +0x22b8, one per weapon slot.
     std::array<FSlot, WeaponIconCount> Icons;
+    // Session +0x2578: what the panel shows, from 0 (nothing) to 5 (everything); PanelLoad starts at 5. +0x257c keeps the mode the map
+    // replaced and +0x2580 the cycling step.
+    int Mode = 5;
+    int SavedMode = 5;
+    int ModeStep = -1;
 };
 
 // A GAF's bitmaps and animations, and its FNT_ fonts, as VzLoadGaf loads them for the panel and the menus.

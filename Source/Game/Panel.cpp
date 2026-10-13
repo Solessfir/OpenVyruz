@@ -34,8 +34,14 @@ constexpr std::string_view BonusPath = "common\\data\\extra\\v-bonus.gaf";
 constexpr size_t EnergyWarningSlot = 0;
 constexpr size_t WeaponBaseSlot = 1;
 constexpr size_t ScreenSlot = 2;
-// Slot 3 (Weapons4) replaces it while the player's acceleration differs from its class value, which the port does not change.
+// Slot 3 (Weapons4) replaces slot 4 (Weapons3) while the player's acceleration differs from its class value.
+constexpr size_t BoostSlot = 3;
 constexpr size_t WeaponIdleSlot = 4;
+// The TV borders: hbar2 along the top, hbar1 the bottom, vbar2 the left and vbar1 the right.
+constexpr size_t TopBorderSlot = 6;
+constexpr size_t BottomBorderSlot = 7;
+constexpr size_t LeftBorderSlot = 8;
+constexpr size_t RightBorderSlot = 9;
 constexpr size_t WeaponLightsSlot = 5;
 constexpr size_t ShieldBarSlot = 10;
 constexpr size_t EnergyBarSlot = 11;
@@ -53,6 +59,23 @@ constexpr std::array<size_t, 6> VPanelSlots = { ScreenSlot, 6, 7, 8, 9, 21 };
 constexpr size_t ScoreFont = 1;
 constexpr size_t SpeedFont = 2;
 constexpr size_t ScreenFont = 3;
+
+// The least panel mode of each block: the borders and text line from 1, the bars from 2, the score and weapon from 3, the speedometer and
+// radar from 4 and the screen at 5.
+constexpr int TextMode = 1;
+constexpr int BarsMode = 2;
+constexpr int ScoreMode = 3;
+constexpr int SpeedMode = 4;
+constexpr int ScreenMode = 5;
+
+// While the weapon in hand has rounds (its bound ammo stock, object +0x248, holds some), PanelUpdate shows the weapon lights only on one
+// RandomBelow(53) draw of the Misc stream in 53, in either pass.
+bool WeaponLightsShown(const FPanelValues& Values, FRandom& Misc)
+{
+    constexpr int FlickerOdds = 0x35;
+    constexpr int ShownDraw = 1;
+    return Values.Ammo == 0.f || Misc.Below(FlickerOdds) == ShownDraw;
+}
 
 // "DANGER: SHIELD IS LOW" and the blinking warning start at 1 percent shield.
 constexpr float ShieldLowRatio = 0.01f;
@@ -209,24 +232,74 @@ std::expected<FPanel, std::string> FPanel::Load(FResourceArchive& Archive)
     return Result;
 }
 
-void FPanel::Step(const FPanelValues& Values, const int32_t StepMilliseconds)
+void FPanel::Step(const FPanelValues& Values, const int32_t StepMilliseconds, FRandom& Misc)
 {
-    // ponytail: the weapon lights do not flicker with the panel's own random stream while firing, the boost light stays off, and the infos
-    // light waits for the turret lock; the slots that only blink in those cases stay still.
-    UpdateAnimation(Slots[ScoreSlot].Playback, Slots[ScoreSlot].Animation, StepMilliseconds);
-    if (ShieldLow(Values))
+    const auto Update = [&](const size_t Slot) { UpdateAnimation(Slots[Slot].Playback, Slots[Slot].Animation, StepMilliseconds); };
+    if (Mode >= ScoreMode)
     {
-        UpdateAnimation(Slots[EnergyWarningSlot].Playback, Slots[EnergyWarningSlot].Animation, StepMilliseconds);
+        Update(ScoreSlot);
     }
 
-    UpdateAnimation(Slots[WeaponIdleSlot].Playback, Slots[WeaponIdleSlot].Animation, StepMilliseconds);
-    UpdateAnimation(Slots[WeaponLightsSlot].Playback, Slots[WeaponLightsSlot].Animation, StepMilliseconds);
-    // Only the icon of the slot in hand plays.
-    if (Values.WeaponSlot >= 1 && Values.WeaponSlot <= WeaponIconCount)
+    if (Mode >= BarsMode && ShieldLow(Values))
     {
-        FSlot& Icon = Icons[Values.WeaponSlot - 1];
-        UpdateAnimation(Icon.Playback, Icon.Animation, StepMilliseconds);
+        Update(EnergyWarningSlot);
     }
+
+    if (Mode >= ScoreMode)
+    {
+        Update(Values.bBoost ? BoostSlot : WeaponIdleSlot);
+        if (WeaponLightsShown(Values, Misc))
+        {
+            Update(WeaponLightsSlot);
+        }
+
+        // Only the icon of the slot in hand plays.
+        if (Values.WeaponSlot >= 1 && Values.WeaponSlot <= WeaponIconCount)
+        {
+            FSlot& Icon = Icons[Values.WeaponSlot - 1];
+            UpdateAnimation(Icon.Playback, Icon.Animation, StepMilliseconds);
+        }
+    }
+
+    // The infos light plays while the player is locked.
+    if (Mode >= ScreenMode && Values.bLocked)
+    {
+        Update(InfosSlot);
+    }
+}
+
+void FPanel::CyclePanels(const bool bReverse)
+{
+    constexpr int TopMode = ScreenMode;
+    const int Next = Mode + (bReverse ? -ModeStep : ModeStep);
+    Mode = Next < 0 ? -Next : Next > TopMode ? 2 * TopMode - Next : Next;
+    if (!bReverse && (Mode == 0 || Mode == TopMode))
+    {
+        ModeStep = -ModeStep;
+    }
+}
+
+void FPanel::ShowMap(const bool bShown)
+{
+    if (bShown)
+    {
+        SavedMode = Mode;
+        Mode = TextMode;
+        return;
+    }
+
+    Mode = SavedMode;
+}
+
+std::optional<FHudSprite> FPanel::DrawAnimation(const size_t Animation, const float X, const float Y) const
+{
+    std::vector<FHudSprite> Out;
+    if (Animation >= 1 && Animation <= SlotCount)
+    {
+        DrawSlot(Out, Animation - 1, X, Y, CurrentFrame);
+    }
+
+    return Out.empty() ? std::nullopt : std::optional(Out.front());
 }
 
 void FPanel::DrawSlot(std::vector<FHudSprite>& Out, const size_t Slot, const float X, const float Y, const uint32_t Frame, const uint32_t VisibleColumns) const
@@ -293,132 +366,226 @@ std::vector<FHudSprite> FPanel::DrawPage(const size_t Font, const std::string_vi
     return Out;
 }
 
-void FPanel::PostWarnings(const FPanelValues& Values, FMessages& Messages)
+void FPanel::PostWarnings(const FPanelValues& Values, FMessages& Messages) const
 {
-    // ponytail: "WARNING : YOU ARE LOCKED" at 100, 90 waits for the turret lock. Both need option flag 8 ("HUD Green Info"), which the
-    // highest detail preset turns on; the port has no detail options and keeps it on.
-    constexpr int32_t ShieldWarningX = 100;
+    // Both need option flag 8 ("HUD Green Info"), which the highest detail preset turns on; the port has no detail options and keeps it on.
+    // The lock warning shows in every mode but 0, the shield warning with the bars.
+    constexpr int32_t WarningX = 100;
+    constexpr int32_t LockWarningY = 90;
     constexpr int32_t ShieldWarningY = 100;
     constexpr uint32_t WarningLifeMilliseconds = 500;
-    if (!ShieldLow(Values))
+    const auto Warn = [&](const int32_t Y, const std::string_view Text)
     {
-        return;
+        if (Messages.Exists(WarningX, Y))
+        {
+            Messages.SetLife(WarningX, Y, WarningLifeMilliseconds);
+            return;
+        }
+
+        Messages.Add({
+            .Text = std::string(Text),
+            .X = float(WarningX),
+            .Y = float(Y),
+            .LifeMilliseconds = WarningLifeMilliseconds,
+            .bTypewriter = true,
+            .Gaf = EMessageGaf::Panel,
+            .Font = ScreenFont,
+        }, EMessagePlacement::Replace);
+    };
+    if (Mode >= TextMode && Values.bLocked)
+    {
+        Warn(LockWarningY, "WARNING : YOU ARE LOCKED");
     }
 
-    if (Messages.Exists(ShieldWarningX, ShieldWarningY))
+    if (Mode >= BarsMode && ShieldLow(Values))
     {
-        Messages.SetLife(ShieldWarningX, ShieldWarningY, WarningLifeMilliseconds);
-        return;
+        Warn(ShieldWarningY, "DANGER : SHIELD IS LOW");
     }
-
-    Messages.Add({
-        .Text = "DANGER : SHIELD IS LOW",
-        .X = float(ShieldWarningX),
-        .Y = float(ShieldWarningY),
-        .LifeMilliseconds = WarningLifeMilliseconds,
-        .bTypewriter = true,
-        .Gaf = EMessageGaf::Panel,
-        .Font = ScreenFont,
-    }, EMessagePlacement::Replace);
 }
 
-std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span<const FRadarDot> Radar, const int ViewWidth, const int ViewHeight) const
+std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span<const FRadarDot> Radar, const int ViewWidth, const int ViewHeight,
+    FRandom& Misc) const
 {
     std::vector<FHudSprite> Out;
     const float Left = 0.f;
     const float Top = 0.f;
     const float Right = float(ViewWidth - 1);
     const float Bottom = float(ViewHeight - 1);
-
-    // Score, top left.
-    constexpr int32_t ScoreTextX = 0x24;
-    constexpr int32_t ScoreTextY = 0x1e;
-    DrawSlot(Out, ScoreSlot, Left, Top, FirstFrame);
-    DrawSlot(Out, ScoreSlot, Left, Top, CurrentFrame);
-    DrawSlot(Out, ScoreBaseSlot, Left, Top, FirstFrame);
-    DrawText(Out, EHudSheet::Panel, ScoreFont, ScoreTextX, ScoreTextY, std::format("{:08} $", int32_t(Values.Money)));
-
-    // Shield and energy bars, top centre; each bitmap is clipped to its ratio (pgbmp FUN_0044ed60 with an inclusive right edge).
-    const float Centre = float(ViewWidth >> 1);
-    DrawSlot(Out, EnergyWarningSlot, Centre, Top, FirstFrame);
-    if (ShieldLow(Values))
-    {
-        DrawSlot(Out, EnergyWarningSlot, Centre, Top, CurrentFrame);
-    }
-
-    const auto BarColumns = [&](const size_t Slot, const float Value, const float Max)
-    {
-        const FSlot& Bar = Slots[Slot];
-        const uint32_t Bitmap = Bar.Animation.Frames.empty() ? 0 : Bar.Animation.Frames.front().BitmapIndex;
-        const uint32_t Width = Bitmap != 0 && Bitmap <= Bitmaps.size() ? Bitmaps[Bitmap - 1].Width : 0;
-        return uint32_t(std::clamp(BarColumn(Width, Value, Max) + 1, 0, int32_t(Width)));
-    };
-    DrawSlot(Out, ShieldBarSlot, Centre, Top, CurrentFrame, BarColumns(ShieldBarSlot, Values.Shield, Values.ShieldMax));
-    DrawSlot(Out, EnergyBarSlot, Centre, Top, CurrentFrame, BarColumns(EnergyBarSlot, Values.Energy, Values.EnergyMax));
-
-    // Weapon block, top right, with the icon of the slot in hand on its screen.
-    constexpr int32_t AmmoTextX = -0x6b;
-    constexpr int32_t AmmoTextY = 9;
-    constexpr float IconX = -0x3c;
-    constexpr float IconY = 0x46;
-    DrawSlot(Out, WeaponBaseSlot, Right, Top, FirstFrame);
-    DrawSlot(Out, WeaponIdleSlot, Right, Top, CurrentFrame);
-    DrawSlot(Out, WeaponLightsSlot, Right, Top, CurrentFrame);
-    if (Values.WeaponSlot >= 1 && Values.WeaponSlot <= WeaponIconCount)
-    {
-        const FSlot& Icon = Icons[Values.WeaponSlot - 1];
-        const uint32_t Frame = Icon.Playback.bEnded ? 0 : Icon.Playback.Frame;
-        if (Frame >= 1 && Frame <= Icon.Animation.Frames.size())
-        {
-            Out.push_back({ .Sheet = EHudSheet::Icons, .Frame = Icon.Animation.Frames[Frame - 1], .X = Right + IconX, .Y = Top + IconY });
-        }
-    }
-    DrawText(Out, EHudSheet::Panel, ScoreFont, int32_t(Right) + AmmoTextX, AmmoTextY, std::format("{:08}", int32_t(Values.Ammo)));
-
-    // Speedometer and radar, bottom left.
-    DrawSlot(Out, SpeedSlot, Left, Bottom, CurrentFrame);
-    DrawSlot(Out, SpeedTopSlot, Left, Bottom, CurrentFrame);
-    DrawSlot(Out, SpeedSideSlot, Left, Bottom, CurrentFrame);
-    for (const FRadarDot& Dot : Radar)
-    {
-        Out.push_back({ .Sheet = EHudSheet::Colors, .Frame = { .BitmapIndex = uint32_t(Dot.Kind) + 1 }, .X = float(Dot.X), .Y = float(Dot.Y) });
-    }
-
-    // The speed is clamped to three digits before it is scaled by 100 and wrapped.
-    constexpr float SpeedLimit = 1000.f;
-    constexpr float ClampedSpeed = 999.f;
-    constexpr float SpeedScale = 100.f;
-    constexpr int32_t SpeedModulo = 1000;
-    constexpr int32_t SpeedTextX = 0x69;
-    constexpr int32_t SpeedTextY = -4;
-    const float Speed = !(Values.Speed < SpeedLimit) ? ClampedSpeed : Values.Speed <= -SpeedLimit ? -ClampedSpeed : Values.Speed;
-    DrawText(Out, EHudSheet::Panel, SpeedFont, SpeedTextX, int32_t(Bottom) + SpeedTextY, std::format("{:03}", int32_t(double(Speed) * SpeedScale) % SpeedModulo));
-
-    // Screen, bottom right: position, kills, enemies left and the level time.
-    Gaf::FAnimationFrame Screen = Slots[ScreenSlot].Animation.Frames.empty() ? Gaf::FAnimationFrame{} : Slots[ScreenSlot].Animation.Frames.front();
-    Screen.DrawFlags = ScreenDrawMode;
-    Out.push_back({ .Sheet = Slots[ScreenSlot].Sheet, .Frame = Screen, .X = Right, .Y = Bottom, .Alpha = ScreenAlpha });
-    constexpr int32_t ScreenTextX = -0x6b;
-    constexpr int32_t ScreenTextSecondX = -0x48;
-    constexpr int32_t PositionY = -0x46;
-    constexpr int32_t KilledY = -0x3c;
-    constexpr int32_t EnemyY = -0x32;
-    constexpr int32_t TimeY = -0x28;
-    constexpr uint32_t MillisecondsPerHour = 3600000;
     constexpr uint32_t MillisecondsPerMinute = 60000;
     constexpr uint32_t MillisecondsPerSecond = 1000;
-    const int32_t ScreenX = int32_t(Right);
-    const int32_t ScreenY = int32_t(Bottom);
-    DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + PositionY, std::format("{:04}", int32_t(Values.Position.X)));
-    DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextSecondX, ScreenY + PositionY, std::format("{:04}", int32_t(Values.Position.Y)));
-    DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + KilledY, std::format("KILLED {}", Values.Kills));
-    DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + EnemyY, std::format("ENEMY {}", Values.Enemies));
-    const uint32_t Hours = Values.TimeMilliseconds / MillisecondsPerHour;
-    const uint32_t Minutes = (Values.TimeMilliseconds - Hours * MillisecondsPerHour) / MillisecondsPerMinute;
-    const uint32_t Seconds = (Values.TimeMilliseconds - Hours * MillisecondsPerHour - Minutes * MillisecondsPerMinute) / MillisecondsPerSecond;
-    DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + TimeY, std::format("{:02}:{:02}:{:02}", Hours, Minutes, Seconds));
-    DrawSlot(Out, InfosSlot, Right, Bottom, FirstFrame);
-    DrawSlot(Out, InfosBaseSlot, Right, Bottom, FirstFrame);
+    if (Mode >= TextMode)
+    {
+        // The TV borders (option flag 0x20, on at the highest detail preset): each bar stretched along its edge of the view.
+        const auto FrameSize = [&](const size_t Slot)
+        {
+            const FSlot& Source = Slots[Slot];
+            const uint32_t Bitmap = Source.Animation.Frames.empty() ? 0 : Source.Animation.Frames.front().BitmapIndex;
+            const std::vector<Gaf::FFrame>& SheetBitmaps = GetBitmaps(Source.Sheet);
+            return Bitmap != 0 && Bitmap <= SheetBitmaps.size() ? std::pair(SheetBitmaps[Bitmap - 1].Width, SheetBitmaps[Bitmap - 1].Height) : std::pair(0u, 0u);
+        };
+        const auto Stretched = [&](const size_t Slot, const float X, const float Y, const float ScaleX, const float ScaleY)
+        {
+            const size_t First = Out.size();
+            DrawSlot(Out, Slot, X, Y, CurrentFrame);
+            for (size_t Index = First; Index < Out.size(); ++Index)
+            {
+                Out[Index].ScaleX = ScaleX;
+                Out[Index].ScaleY = ScaleY;
+            }
+        };
+        const uint32_t BorderWidth = FrameSize(TopBorderSlot).first;
+        const uint32_t BorderHeight = FrameSize(LeftBorderSlot).second;
+        const float ScaleX = BorderWidth == 0 ? 1.f : float(ViewWidth) / float(BorderWidth);
+        const float ScaleY = BorderHeight == 0 ? 1.f : float(ViewHeight) / float(BorderHeight);
+        Stretched(TopBorderSlot, Left, Top, ScaleX, 1.f);
+        Stretched(LeftBorderSlot, Left, Top, 1.f, ScaleY);
+        Stretched(RightBorderSlot, Right, Top, 1.f, ScaleY);
+        Stretched(BottomBorderSlot, Left, Bottom, ScaleX, 1.f);
+    }
+
+    if (Mode >= ScoreMode)
+    {
+        // Score, top left.
+        constexpr int32_t ScoreTextX = 0x24;
+        constexpr int32_t ScoreTextY = 0x1e;
+        DrawSlot(Out, ScoreSlot, Left, Top, FirstFrame);
+        DrawSlot(Out, ScoreSlot, Left, Top, CurrentFrame);
+        DrawSlot(Out, ScoreBaseSlot, Left, Top, FirstFrame);
+        DrawText(Out, EHudSheet::Panel, ScoreFont, ScoreTextX, ScoreTextY, std::format("{:08} $", int32_t(Values.Money)));
+    }
+
+    if (Mode >= BarsMode)
+    {
+        // Shield and energy bars, top centre; each bitmap is clipped to its ratio (pgbmp FUN_0044ed60 with an inclusive right edge).
+        const float Centre = float(ViewWidth >> 1);
+        DrawSlot(Out, EnergyWarningSlot, Centre, Top, FirstFrame);
+        if (ShieldLow(Values))
+        {
+            DrawSlot(Out, EnergyWarningSlot, Centre, Top, CurrentFrame);
+        }
+
+        const auto BarColumns = [&](const size_t Slot, const float Value, const float Max)
+        {
+            const FSlot& Bar = Slots[Slot];
+            const uint32_t Bitmap = Bar.Animation.Frames.empty() ? 0 : Bar.Animation.Frames.front().BitmapIndex;
+            const uint32_t Width = Bitmap != 0 && Bitmap <= Bitmaps.size() ? Bitmaps[Bitmap - 1].Width : 0;
+            return uint32_t(std::clamp(BarColumn(Width, Value, Max) + 1, 0, int32_t(Width)));
+        };
+        DrawSlot(Out, ShieldBarSlot, Centre, Top, CurrentFrame, BarColumns(ShieldBarSlot, Values.Shield, Values.ShieldMax));
+        DrawSlot(Out, EnergyBarSlot, Centre, Top, CurrentFrame, BarColumns(EnergyBarSlot, Values.Energy, Values.EnergyMax));
+    }
+
+    if (Mode >= ScoreMode)
+    {
+        // Weapon block, top right, with the icon of the slot in hand on its screen.
+        constexpr int32_t AmmoTextX = -0x6b;
+        constexpr int32_t AmmoTextY = 9;
+        constexpr float IconX = -0x3c;
+        constexpr float IconY = 0x46;
+        DrawSlot(Out, WeaponBaseSlot, Right, Top, FirstFrame);
+        DrawSlot(Out, Values.bBoost ? BoostSlot : WeaponIdleSlot, Right, Top, CurrentFrame);
+        if (WeaponLightsShown(Values, Misc))
+        {
+            DrawSlot(Out, WeaponLightsSlot, Right, Top, CurrentFrame);
+        }
+
+        if (Values.WeaponSlot >= 1 && Values.WeaponSlot <= WeaponIconCount)
+        {
+            const FSlot& Icon = Icons[Values.WeaponSlot - 1];
+            const uint32_t Frame = Icon.Playback.bEnded ? 0 : Icon.Playback.Frame;
+            if (Frame >= 1 && Frame <= Icon.Animation.Frames.size())
+            {
+                Out.push_back({ .Sheet = EHudSheet::Icons, .Frame = Icon.Animation.Frames[Frame - 1], .X = Right + IconX, .Y = Top + IconY });
+            }
+        }
+
+        DrawText(Out, EHudSheet::Panel, ScoreFont, int32_t(Right) + AmmoTextX, AmmoTextY, std::format("{:08}", int32_t(Values.Ammo)));
+    }
+
+    if (Mode >= SpeedMode)
+    {
+        // Speedometer and radar, bottom left.
+        DrawSlot(Out, SpeedSlot, Left, Bottom, CurrentFrame);
+        DrawSlot(Out, SpeedTopSlot, Left, Bottom, CurrentFrame);
+        DrawSlot(Out, SpeedSideSlot, Left, Bottom, CurrentFrame);
+        for (const FRadarDot& Dot : Radar)
+        {
+            Out.push_back({ .Sheet = EHudSheet::Colors, .Frame = { .BitmapIndex = uint32_t(Dot.Kind) + 1 }, .X = float(Dot.X), .Y = float(Dot.Y) });
+        }
+
+        // The speed is clamped to three digits before it is scaled by 100 and wrapped.
+        constexpr float SpeedLimit = 1000.f;
+        constexpr float ClampedSpeed = 999.f;
+        constexpr float SpeedScale = 100.f;
+        constexpr int32_t SpeedModulo = 1000;
+        constexpr int32_t SpeedTextX = 0x69;
+        constexpr int32_t SpeedTextY = -4;
+        const float Speed = !(Values.Speed < SpeedLimit) ? ClampedSpeed : Values.Speed <= -SpeedLimit ? -ClampedSpeed : Values.Speed;
+        DrawText(Out, EHudSheet::Panel, SpeedFont, SpeedTextX, int32_t(Bottom) + SpeedTextY, std::format("{:03}", int32_t(double(Speed) * SpeedScale) % SpeedModulo));
+    }
+
+    if (Mode >= ScreenMode)
+    {
+        // Screen, bottom right: position, kills, enemies left and the level time, unless a surprise is in effect.
+        Gaf::FAnimationFrame Screen = Slots[ScreenSlot].Animation.Frames.empty() ? Gaf::FAnimationFrame{} : Slots[ScreenSlot].Animation.Frames.front();
+        Screen.DrawFlags = ScreenDrawMode;
+        Out.push_back({ .Sheet = Slots[ScreenSlot].Sheet, .Frame = Screen, .X = Right, .Y = Bottom, .Alpha = ScreenAlpha });
+        if (!Values.bSurprise)
+        {
+            constexpr int32_t ScreenTextX = -0x6b;
+            constexpr int32_t ScreenTextSecondX = -0x48;
+            constexpr int32_t PositionY = -0x46;
+            constexpr int32_t KilledY = -0x3c;
+            constexpr int32_t EnemyY = -0x32;
+            constexpr int32_t TimeY = -0x28;
+            constexpr uint32_t MillisecondsPerHour = 3600000;
+            const int32_t ScreenX = int32_t(Right);
+            const int32_t ScreenY = int32_t(Bottom);
+            DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + PositionY, std::format("{:04}", int32_t(Values.Position.X)));
+            DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextSecondX, ScreenY + PositionY, std::format("{:04}", int32_t(Values.Position.Y)));
+            DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + KilledY, std::format("KILLED {}", Values.Kills));
+            DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + EnemyY, std::format("ENEMY {}", Values.Enemies));
+            const uint32_t Hours = Values.TimeMilliseconds / MillisecondsPerHour;
+            const uint32_t Minutes = (Values.TimeMilliseconds - Hours * MillisecondsPerHour) / MillisecondsPerMinute;
+            const uint32_t Seconds = (Values.TimeMilliseconds - Hours * MillisecondsPerHour - Minutes * MillisecondsPerMinute) / MillisecondsPerSecond;
+            DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + TimeY, std::format("{:02}:{:02}:{:02}", Hours, Minutes, Seconds));
+        }
+
+        DrawSlot(Out, InfosSlot, Right, Bottom, FirstFrame);
+        if (Values.bLocked)
+        {
+            DrawSlot(Out, InfosSlot, Right, Bottom, CurrentFrame);
+        }
+
+        DrawSlot(Out, InfosBaseSlot, Right, Bottom, FirstFrame);
+    }
+
+    // Mode 1 prints one line in panel font 3 at 70, 20 instead (session +0x20a4 and +0x20a8); the percentages divide whole numbers.
+    if (Mode == TextMode)
+    {
+        constexpr int32_t TextX = 70;
+        constexpr int32_t TextY = 20;
+        constexpr int32_t Percent = 100;
+        const auto Ratio = [](const float Value, const float Max) { return int32_t(Max) == 0 ? 0 : int32_t(Value) * Percent / int32_t(Max); };
+        DrawText(Out, EHudSheet::Panel, ScreenFont, TextX, TextY,
+            std::format("SHIELD : {} / 100      ENERGY : {} / 100      AMMO : {}      CASH : {} $", Ratio(Values.Shield, Values.ShieldMax),
+                Ratio(Values.Energy, Values.EnergyMax), int32_t(Values.Ammo), int32_t(Values.Money)));
+    }
+
+    // In any mode, a surprise in effect shows the minutes and seconds each started surprise has left at 100, 30 from the bottom right.
+    if (Values.bSurprise)
+    {
+        constexpr int32_t TimerX = -100;
+        constexpr int32_t TimerY = -0x1e;
+        constexpr int32_t SecondsPerMinute = 60;
+        for (const int32_t Time : Values.SurpriseTimes)
+        {
+            const int32_t Minutes = Time / int32_t(MillisecondsPerMinute);
+            DrawText(Out, EHudSheet::Panel, ScreenFont, ViewWidth + TimerX, ViewHeight + TimerY,
+                std::format("{}:{}", Minutes, Time / int32_t(MillisecondsPerSecond) - Minutes * SecondsPerMinute));
+        }
+    }
+
     return Out;
 }
 

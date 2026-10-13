@@ -539,9 +539,63 @@ void DrawHudSprite(FRenderer& Renderer, const FSpriteSheet& Sheet, const FHudSpr
     const Gaf::FAnimationFrame& Frame = Hud.Frame;
     if (Frame.BitmapIndex != 0)
     {
-        Renderer.DrawSprite(Sheet, Frame.BitmapIndex - 1, Hud.X + float(Frame.OffsetX), Hud.Y + float(Frame.OffsetY), Frame.bMirrorX, Frame.bMirrorY,
-            Hud.Alpha < 1.f ? ESpriteBlend::Alpha : FrameBlend(Frame), 1.f, 1.f, Hud.VisibleColumns, Hud.Diffuse, Hud.Specular, Hud.Alpha);
+        // A stretched frame's hotspot offset is scaled and truncated like the original's __ftol.
+        const float OffsetX = Hud.ScaleX != 1.f ? std::trunc(float(Frame.OffsetX) * Hud.ScaleX) : float(Frame.OffsetX);
+        const float OffsetY = Hud.ScaleY != 1.f ? std::trunc(float(Frame.OffsetY) * Hud.ScaleY) : float(Frame.OffsetY);
+        Renderer.DrawSprite(Sheet, Frame.BitmapIndex - 1, Hud.X + OffsetX, Hud.Y + OffsetY, Frame.bMirrorX, Frame.bMirrorY,
+            Hud.Alpha < 1.f ? ESpriteBlend::Alpha : FrameBlend(Frame), Hud.ScaleX, Hud.ScaleY, Hud.VisibleColumns, Hud.Diffuse, Hud.Specular, Hud.Alpha);
     }
+}
+
+// The map's picture (MapToggle at 00436460 with GobRenderMap at 0046b120): every MAP_ layer from the first, each block stretched into its cell's share of a screen-sized
+// bitmap, which starts black; pixels left at 0x800 are transparent. ponytail: point-samples the level instead of stretching block by block, so cell
+// edges may round a pixel differently.
+Gaf::FFrame RenderLevelMap(const FLevel& Level)
+{
+    constexpr uint16_t MapColorKey = 0x800;
+    const uint32_t Width = uint32_t(ScreenWidth);
+    const uint32_t Height = uint32_t(ScreenHeight);
+    Gaf::FFrame Map{ .Width = Width, .Height = Height, .ColorKey = MapColorKey, .Pixels = std::vector<uint16_t>(size_t(Width) * Height, 0) };
+    const uint64_t MapWidth = uint64_t(Level.GridWidth) * BlockWidth;
+    const uint64_t MapHeight = uint64_t(Level.GridHeight) * BlockHeight;
+    if (MapWidth == 0 || MapHeight == 0)
+    {
+        return Map;
+    }
+
+    for (uint32_t Y = 0; Y < Height; ++Y)
+    {
+        const uint64_t WorldY = Y * MapHeight / Height;
+        for (uint32_t X = 0; X < Width; ++X)
+        {
+            const uint64_t WorldX = X * MapWidth / Width;
+            const size_t Cell = size_t(WorldY / BlockHeight) * Level.GridWidth + size_t(WorldX / BlockWidth);
+            for (uint32_t Layer = 0; Layer < Level.LayerCount; ++Layer)
+            {
+                const uint32_t Block = Level.Map[size_t(Layer) * Level.GridWidth * Level.GridHeight + Cell];
+                if (Block == 0 || Block > Level.Blocks.size())
+                {
+                    continue;
+                }
+
+                const Gaf::FFrame& Bitmap = Level.Blocks[Block - 1];
+                const int64_t PixelX = int64_t(WorldX % BlockWidth) - Bitmap.TrimX;
+                const int64_t PixelY = int64_t(WorldY % BlockHeight) - Bitmap.TrimY;
+                if (PixelX < 0 || PixelY < 0 || PixelX >= int64_t(Bitmap.Width) || PixelY >= int64_t(Bitmap.Height))
+                {
+                    continue;
+                }
+
+                const uint16_t Pixel = Bitmap.Pixels[size_t(PixelY) * Bitmap.Width + size_t(PixelX)];
+                if (Pixel != Bitmap.ColorKey)
+                {
+                    Map.Pixels[size_t(Y) * Width + X] = Pixel;
+                }
+            }
+        }
+    }
+
+    return Map;
 }
 
 struct FSpriteScale
@@ -1318,8 +1372,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     }
 
     std::optional<std::string> NextLevel;
-    // The panel's sheets, and one single-pixel frame per radar dot colour. ponytail: the dot colours follow the radar legend (red enemy,
-    // yellow key or code, blue lift, green for the player) until the palette FUN_00467a10 indexes is traced.
+    // The panel's sheets, and one single-pixel frame per radar dot colour: PanelDrawRadar plots palette indices 0xf9 to 0xfc, which ColorMapInit
+    // (0046eb60) sets to red, green, yellow and blue from DAT_0051bff8.
     const FSpriteSheet PanelSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Panel)) : FSpriteSheet{};
     const FSpriteSheet VPanelSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::VPanel)) : FSpriteSheet{};
     const FSpriteSheet BonusSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Bonus)) : FSpriteSheet{};
@@ -1411,6 +1465,62 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
     }
 
+    // Session +0x1ff0: the map (action-map), whose picture is made once per level.
+    bool bMapShown = false;
+    std::optional<FSpriteSheet> MapSheet;
+    // MapNeedsCash at 00435fe0.
+    const auto SayMapNeedsCash = [&]
+    {
+        constexpr int32_t TextX = -200;
+        constexpr uint32_t LifeMilliseconds = 2000;
+        constexpr uint32_t Font = 6;
+        Messages.Add({
+            .Text = std::format("{},\n   you need MORE Cash\n     to see the Map !", Sessions.PlayerName),
+            .X = float((int32_t(ScreenWidth) >> 1) + TextX),
+            .Y = float(int32_t(ScreenHeight) >> 1),
+            .LifeMilliseconds = LifeMilliseconds,
+            .Font = Font,
+        }, EMessagePlacement::Replace);
+    };
+    // MapToggleWithPanel at 0043b570: MapToggle (00436460) closes the map, or opens it for at least 21000 cash; the panel shows mode 1 under it.
+    const auto ToggleMap = [&]
+    {
+        constexpr float MapCash = 21000.f;
+        if (!bMapShown && Inventory.Money < MapCash)
+        {
+            SayMapNeedsCash();
+            return;
+        }
+
+        bMapShown = !bMapShown;
+        if (bMapShown && !MapSheet)
+        {
+            MapSheet = Renderer.CreateSpriteSheet({ RenderLevelMap(*Level) });
+        }
+
+        if (Panel)
+        {
+            Panel->ShowMap(bMapShown);
+        }
+    };
+    // Each pass of PanelUpdate in modes 1 to 5 takes 30 cash for the open map, and closes it once the cash runs short, leaving the panel in mode 1.
+    const auto PayForMap = [&]
+    {
+        constexpr int32_t MapCashPerPass = 30;
+        if (!bMapShown || !Panel || Panel->GetMode() == 0)
+        {
+            return;
+        }
+
+        if (int32_t(Inventory.Money) < MapCashPerPass)
+        {
+            bMapShown = false;
+            SayMapNeedsCash();
+            return;
+        }
+
+        Inventory.Money -= float(MapCashPerPass);
+    };
     const std::vector<FSavingPlot> SavingPlots = FindSavingPlots(*Level);
     // SessionLoad (0042ba00) in mode 0 leaves a count running, so the plot a saved session starts on does not save again until the player
     // leaves it. The original keeps the done bit from its last save; the port sets it, as after the save that wrote the session.
@@ -1458,6 +1568,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
     std::fflush(stdout);
 
+    // The class's acceleration, which the speed surprises change.
+    const float ClassAcceleration = PlayerClass ? PlayerClass->AccelerationStep : 0.f;
+    FRandom NoMiscRandom;
     const auto PanelValues = [&]
     {
         FPanelValues Values{
@@ -1468,7 +1581,17 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             .Money = Inventory.Money,
             .Kills = Inventory.Kills,
             .Enemies = CountEnemies(*Level, Bodies),
+            .bBoost = PlayerClass && PlayerClass->AccelerationStep != ClassAcceleration,
+            .bLocked = Combat && Combat->bPlayerLocked,
+            .bSurprise = Inventory.Surprises.Active != ESurprise::None,
         };
+        for (const FCarriedSurprise& Surprise : Inventory.Surprises.Carried)
+        {
+            if (Surprise.bStarted)
+            {
+                Values.SurpriseTimes.push_back(Surprise.Timeout);
+            }
+        }
         if (Player)
         {
             Values.Speed = Player->SpeedMagnitude;
@@ -1501,8 +1624,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     uint32_t FpsFrames = 0;
     // Development aid: N starts the next level, wrapping to the first after the last, always without a carried player.
     bool bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
-    // Tab, then the digits 1 to 9.
+    // Backspace, then the digits 1 to 9.
     constexpr size_t WeaponKeyCount = 10;
+    bool bTabDown = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
+    bool bMapKeyDown = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS;
     std::array<bool, WeaponKeyCount> WeaponKeysDown{};
     // Object +0x170, which 3do::CreateObject starts at 50; ObjectDraw counts it up to 49 for a visible object and draws it opaque from there.
     constexpr int FullFade = 49;
@@ -1518,7 +1643,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         // Escape (EngineEscape at 00445b40) opens the game menu, or ends the game at once for a dead player; the menu's steps do not count as game time.
         const bool bEscapePressed = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS && !bEscapeDown;
         bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
-        if (bEscapePressed && DeathTimer)
+        if (bEscapePressed && bMapShown)
+        {
+            ToggleMap();
+        }
+        else if (bEscapePressed && DeathTimer)
         {
             *DeathTimer = 0;
         }
@@ -1551,9 +1680,24 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             return FLevelEnd{ .Kind = ELevelEnd::Lift, .NextLevel = DebugLevels[Next] };
         }
 
-        // FUN_0043b5c0's weapon actions: Tab is action-next-weapon and 1 to 9 are action-weapon-1 to 9 (FUN_0043bad0 skips the slot in hand).
+        // EngineReadActionKeys (0043b5c0) with the default keys of DAT_00509298: Backspace is action-next-weapon and 1 to 9 are action-weapon-1 to
+        // 9 (FUN_0043bad0 skips the slot in hand); Tab is action-cycle-panels, Left Shift stepping back, and M is action-map.
+        const bool bTabPressed = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS && !bTabDown;
+        bTabDown = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
+        if (bTabPressed && Panel)
+        {
+            Panel->CyclePanels(glfwGetKey(Window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS);
+        }
+
+        const bool bMapPressed = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS && !bMapKeyDown;
+        bMapKeyDown = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS;
+        if (bMapPressed && Player)
+        {
+            ToggleMap();
+        }
+
         std::array<bool, WeaponKeyCount> WeaponKeysNow{};
-        WeaponKeysNow[0] = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
+        WeaponKeysNow[0] = glfwGetKey(Window, GLFW_KEY_BACKSPACE) == GLFW_PRESS;
         for (size_t Slot = 1; Slot < WeaponKeyCount; ++Slot)
         {
             WeaponKeysNow[Slot] = glfwGetKey(Window, GLFW_KEY_0 + int(Slot)) == GLFW_PRESS;
@@ -1594,20 +1738,29 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
                 else
                 {
-                    // The player's update starts with its surprises (FUN_0041d290).
+                    // EngineUpdateObjects clears the lock before its objects update; the player's update starts with its surprises (FUN_0041d290).
                     if (Combat)
                     {
+                        Combat->bPlayerLocked = false;
                         StepSurprises(*Combat, *Level, Bodies, *Player, *PlayerClass, Inventory, Messages, StepMilliseconds);
                     }
 
                     StepCodeTimeouts(Inventory, *Level, Messages, StepMilliseconds);
 
-                    // ReadPlayerInput: Reversed-commands swaps left with right and the two strafes; Blocked-motor ignores every command.
+                    // ReadPlayerInput: Reversed-commands swaps left with right and the two strafes; Blocked-motor ignores every command. The default
+                    // strafes are Left Shift with an arrow, which then does not turn (InputActionPressed at 0041d4c0); A and D strafe too.
                     const FSurpriseState& Surprises = Inventory.Surprises;
-                    const bool bLeft = Pressed(Surprises.bReversed ? GLFW_KEY_RIGHT : GLFW_KEY_LEFT);
-                    const bool bRight = Pressed(Surprises.bReversed ? GLFW_KEY_LEFT : GLFW_KEY_RIGHT);
-                    const bool bStrafeLeft = Pressed(Surprises.bReversed ? GLFW_KEY_D : GLFW_KEY_A);
-                    const bool bStrafeRight = Pressed(Surprises.bReversed ? GLFW_KEY_A : GLFW_KEY_D);
+                    const bool bShift = Pressed(GLFW_KEY_LEFT_SHIFT);
+                    const bool bLeftKey = Pressed(GLFW_KEY_LEFT);
+                    const bool bRightKey = Pressed(GLFW_KEY_RIGHT);
+                    const bool bTurnLeft = bLeftKey && !bShift;
+                    const bool bTurnRight = bRightKey && !bShift;
+                    const bool bSideLeft = (bLeftKey && bShift) || Pressed(GLFW_KEY_A);
+                    const bool bSideRight = (bRightKey && bShift) || Pressed(GLFW_KEY_D);
+                    const bool bLeft = Surprises.bReversed ? bTurnRight : bTurnLeft;
+                    const bool bRight = Surprises.bReversed ? bTurnLeft : bTurnRight;
+                    const bool bStrafeLeft = Surprises.bReversed ? bSideRight : bSideLeft;
+                    const bool bStrafeRight = Surprises.bReversed ? bSideLeft : bSideRight;
                     const FPlayerCommand Command = Surprises.bBlockedMotor ? FPlayerCommand{}
                                                                             : PlayerCommandFromKeys(Pressed(GLFW_KEY_UP), Pressed(GLFW_KEY_DOWN), bLeft, bRight, bStrafeLeft, bStrafeRight);
                     if (const FObjectBody* const Struck = StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies))
@@ -1719,7 +1872,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 // The panel's update pass follows the objects' (PanelUpdate at 00435000 with its draw flag clear).
                 if (Panel)
                 {
-                    Panel->Step(PanelValues(), int32_t(StepMilliseconds));
+                    Panel->Step(PanelValues(), int32_t(StepMilliseconds), Combat ? Combat->MiscRandom : NoMiscRandom);
+                    PayForMap();
                 }
                 LastStepMilliseconds = StepMilliseconds;
             }
@@ -1944,8 +2098,44 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         if (Panel && Player)
         {
             const std::vector<FRadarDot> Radar = FindRadarDots(*Level, Bodies, Player->Position, PlayerIndex, int(ScreenHeight));
-            DrawHud(Panel->Draw(PanelValues(), Radar, int(ScreenWidth), int(ScreenHeight)));
-            FPanel::PostWarnings(PanelValues(), Messages);
+            DrawHud(Panel->Draw(PanelValues(), Radar, int(ScreenWidth), int(ScreenHeight), Combat ? Combat->MiscRandom : NoMiscRandom));
+            Panel->PostWarnings(PanelValues(), Messages);
+            PayForMap();
+        }
+
+        // PanelDrawBigRadar (004362a0) after the panel: the map, then icons scaled from the level's size, the player's (animation 21) and every lift's
+        // (23, lift) and saving plot's (25, saveuk), each list from its last.
+        if (bMapShown && MapSheet && Panel && Player)
+        {
+            constexpr size_t PlayerIcon = 21;
+            constexpr size_t LiftIcon = 23;
+            constexpr size_t SavingIcon = 25;
+            Renderer.DrawSprite(*MapSheet, 0, 0.f, 0.f);
+            const double ScaleX = double(ScreenWidth) / double(Level->GridWidth * BlockWidth);
+            const double ScaleY = double(ScreenHeight) / double(Level->GridHeight * BlockHeight);
+            const auto Icon = [&](const size_t Animation, const float X, const float Y)
+            {
+                if (const std::optional<FHudSprite> Sprite = Panel->DrawAnimation(Animation, float(TruncateLow(double(X) * ScaleX)), float(TruncateLow(double(Y) * ScaleY))))
+                {
+                    DrawHud(std::span(&*Sprite, 1));
+                }
+            };
+            Icon(PlayerIcon, Player->Position.X, Player->Position.Y);
+            for (const FLevelObject& Object : Level->Objects | std::views::reverse)
+            {
+                if (Object.SubType == "lift")
+                {
+                    Icon(LiftIcon, Object.X, Object.Y);
+                }
+            }
+
+            for (const FSavingPlot& Area : SavingPlots | std::views::reverse)
+            {
+                if (Area.Plot)
+                {
+                    Icon(SavingIcon, Level->Objects[*Area.Plot].X, Level->Objects[*Area.Plot].Y);
+                }
+            }
         }
 
         Renderer.EndFrame();

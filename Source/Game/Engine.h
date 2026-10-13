@@ -594,6 +594,11 @@ struct FCombat
     std::vector<FEffectClass> EffectClasses;
     std::vector<FEffect> Effects;
     FRandom Random;
+    // Session +0x259c, the Misc stream of EngineCreateRandomStreams (0043c7a0), which EngineRunLevel seeds like the shared generator; the panel's weapon lights draw
+    // from it (RandomPushStream at 00428e20, RandomPopStream at 00428eb0).
+    FRandom MiscRandom;
+    // Session +0x20 bit 0x200000: EngineUpdateObjects clears it, and SeekerUpdate sets it for a seeker engaging the player.
+    bool bPlayerLocked = false;
     // Every level object's bob, by object index.
     std::vector<FObjectBob> Bobs;
     // The game clock in milliseconds; never zero, since a zero last-shot time means no shot yet.

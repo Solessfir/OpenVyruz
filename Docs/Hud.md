@@ -8,28 +8,43 @@ Traced from `Vyruz.exe` 1.31.01 in Ghidra.
 
 `PanelUpdate` (`00435000`) runs twice:
 
-- With its draw flag clear after every game step, following the object update pass. It advances the animated slots: `score2`, `NRJ1` while the shield is low, the weapon lights, and the infos light while a turret has locked on.
-- With the flag set once per frame, after the objects. It draws the panel.
+- With its draw flag clear after every game step, following the object update pass. It advances the animated slots of the parts the mode shows: `score2`, `NRJ1` while the shield is low, `Weapons3` or `Weapons4`, the weapon lights, the weapon icon, and the infos light while the player is locked.
+- With the flag set once per frame, after the messages. It draws the panel; `PanelDrawBigRadar` follows with the map.
 
-Every part is placed from a screen corner (session `+0xf84` and `+0xf88`), so the layout follows the view size. In mode 5 it draws, in this order:
+Mode 0 shows nothing. From mode 1 on it draws, in this order, each part from the mode in the second column:
 
-| Part | Anchor | Content |
-|---|---|---|
-| Score | 0, 0 | `score2` (frame 1, then its current frame), `scorebas`; money as `%08d $` in font 1 at 36, 30 |
-| Bars | width / 2, 0 | `NRJ1` frame 1, plus its current frame while shield / max is at most 0.01; `shield` and `armor` clipped to `trunc(width * value / max)` as the inclusive right edge of the bitmap (pgbmp `FUN_0044ed60`) |
-| Weapons | width - 1, 0 | `Weapons1` frame 1; `Weapons3`, or `Weapons4` while the player's acceleration (`+0x1a4`) differs from its class value; `Weapons2`, flickering with its own random stream while firing; the selected weapon's icon (session `+0x22b8`) at -60, 70; ammo as `%08d` in font 1 at -107, 9 |
-| Speed | 0, height - 1 | `speed2`, `speedtop`, `speedside`; the radar dots; speed as `%03d` in font 2 at 105, -4 |
-| Screen | width - 1, height - 1 | `screen` in draw mode 1 (5, half translucent, with option flag `0x10`, which the port keeps on); in font 3, the player's X and Y as `%04d` at -107 and -72, -70, `KILLED %d` at -60, `ENEMY %d` at -50, and the time as `%02d:%02d:%02d` at -40, all from x -107; `infos` frame 1 (its current frame while locked), `infosbas` |
+| Part | Modes | Anchor | Content |
+|---|---|---|---|
+| Borders | 1 to 5 | 0, 0 | With option flag `0x20` (`tv-borders`, on at the highest detail preset): `hbar2` stretched to the view's width, `vbar2` and `vbar1` (at width - 1) stretched to its height, and `hbar1` (at height - 1) to its width; the stretch is the view size over the bitmap's |
+| Score | 3 to 5 | 0, 0 | `score2` (frame 1, then its current frame), `scorebas`; money as `%08d $` in font 1 at 36, 30 |
+| Bars | 2 to 5 | width / 2, 0 | `NRJ1` frame 1, plus its current frame while shield / max is at most 0.01; `shield` and `armor` clipped to `trunc(width * value / max)` as the inclusive right edge of the bitmap (pgbmp `FUN_0044ed60`) |
+| Weapons | 3 to 5 | width - 1, 0 | `Weapons1` frame 1; `Weapons3`, or `Weapons4` while the player's acceleration (`+0x1a4`) differs from its class value; the lights `Weapons2`; the selected weapon's icon (session `+0x22b8`) at -60, 70; ammo as `%08d` in font 1 at -107, 9 |
+| Speed | 4 and 5 | 0, height - 1 | `speed2`, `speedtop`, `speedside`; the radar dots; speed as `%03d` in font 2 at 105, -4 |
+| Screen | 5 | width - 1, height - 1 | `screen` in draw mode 1 (5, half translucent, with option flag `0x10`, which the port keeps on); unless a surprise is in effect (object `+0xd4`), in font 3, the player's X and Y as `%04d` at -107 and -72, -70, `KILLED %d` at -60, `ENEMY %d` at -50, and the time as `%02d:%02d:%02d` at -40, all from x -107; `infos` frame 1 (its current frame while locked), `infosbas` |
+| Text | 1 | 70, 20 | `SHIELD : %d / 100      ENERGY : %d / 100      AMMO : %d      CASH : %d $` in panel font 3 (session `+0x20a4` and `+0x20a8`), the percentages as whole numbers times 100 over the whole maximum |
+
+After the modes, in any mode, a surprise in effect prints each carried surprise's time left as `%d:%d` (minutes, then seconds of the minute) in panel font 3 at width - 100, height - 30.
+
+- **Modes:** `PanelLoad` starts at mode 5 with a cycling step of -1 (session `+0x2580`). `action-cycle-panels` (Tab, `PanelCycleModes` at `0043ba30`) adds the step and reflects at 0 and 5 (-1 becomes 1, 6 becomes 4); with Left Shift held it subtracts the step instead. Reaching 0 or 5 without Shift turns the step round, so Tab alone walks 5, 4, 3, 2, 1, 0, 1, ... and back. EngineRunLevel keeps the mode (`+0x257c`) when a level ends and starts the next one with it.
+- **Weapon lights:** while the bound ammo stock (object `+0x248`) holds rounds, each pass pushes the Misc random stream (session `+0x259c`), draws `RandomBelow(53)` and pops it; the lights advance or draw only when that is 1. With the weapon empty they play steadily. `EngineCreateRandomStreams` (`0043c7a0`) makes five streams at each level start, Surprise, Creation, Panel, Vibration and Misc, each seeded `0xfeabcefe`, `0xabcdefda` like the shared generator.
+- **Locked:** `EngineUpdateObjects` clears session `+0x20` bit `0x200000` before its objects update, and `SeekerUpdate` sets it whenever a seeker on its route segment engages the player (a turret's engage branch, a moving seeker's segment step).
 
 - **Speed** is the player's speed magnitude clamped to ±999, multiplied by 100 and taken modulo 1000.
 - **Kills** are object `+0x26c`. `AreaDamage` and `AmmoHit` count an object there when the player's shot finishes it off.
 - **Enemies** are session `+0x2094`. `EngineActivateObjects` counts every seeker or tracker that hunts the player, and every generator of one; each birth of a hunter raises it and each death lowers it.
-- **Option flags:** with flag `0x20` four bars frame the screen. With flag 8, "WARNING : YOU ARE LOCKED" and "DANGER : SHIELD IS LOW" appear as floating messages at 100, 90 and 100, 100.
-- **Big radar:** while it is on (session `+0x1ff0`), it costs 30 money in each pass, and runs out below 30.
+- **Warnings:** with option flag 8, "WARNING : YOU ARE LOCKED" (modes 1 to 5) and "DANGER : SHIELD IS LOW" (modes 2 to 5, with the bars) appear as typed floating messages in panel font 3 at 100, 90 and 100, 100, or renew to 500 ms the one already there.
+
+## Map
+
+`action-map` (M, `MapToggleWithPanel` at `0043b570`) calls `MapToggle` (`00436460`): an open map closes; a closed one opens only with at least 21000 cash, else `MapNeedsCash` (`00435fe0`) says `%s,\n   you need MORE Cash\n     to see the Map !` with the player's name at width / 2 - 200, height / 2 for 2 seconds in v-bonus font 6. On success the panel switches to mode 1 and keeps the previous mode (`+0x257c`) for when the map closes. Escape and `action-pause` close an open map instead of their own action, and the level's end closes it without giving the mode back.
+
+Opening renders the level into a screen-sized bitmap (session `+0x1ff0`): `GobRenderMap` (`0046b120`) stretches every block of every `MAP_` layer, first to last, into its cell's share of the bitmap, which starts black; pixels at 0x800 are transparent. `PanelDrawBigRadar` (`004362a0`) runs after the panel's draw pass: it copies the bitmap over the view, then draws, scaled by the view size over the map's, the player's icon (animation 21, `hud`), each lift's (23, `lift`; 24, `asc`, in French) and each saving plot's (25, `saveuk`; 26, `savfr`) from session lists `+0x25b0` and `+0x25b4`, each from its last entry.
+
+While the map is open, every pass of `PanelUpdate` in modes 1 to 5 takes 30 cash; below 30 it closes the map, says it needs cash, and leaves the panel in mode 1.
 
 ## Radar
 
-`PanelDrawRadar` (`00436080`) plots single pixels into the radar beside the speedometer. It takes objects within 15 columns and 30 rows of the player's cell and within 960 pixels. It leaves out ammo, FX, gates, things, passable objects and items without a key. Each dot is at 72 + dx / 32, height - 59 + dy / 32, in palette colour 0xfa for the player, 0xfc for a lift, 0xfb for a key or code, and 0xf9 otherwise. The legend reads "RED: ENEMY, YELLOW: KEY/CODE, BLUE: LIFT".
+`PanelDrawRadar` (`00436080`) plots single pixels into the radar beside the speedometer. It takes objects within 15 columns and 30 rows of the player's cell and within 960 pixels. It leaves out ammo, FX, gates, things, passable objects and items without a key. Each dot is at 72 + dx / 32, height - 59 + dy / 32, in palette colour 0xfa for the player, 0xfc for a lift, 0xfb for a key or code, and 0xf9 otherwise. The legend reads "RED: ENEMY, YELLOW: KEY/CODE, BLUE: LIFT". `BitmapPlotIndexed` (`00467a10`) converts the index through the colour map that `ColorMapInit` (`0046eb60`) fills: entries 0 to 7 and 0xf8 to 0xff from `DAT_0051bfd8` and `DAT_0051bff8`, which make 0xf9 to 0xfc pure red, green, yellow and blue.
 
 ## Fonts
 
@@ -78,9 +93,6 @@ Every one replaces a message at its position. The lift and gate texts come from 
 
 Not ported yet:
 
-- The weapon light flicker and the acceleration light.
-- The locked warning, the fast kill bonus, and the bitmap message type.
-- The big radar and its money drain.
-- The border bars.
-- The other panel modes, and the key that switches them.
-- The radar palette: the dots use the legend's colours, and green for the player.
+- The fast kill bonus and the bitmap message type.
+- The screen shake offset (session `+0x21f8`), which moves every part of the panel.
+- The map's sounds, and its picture is point-sampled rather than stretched block by block.

@@ -4312,6 +4312,11 @@ void UpdateSeeker(FCombat* const Combat, FObjectBody& Body, FSeeker& Seeker, con
         {
             Work.Timer -= Step;
             Engage(Combat, Body, Work, &Seeker, Target, Step);
+            if (Combat && Target)
+            {
+                Combat->bPlayerLocked = true;
+            }
+
             return;
         }
 
@@ -4758,6 +4763,7 @@ void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrai
         else
         {
             Turret.ScanTimer -= Step;
+            Combat.bPlayerLocked = true;
             // SeekerEngage (0042caa0): within Min-distance the top turns toward the line to the target (the previous step's direction), then the line is refreshed.
             const float MinDistance = float(uint32_t(int(Turret.MinDistance) * int(Turret.MinDistance)));
             bEngaged = DistanceSquared <= MinDistance;

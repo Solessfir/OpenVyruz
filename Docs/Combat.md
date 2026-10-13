@@ -14,7 +14,7 @@ A weapon class carries a `TYPE Weapon` block (`weapon.3dc`); the player's `ADD W
 
 Session `+0x1028` holds the 1-based slot in hand, which starts at 1. `ObjectSetWeaponSlot` (`004375f0`) gives slot N the player's Nth `ADD Weapon` (object `+0x24c`) and clears that entry's last-shot time; a slot past them leaves the player unarmed. Each `ADD Weapon` keeps its own trigger flags and slope. `ObjectBindAmmo` (`00437540`) then binds the `ADD Ammo` stock of the weapon's ammo class (object `+0x248`), but only a stock that is not empty.
 
-- `EngineReadActionKeys` (`0043b5c0`) reads `action-next-weapon` and `action-weapon-1` to `-9`. The port maps them to Tab and the digits.
+- `EngineReadActionKeys` (`0043b5c0`) reads `action-next-weapon` and `action-weapon-1` to `-9`, whose default keys (`InputSetDefaultKeys` at `0041d420`, from `DAT_00509298`) are Backspace and the digits.
 - `PlayerNextWeaponSlot` (`004376a0`) tries the slots after the one in hand, wrapping after 9, until one has a stock of at least 1, and stays when none has.
 - `PlayerSelectWeaponAction` (`0043bad0`) ignores the slot already in hand.
 - `PlayerSelectWeapon` (`00437740`) takes the slot and plays its sound. With option flag 8 it lists `WEAPON <name>`, `FIRE RANGE`, `FIRE DELAY` at 400, 140 to 160, and when ammo is bound `AMMO <name>`, `DAMAGE`, `DAMAGE AREA` at 400, 180 to 200, upper case and typed in the panel's font 3 for 4 seconds. The damage and area are the ammo's `TYPE Ammo` values, or, when either is zero, the largest over its Ammo and Explosion blocks.
