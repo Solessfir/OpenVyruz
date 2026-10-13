@@ -2226,6 +2226,20 @@ std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Lev
             return std::unexpected(std::format("{}: zero Weight", AmmoName));
         }
 
+        int ListedDamage = TruncateLow(ClassNumber(*AmmoBlock, "Damage"));
+        int ListedArea = int(ClassNumber(*AmmoBlock, "Damage-zone"));
+        if (ListedDamage == 0 || ListedArea == 0)
+        {
+            for (const FLevelPropertyBlock& Child : Ammo->Children)
+            {
+                if (Child.Kind == "TYPE" && (Child.Name == "Ammo" || Child.Name == "Explosion"))
+                {
+                    ListedDamage = std::max(ListedDamage, TruncateLow(ClassNumber(Child, "Damage")));
+                    ListedArea = std::max(ListedArea, int(ClassNumber(Child, "Damage-zone")));
+                }
+            }
+        }
+
         Combat.AmmoClasses.push_back({
             .Name = AmmoName,
             .Movement = Movement,
@@ -2233,6 +2247,8 @@ std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Lev
             .DamageZone = ClassNumber(*AmmoBlock, "Damage-zone"),
             .DamageAfter = uint32_t(ClassNumber(*AmmoBlock, "Damage-after")),
             .HitEffect = ToLowerName(AmmoBlock->Find("Hit-fx")),
+            .ListedDamage = ListedDamage,
+            .ListedArea = ListedArea,
         });
     }
 
@@ -2681,10 +2697,14 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
         }
     }
 
-    if (!Combat.PlayerWeapons.empty())
+    for (const size_t Weapon : Combat.PlayerWeapons)
     {
-        Combat.PlayerWeapon.Weapon = Combat.PlayerWeapons.front();
-        Combat.PlayerWeapon.Slope = Combat.Weapons[Combat.PlayerWeapon.Weapon].InitialSlope;
+        Combat.PlayerSlotStates.push_back({ .Weapon = Weapon, .Slope = Combat.Weapons[Weapon].InitialSlope });
+    }
+
+    if (!Combat.PlayerSlotStates.empty())
+    {
+        Combat.PlayerWeapon = Combat.PlayerSlotStates.front();
     }
 
     // Moving seekers carry their first ADD Weapon and ADD Ammo.
@@ -2800,12 +2820,116 @@ void StepObjectBobs(FCombat& Combat, FLevel& Level, const std::span<FObjectBody>
     }
 }
 
-void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, const size_t PlayerIndex,
-    const float SpriteSize, FPlayerInventory& Inventory)
+namespace
 {
-    if (Combat.PlayerWeapons.empty())
+// The stock that feeds a slot's weapon, if the slot holds one.
+const FAmmoStock* SlotAmmo(const FCombat& Combat, const size_t Slot, const FPlayerInventory& Inventory)
+{
+    if (Slot == 0 || Slot > Combat.PlayerWeapons.size())
+    {
+        return nullptr;
+    }
+
+    const FWeaponClass& Weapon = Combat.Weapons[Combat.PlayerWeapons[Slot - 1]];
+    const auto Stock = std::ranges::find_if(Inventory.Ammo, [&Weapon](const FAmmoStock& Entry) { return ToLowerName(Entry.Name) == Weapon.Ammo; });
+    return Stock == Inventory.Ammo.end() ? nullptr : &*Stock;
+}
+
+constexpr size_t WeaponSlotCount = 9;
+}
+
+size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inventory)
+{
+    const size_t Current = Combat.PlayerSlot;
+    if (Current == 0 || Current > WeaponSlotCount)
+    {
+        return Current;
+    }
+
+    for (size_t Slot = Current % WeaponSlotCount + 1; Slot != Current; Slot = Slot % WeaponSlotCount + 1)
+    {
+        const FAmmoStock* const Stock = SlotAmmo(Combat, Slot, Inventory);
+        if (Stock && Stock->Count >= 1.f)
+        {
+            return Slot;
+        }
+    }
+
+    return Current;
+}
+
+void SelectPlayerWeapon(FCombat& Combat, const size_t Slot, const FPlayerInventory& Inventory, FMessages& Messages)
+{
+    // FUN_004375f0 keeps the weapon in hand's state with its ADD Weapon entry and clears the new one's last shot.
+    if (Combat.PlayerSlot >= 1 && Combat.PlayerSlot <= Combat.PlayerSlotStates.size())
+    {
+        Combat.PlayerSlotStates[Combat.PlayerSlot - 1] = Combat.PlayerWeapon;
+    }
+
+    Combat.PlayerSlot = Slot;
+    if (Slot == 0 || Slot > Combat.PlayerSlotStates.size())
     {
         return;
+    }
+
+    Combat.PlayerWeapon = Combat.PlayerSlotStates[Slot - 1];
+    Combat.PlayerWeapon.LastFireTime = 0;
+
+    // Option flag 8 ("HUD Green Info") lists the weapon and its ammo at 400, 140 in the panel's font 3. The port keeps the flag on.
+    constexpr int32_t ListX = 400;
+    constexpr std::array<int32_t, 3> WeaponLines = { 0x8c, 0x96, 0xa0 };
+    constexpr std::array<int32_t, 3> AmmoLines = { 0xb4, 0xbe, 0xc8 };
+    constexpr uint32_t ListLifeMilliseconds = 4000;
+    constexpr uint32_t PanelScreenFont = 3;
+    const auto List = [&](const int32_t Y, std::string Text)
+    {
+        Messages.Add({
+            .Text = std::move(Text),
+            .X = float(ListX),
+            .Y = float(Y),
+            .LifeMilliseconds = ListLifeMilliseconds,
+            .bTypewriter = true,
+            .Gaf = EMessageGaf::Panel,
+            .Font = PanelScreenFont,
+        }, EMessagePlacement::Replace);
+    };
+    const auto Upper = [](std::string Text)
+    {
+        std::ranges::transform(Text, Text.begin(), [](const char Character) { return char(std::toupper(uint8_t(Character))); });
+        return Text;
+    };
+    const FWeaponClass& Weapon = Combat.Weapons[Combat.PlayerWeapon.Weapon];
+    List(WeaponLines[0], std::format("WEAPON {}", Upper(Weapon.Name)));
+    List(WeaponLines[1], std::format("FIRE RANGE {}", int32_t(Weapon.FireRange)));
+    List(WeaponLines[2], std::format("FIRE DELAY {}", Weapon.Delay));
+
+    // FUN_00437540 binds only a stock that is not empty.
+    const FAmmoStock* const Stock = SlotAmmo(Combat, Slot, Inventory);
+    const auto Ammo = std::ranges::find(Combat.AmmoClasses, Weapon.Ammo, &FAmmoClass::Name);
+    if (Stock && Stock->Count != 0.f && Ammo != Combat.AmmoClasses.end())
+    {
+        List(AmmoLines[0], std::format("AMMO {}", Upper(Ammo->Name)));
+        List(AmmoLines[1], std::format("DAMAGE {}", Ammo->ListedDamage));
+        List(AmmoLines[2], std::format("DAMAGE AREA {}", Ammo->ListedArea));
+    }
+}
+
+void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, const size_t PlayerIndex,
+    const float SpriteSize, FPlayerInventory& Inventory, FMessages& Messages)
+{
+    if (Combat.PlayerSlot == 0 || Combat.PlayerSlot > Combat.PlayerSlotStates.size())
+    {
+        return;
+    }
+
+    // WeaponHasAmmo at 00444450: firing an empty weapon moves to the next one with ammo, and the shot goes out from that.
+    if (const FAmmoStock* const Stock = SlotAmmo(Combat, Combat.PlayerSlot, Inventory); bFire && Stock && Stock->Count == 0.f)
+    {
+        SelectPlayerWeapon(Combat, NextPlayerWeaponSlot(Combat, Inventory), Inventory, Messages);
+        if (Combat.PlayerSlot == 0 || Combat.PlayerSlot > Combat.PlayerSlotStates.size())
+        {
+            return;
+        }
     }
 
     FWeaponState& State = Combat.PlayerWeapon;
@@ -4416,7 +4540,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             StepPlayer(Player, *Class, Spin, StepMilliseconds, *Terrain, *Level, Bodies);
             Combat->Clock += StepMilliseconds;
             const size_t Before = Combat->Projectiles.size();
-            StepPlayerWeapon(*Combat, true, Player, *PlayerObject, PlayerIndex, SpriteSize, Inventory);
+            StepPlayerWeapon(*Combat, true, Player, *PlayerObject, PlayerIndex, SpriteSize, Inventory, Messages);
             LevelShots += Combat->Projectiles.size() - Before;
             const size_t TurretBefore = Combat->Projectiles.size();
             StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Player);

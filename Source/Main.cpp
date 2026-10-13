@@ -713,6 +713,8 @@ struct FCarriedPlayer
     FPlayerState State;
     FPlayerInventory Inventory;
     FWeaponState Weapon;
+    size_t WeaponSlot = 1;
+    std::vector<FWeaponState> WeaponSlots;
     uint32_t Clock = 1;
 };
 
@@ -779,6 +781,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
     const FSpriteSheet PanelSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Panel)) : FSpriteSheet{};
     const FSpriteSheet VPanelSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::VPanel)) : FSpriteSheet{};
     const FSpriteSheet BonusSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Bonus)) : FSpriteSheet{};
+    const FSpriteSheet IconSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Icons)) : FSpriteSheet{};
     FMessages Messages;
     constexpr std::array<uint16_t, 4> RadarColors = { 0x7c00, 0x03e0, 0x7fe0, 0x001f };
     std::vector<Gaf::FFrame> RadarPixels;
@@ -821,9 +824,11 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                 if (Carried)
                 {
                     Combat->Clock = Carried->Clock;
-                    if (Carried->Weapon.Weapon < Combat->Weapons.size())
+                    if (Carried->Weapon.Weapon < Combat->Weapons.size() && Carried->WeaponSlots.size() == Combat->PlayerSlotStates.size())
                     {
                         Combat->PlayerWeapon = Carried->Weapon;
+                        Combat->PlayerSlot = Carried->WeaponSlot;
+                        Combat->PlayerSlotStates = Carried->WeaponSlots;
                     }
                 }
 
@@ -871,8 +876,9 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
         if (Combat)
         {
             Values.TimeMilliseconds = Combat->Clock;
-            // The weapon in hand's ammo stock (object +0x248).
-            if (Combat->PlayerWeapon.Weapon < Combat->Weapons.size())
+            Values.WeaponSlot = Combat->PlayerSlot;
+            // The weapon in hand's ammo stock (object +0x248); an empty slot holds none.
+            if (Combat->PlayerSlot >= 1 && Combat->PlayerSlot <= Combat->PlayerSlotStates.size() && Combat->PlayerWeapon.Weapon < Combat->Weapons.size())
             {
                 const std::string& AmmoName = Combat->Weapons[Combat->PlayerWeapon.Weapon].Ammo;
                 const auto Stock = std::ranges::find_if(Inventory.Ammo, [&](const FAmmoStock& Ammo)
@@ -893,6 +899,9 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
     uint32_t FpsFrames = 0;
     // Development aid: N starts the next level, wrapping to the first after the last, always without a carried player.
     bool bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
+    // Tab, then the digits 1 to 9.
+    constexpr size_t WeaponKeyCount = 10;
+    std::array<bool, WeaponKeyCount> WeaponKeysDown{};
     const auto Current = std::ranges::find(DebugLevels, LevelPath);
     const size_t CurrentIndex = Current == DebugLevels.end() ? DebugLevels.size() : size_t(Current - DebugLevels.begin());
     while (!glfwWindowShouldClose(Window))
@@ -914,6 +923,31 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
             return std::optional(DebugLevels[Next]);
         }
 
+        // FUN_0043b5c0's weapon actions: Tab is action-next-weapon and 1 to 9 are action-weapon-1 to 9 (FUN_0043bad0 skips the slot in hand).
+        std::array<bool, WeaponKeyCount> WeaponKeysNow{};
+        WeaponKeysNow[0] = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
+        for (size_t Slot = 1; Slot < WeaponKeyCount; ++Slot)
+        {
+            WeaponKeysNow[Slot] = glfwGetKey(Window, GLFW_KEY_0 + int(Slot)) == GLFW_PRESS;
+        }
+
+        if (Combat)
+        {
+            if (WeaponKeysNow[0] && !WeaponKeysDown[0])
+            {
+                SelectPlayerWeapon(*Combat, NextPlayerWeaponSlot(*Combat, Inventory), Inventory, Messages);
+            }
+
+            for (size_t Slot = 1; Slot < WeaponKeysNow.size(); ++Slot)
+            {
+                if (WeaponKeysNow[Slot] && !WeaponKeysDown[Slot] && Combat->PlayerSlot != Slot)
+                {
+                    SelectPlayerWeapon(*Combat, Slot, Inventory, Messages);
+                }
+            }
+        }
+
+        WeaponKeysDown = WeaponKeysNow;
         uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
         while (RemainingMilliseconds != 0)
         {
@@ -951,7 +985,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                     const float EnergyBefore = Inventory.Energy;
                     const float ShieldBefore = Inventory.Shield;
                     const bool bFire = bAutoFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL);
-                    StepPlayerWeapon(*Combat, bFire, *Player, *PlayerObject, PlayerIndex, PlayerSpriteSize, Inventory);
+                    StepPlayerWeapon(*Combat, bFire, *Player, *PlayerObject, PlayerIndex, PlayerSpriteSize, Inventory, Messages);
                     StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, *Player);
                     StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies,
                         { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
@@ -1201,6 +1235,7 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                 const FSpriteSheet& Sheet = Hud.Sheet == EHudSheet::Panel    ? PanelSheet
                                             : Hud.Sheet == EHudSheet::VPanel ? VPanelSheet
                                             : Hud.Sheet == EHudSheet::Bonus  ? BonusSheet
+                                            : Hud.Sheet == EHudSheet::Icons  ? IconSheet
                                                                              : ColorSheet;
                 const Gaf::FAnimationFrame& Frame = Hud.Frame;
                 if (Frame.BitmapIndex != 0)
@@ -1249,6 +1284,8 @@ std::expected<std::optional<std::string>, std::string> RunLevel(GLFWwindow* cons
                 .State = *Player,
                 .Inventory = Inventory,
                 .Weapon = Combat ? Combat->PlayerWeapon : FWeaponState{},
+                .WeaponSlot = Combat ? Combat->PlayerSlot : 1,
+                .WeaponSlots = Combat ? Combat->PlayerSlotStates : std::vector<FWeaponState>{},
                 .Clock = Combat ? Combat->Clock : 1,
             };
             return NextLevel;

@@ -42,6 +42,10 @@ Every part is placed from a screen corner (session `+0xf84` and `+0xf88`), so th
 - A proportional font (flag 1) advances by the bitmap width plus the character spacing; others by the fixed advance.
 - Flag 4 draws a shadow pass first, in the shadow draw mode and colour, shifted by the shadow offset. None of the panel's three fonts uses it.
 
+## Weapon icon
+
+`PanelLoadWeaponIcons` (`00434910`) loads one icon per weapon slot from `Common\Data\Object\Item`: `icon-gatling`, `icon-grenade`, `icon-rocket`, `icon-fire`, `icon-saw`, `icon-missile`, `icon-laser`, `icon-pulsar` and `icon-mine`, each playing its first animation at session `+0x22b8 + 72 * (slot - 1)`. The update pass advances only the icon of the slot in hand, and the draw pass draws it at width - 61, 70 over the weapon block's screen.
+
 ## Messages
 
 `g_Messages` (`005237d0`) is the list of floating messages. `MessageAddText` (`004312e0`) adds a text with its position, velocity, life, a placement mode, a world flag, a typewriter flag, a font and a colour; `MessageCreate` (`004311a0`) can first remove every message at the same whole-pixel position (mode 1) or give up when there is one (mode 2). A new message takes the slot that `g_MessageFreeSlot` (`0050d734`) last recorded, else it is appended.
@@ -73,7 +77,6 @@ Every one replaces a message at its position. The lift and gate texts come from 
 
 Not ported yet:
 
-- The weapon icon.
 - The weapon light flicker and the acceleration light.
 - The locked warning, the invisibility texts, the fast kill bonus, and the bitmap, animation, fading and blinking message types.
 - The big radar and its money drain.

@@ -24,6 +24,8 @@ enum class EHudSheet : uint8_t
     VPanel,
     Colors,
     Bonus,
+    // The nine weapon icons of Common\Data\Object\Item, packed together.
+    Icons,
 };
 
 // Radar dot colours, as the indices PanelDrawRadar at 00436080 plots.
@@ -63,6 +65,8 @@ struct FPanelValues
     int Kills = 0;
     int Enemies = 0;
     uint32_t TimeMilliseconds = 0;
+    // Session +0x1028, 1-based.
+    size_t WeaponSlot = 0;
 };
 
 struct FRadarDot
@@ -92,6 +96,7 @@ public:
     const std::vector<Gaf::FFrame>& GetBitmaps(EHudSheet Sheet) const;
 
     static constexpr size_t SlotCount = 26;
+    static constexpr size_t WeaponIconCount = 9;
 
 private:
     struct FSlot
@@ -111,7 +116,10 @@ private:
     std::vector<uint32_t> BonusBitmapWidths;
     std::vector<Font::FFont> Fonts;
     std::vector<Font::FFont> BonusFonts;
+    std::vector<Gaf::FFrame> IconBitmaps;
     std::array<FSlot, SlotCount> Slots;
+    // Session +0x22b8, one per weapon slot.
+    std::array<FSlot, WeaponIconCount> Icons;
 };
 
 // PanelDrawRadar at 00436080: the objects within 960 pixels of the player as dots in the radar beside the speedometer.

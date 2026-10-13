@@ -11,6 +11,19 @@ namespace
 // PanelLoad at 00434d40 loads these with VzLoadGaf; a zone's own Data\Panel would come first, but only Common has one.
 constexpr std::string_view PanelPath = "common\\data\\panel\\panel.gaf";
 constexpr std::string_view VPanelPath = "common\\data\\panel\\v-panel.gaf";
+// FUN_00434910 loads one icon per weapon slot and plays its first animation.
+constexpr std::array<std::string_view, 9> WeaponIconPaths = {
+    "common\\data\\object\\item\\icon-gatling.gaf",
+    "common\\data\\object\\item\\icon-grenade.gaf",
+    "common\\data\\object\\item\\icon-rocket.gaf",
+    "common\\data\\object\\item\\icon-fire.gaf",
+    "common\\data\\object\\item\\icon-saw.gaf",
+    "common\\data\\object\\item\\icon-missile.gaf",
+    "common\\data\\object\\item\\icon-laser.gaf",
+    "common\\data\\object\\item\\icon-pulsar.gaf",
+    "common\\data\\object\\item\\icon-mine.gaf",
+};
+
 // MessageLoadFonts at 00430d80 loads the message fonts; Data\Extra\v-bonus.gaf falls back to Common's, the only one there is.
 constexpr std::string_view BonusPath = "common\\data\\extra\\v-bonus.gaf";
 
@@ -114,6 +127,26 @@ std::expected<FPanel, std::string> FPanel::Load(FResourceArchive& Archive)
     Result.BonusFonts = std::move(*BonusFonts);
     Result.BitmapWidths = BitmapWidthsOf(Result.Bitmaps);
     Result.BonusBitmapWidths = BitmapWidthsOf(Result.BonusBitmaps);
+    static_assert(WeaponIconPaths.size() == WeaponIconCount);
+    for (size_t Icon = 0; Icon < WeaponIconCount; ++Icon)
+    {
+        auto Gaf = LoadGaf(Archive, WeaponIconPaths[Icon]);
+        if (!Gaf || Gaf->second.empty())
+        {
+            continue;
+        }
+
+        // The icons share one sheet, so each animation's bitmap indices move past the icons before it.
+        const uint32_t Offset = uint32_t(Result.IconBitmaps.size());
+        Gaf::FAnimation Animation = Gaf->second.front();
+        for (Gaf::FAnimationFrame& Frame : Animation.Frames)
+        {
+            Frame.BitmapIndex += Frame.BitmapIndex != 0 ? Offset : 0;
+        }
+
+        Result.IconBitmaps.insert(Result.IconBitmaps.end(), Gaf->first.begin(), Gaf->first.end());
+        Result.Icons[Icon] = { .Sheet = EHudSheet::Icons, .Animation = Animation, .Playback = StartAnimation(Animation) };
+    }
 
     for (size_t Slot = 0; Slot < SlotCount; ++Slot)
     {
@@ -144,6 +177,12 @@ void FPanel::Step(const FPanelValues& Values, const int32_t StepMilliseconds)
 
     UpdateAnimation(Slots[WeaponIdleSlot].Playback, Slots[WeaponIdleSlot].Animation, StepMilliseconds);
     UpdateAnimation(Slots[WeaponLightsSlot].Playback, Slots[WeaponLightsSlot].Animation, StepMilliseconds);
+    // Only the icon of the slot in hand plays.
+    if (Values.WeaponSlot >= 1 && Values.WeaponSlot <= WeaponIconCount)
+    {
+        FSlot& Icon = Icons[Values.WeaponSlot - 1];
+        UpdateAnimation(Icon.Playback, Icon.Animation, StepMilliseconds);
+    }
 }
 
 void FPanel::DrawSlot(std::vector<FHudSprite>& Out, const size_t Slot, const float X, const float Y, const uint32_t Frame, const uint32_t VisibleColumns) const
@@ -160,7 +199,7 @@ void FPanel::DrawSlot(std::vector<FHudSprite>& Out, const size_t Slot, const flo
 
 const std::vector<Gaf::FFrame>& FPanel::GetBitmaps(const EHudSheet Sheet) const
 {
-    return Sheet == EHudSheet::VPanel ? VBitmaps : Sheet == EHudSheet::Bonus ? BonusBitmaps : Bitmaps;
+    return Sheet == EHudSheet::VPanel ? VBitmaps : Sheet == EHudSheet::Bonus ? BonusBitmaps : Sheet == EHudSheet::Icons ? IconBitmaps : Bitmaps;
 }
 
 // Selecting a font (PgFontSelect at 0044c3c0) takes its draw mode and colour, and PgFontSetColor (0044cc30) combines the caller's colour into that.
@@ -265,12 +304,23 @@ std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span
     DrawSlot(Out, ShieldBarSlot, Centre, Top, CurrentFrame, BarColumns(ShieldBarSlot, Values.Shield, Values.ShieldMax));
     DrawSlot(Out, EnergyBarSlot, Centre, Top, CurrentFrame, BarColumns(EnergyBarSlot, Values.Energy, Values.EnergyMax));
 
-    // Weapon block, top right. ponytail: the selected weapon's icon (session +0x22b8) is not loaded yet.
+    // Weapon block, top right, with the icon of the slot in hand on its screen.
     constexpr int32_t AmmoTextX = -0x6b;
     constexpr int32_t AmmoTextY = 9;
+    constexpr float IconX = -0x3c;
+    constexpr float IconY = 0x46;
     DrawSlot(Out, WeaponBaseSlot, Right, Top, FirstFrame);
     DrawSlot(Out, WeaponIdleSlot, Right, Top, CurrentFrame);
     DrawSlot(Out, WeaponLightsSlot, Right, Top, CurrentFrame);
+    if (Values.WeaponSlot >= 1 && Values.WeaponSlot <= WeaponIconCount)
+    {
+        const FSlot& Icon = Icons[Values.WeaponSlot - 1];
+        const uint32_t Frame = Icon.Playback.bEnded ? 0 : Icon.Playback.Frame;
+        if (Frame >= 1 && Frame <= Icon.Animation.Frames.size())
+        {
+            Out.push_back({ .Sheet = EHudSheet::Icons, .Frame = Icon.Animation.Frames[Frame - 1], .X = Right + IconX, .Y = Top + IconY });
+        }
+    }
     DrawText(Out, EHudSheet::Panel, ScoreFont, int32_t(Right) + AmmoTextX, AmmoTextY, std::format("{:08}", int32_t(Values.Ammo)));
 
     // Speedometer and radar, bottom left.

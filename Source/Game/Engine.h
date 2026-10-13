@@ -441,6 +441,10 @@ struct FAmmoClass
     float DamageZone = 0.f;
     uint32_t DamageAfter = 0;
     std::string HitEffect;
+    // The damage and area weapon selection lists (FUN_00437740): the TYPE Ammo block's, or the largest of the class's Ammo and Explosion blocks
+    // when either is zero.
+    int ListedDamage = 0;
+    int ListedArea = 0;
 };
 
 // An FX class (fx.3dc) and the animation it plays.
@@ -494,6 +498,10 @@ struct FCombat
     // The player's ADD Weapon entries, as indices into Weapons, and the one in hand.
     std::vector<size_t> PlayerWeapons;
     FWeaponState PlayerWeapon;
+    // Session +0x1028: the 1-based weapon slot in hand; a slot past the player's weapons leaves it unarmed. Each ADD Weapon keeps its own
+    // trigger state, which PlayerSlotStates holds for the slots not in hand.
+    size_t PlayerSlot = 1;
+    std::vector<FWeaponState> PlayerSlotStates;
     std::vector<FProjectile> Projectiles;
     std::vector<FEffectClass> EffectClasses;
     std::vector<FEffect> Effects;
@@ -543,6 +551,11 @@ FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class
 // Every collidable object except the player; classes without movement properties keep zeroed fields like the original class record.
 std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level);
 std::vector<FPickup> CreatePickups(const FLevel& Level);
+// The 1-based slot "next weapon" moves to (FUN_004376a0): the first after the one in hand, wrapping after slot 9, whose ammo stock is not empty,
+// or the one in hand when none is.
+size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inventory);
+// FUN_00437740: takes the slot's weapon in hand and, with option flag 8, lists its weapon and ammo for 4 seconds.
+void SelectPlayerWeapon(FCombat& Combat, size_t Slot, const FPlayerInventory& Inventory, FMessages& Messages);
 std::optional<FPickup> CreatePickup(const FLevel& Level, size_t ObjectIndex);
 FPlayerInventory CreateInventory(const FLevelObject& Player);
 // Collects every pickup the player's circle touches; returns how many were taken and marks them removed in the level.
@@ -577,7 +590,7 @@ void StepObjectBobs(FCombat& Combat, FLevel& Level, std::span<FObjectBody> Bodie
 // One step of the player's weapon: the slope ramp, then a shot when the trigger is held and the weapon's delay has passed (WeaponFire at 00443bd0).
 // SpriteSize is the smaller side of the player's current frame, which picks the random muzzle distance.
 void StepPlayerWeapon(FCombat& Combat, bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, size_t PlayerIndex, float SpriteSize,
-    FPlayerInventory& Inventory);
+    FPlayerInventory& Inventory, FMessages& Messages);
 // The seeker scan, top rotation and fire decision of every turret (SeekerUpdate at 0042c5a0), then its weapon update.
 void StepTurrets(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level, std::vector<FObjectBody>& Bodies,
     const FPlayerState& Player);
