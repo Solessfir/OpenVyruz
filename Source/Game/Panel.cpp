@@ -357,6 +357,91 @@ void FPanel::DrawMessage(std::vector<FHudSprite>& Out, const FMessage& Message, 
     DrawText(Out, Message.Gaf == EMessageGaf::Bonus ? EHudSheet::Bonus : EHudSheet::Panel, Message.Font, X, Y, Text, Message.Color);
 }
 
+std::vector<FHudSprite> FPanel::DrawShade(const int ViewWidth, const int ViewHeight) const
+{
+    constexpr size_t BlackSquareSlot = 21;
+    constexpr int ShadePasses = 2;
+    constexpr int ShadeLeft = 32;
+    constexpr int ShadeTop = 16;
+    std::vector<FHudSprite> Out;
+    const FSlot& Square = Slots[BlackSquareSlot];
+    if (Square.Animation.Frames.empty())
+    {
+        return Out;
+    }
+
+    const Gaf::FAnimationFrame& Frame = Square.Animation.Frames.front();
+    const std::vector<Gaf::FFrame>& SheetBitmaps = GetBitmaps(Square.Sheet);
+    if (Frame.BitmapIndex == 0 || Frame.BitmapIndex > SheetBitmaps.size())
+    {
+        return Out;
+    }
+
+    const int Width = int(SheetBitmaps[Frame.BitmapIndex - 1].Width);
+    const int Height = int(SheetBitmaps[Frame.BitmapIndex - 1].Height);
+    if (Width <= 0 || Height <= 0)
+    {
+        return Out;
+    }
+
+    for (int Pass = 0; Pass < ShadePasses; ++Pass)
+    {
+        for (int Y = ShadeTop; Y + Height < ViewHeight; Y += Height)
+        {
+            for (int X = ShadeLeft; X + Width < ViewWidth; X += Width)
+            {
+                Out.push_back({ .Sheet = Square.Sheet, .Frame = Frame, .X = float(X), .Y = float(Y) });
+            }
+        }
+    }
+
+    return Out;
+}
+
+std::vector<FHudSprite> FPanel::DrawTypedPage(const size_t Font, const std::string_view Text, const size_t Typed, const int ViewWidth, const int ViewHeight) const
+{
+    // Proportions of the 640x480 screen: the text starts at 64, 80 and its lines are 25 apart.
+    constexpr int ReferenceWidth = 640;
+    constexpr int ReferenceHeight = 480;
+    constexpr int Left = 64;
+    constexpr int Top = 80;
+    constexpr int LineStep = 25;
+    constexpr int32_t TabStop = 64;
+    std::vector<FHudSprite> Out;
+    if (Font == 0 || Font > BonusFonts.size())
+    {
+        return Out;
+    }
+
+    const Font::FFont& PageFont = BonusFonts[Font - 1];
+    const int32_t LineLeft = ViewWidth * Left / ReferenceWidth;
+    const int32_t LineAdvance = ViewHeight * LineStep / ReferenceHeight;
+    int32_t Line = ViewHeight * Top / ReferenceHeight;
+    int32_t Cursor = LineLeft;
+    for (size_t Index = 0; Index < std::min(Typed, Text.size()); ++Index)
+    {
+        const char Character = Text[Index];
+        if (Character == '\n')
+        {
+            Line += LineAdvance;
+            Cursor = LineLeft;
+            continue;
+        }
+
+        if (Character == '\t')
+        {
+            Cursor = (Cursor & ~(TabStop - 1)) + TabStop;
+        }
+
+        AppendText(Out, EHudSheet::Bonus, PageFont, BonusBitmaps, BonusBitmapWidths, Cursor, Line, std::string_view(&Text[Index], 1), {}, std::nullopt);
+        int32_t End = Cursor;
+        Font::LayoutText(PageFont, std::string_view(&Text[Index], 1), Cursor, Line, BonusBitmapWidths, std::nullopt, &End);
+        Cursor = End;
+    }
+
+    return Out;
+}
+
 std::vector<FHudSprite> FPanel::DrawPage(const size_t Font, const std::string_view Text, const int32_t Left, const int32_t Top, const int32_t Right) const
 {
     std::vector<FHudSprite> Out;

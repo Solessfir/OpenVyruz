@@ -70,6 +70,7 @@ struct FPlacedGlyph
 // The glyphs of a text from the cursor at X, Y (PgFontPrint at 0044bd70), given the GAF's bitmap widths.
 // The text stops at the first control character other than a line break or tab.
 // With WrapRight, word wrap is on and X is the clip's left edge.
+// EndCursor receives the cursor's X after the text (PgFontGetCursor at 0044da40).
 std::vector<FPlacedGlyph> LayoutText(const FFont& Font, std::string_view Text, int32_t X, int32_t Y, std::span<const uint32_t> BitmapWidths,
-    std::optional<int32_t> WrapRight = std::nullopt);
+    std::optional<int32_t> WrapRight = std::nullopt, int32_t* EndCursor = nullptr);
 }

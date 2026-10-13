@@ -2071,6 +2071,43 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // Development aid: N starts the next level, wrapping to the first after the last, always without a carried player.
     bool bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
     bool bPaused = false;
+    // FUN_00445580 at each level start: the level's <level>-<language>.txt, typed over the frozen level until fire or a key, then the level's name rising from the bottom.
+    // Only the first level of each tower and the last level have one; a demo shows none.
+    std::string PageText;
+    if (!Demo)
+    {
+        if (const std::optional<std::vector<uint8_t>> File = Archive.Read(LevelPath + "-en.txt"))
+        {
+            PageText.assign(File->begin(), File->end());
+        }
+    }
+
+    size_t PageTyped = 0;
+    FInputPress PageInput(Window);
+    bool bPageFireDown = true;
+    const auto AnnounceLevel = [&]
+    {
+        constexpr int32_t NameX = -100;
+        constexpr float NameVelocityY = -1.f;
+        constexpr uint32_t NameLifeMilliseconds = 5000;
+        constexpr uint32_t NameFont = 5;
+        constexpr uint32_t NameColor = 0xffe010;
+        Messages.Add({
+            .Text = Level->Name,
+            .X = float((int32_t(ScreenWidth) >> 1) + NameX),
+            .Y = float(ScreenHeight),
+            .VelocityY = NameVelocityY,
+            .LifeMilliseconds = NameLifeMilliseconds,
+            .bTypewriter = true,
+            .Gaf = EMessageGaf::Bonus,
+            .Font = NameFont,
+            .Color = { .Diffuse = NameColor },
+        }, EMessagePlacement::Replace);
+    };
+    if (PageText.empty() && !Demo)
+    {
+        AnnounceLevel();
+    }
     bool bPauseKeyDown = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS;
     // The forward input of the last step, which a blocked motor answers with start-engine.wav, and the surprise whose tune plays.
     bool bThrustInput = false;
@@ -2134,7 +2171,26 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
-        if (!bPaused)
+        // FUN_004282a0 types one character per frame; fire while typing ends the page at once, and once typed, fire or any key does.
+        if (!PageText.empty())
+        {
+            const bool bAnyPressed = PageInput.Poll();
+            const bool bFireDown = glfwGetKey(Window, GLFW_KEY_SPACE) == GLFW_PRESS || glfwGetKey(Window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            const bool bFirePressed = bFireDown && !bPageFireDown;
+            bPageFireDown = bFireDown;
+            if (bFirePressed || (PageTyped >= PageText.size() && bAnyPressed))
+            {
+                PageText.clear();
+                AnnounceLevel();
+            }
+            else if (PageTyped < PageText.size())
+            {
+                ++PageTyped;
+            }
+        }
+
+        if (!bPaused && PageText.empty())
         {
             // Escape (EngineEscape at 00445b40) opens the game menu, or ends the game at once for a dead player; the menu's steps do not count as game time.
             const bool bEscapePressed = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS && !bEscapeDown;
@@ -2231,7 +2287,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
-        if (bPaused)
+        if (bPaused || !PageText.empty())
         {
             RemainingMilliseconds = 0;
         }
@@ -2929,6 +2985,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             DrawHud(MessageSprites);
         }
 
+        if (Panel && !PageText.empty())
+        {
+            DrawHud(Panel->DrawShade(int(ScreenWidth), int(ScreenHeight)));
+        }
+
         if (Panel && Player)
         {
             const std::vector<FRadarDot> Radar = FindRadarDots(*Level, Bodies, Player->Position, PlayerIndex, int(ScreenHeight));
@@ -2994,6 +3055,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     Icon(SavingIcon, Level->Objects[*Area.Plot].X, Level->Objects[*Area.Plot].Y);
                 }
             }
+        }
+
+        if (Panel && !PageText.empty())
+        {
+            constexpr size_t PageFont = 3;
+            DrawHud(Panel->DrawTypedPage(PageFont, PageText, PageTyped, int(ScreenWidth), int(ScreenHeight)));
         }
 
         if (DeathTimer && FailedGaf && FailedGaf->Animations.size() >= 2)

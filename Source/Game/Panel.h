@@ -119,6 +119,11 @@ public:
     void DrawMessage(std::vector<FHudSprite>& Out, const FMessage& Message, int32_t X, int32_t Y, std::string_view Text) const;
     // A text page in a v-bonus.gaf font with word wrap inside Left, Top to Right, as the story and ending screens print it (FUN_004025b0).
     std::vector<FHudSprite> DrawPage(size_t Font, std::string_view Text, int32_t Left, int32_t Top, int32_t Right) const;
+    // FUN_004282a0's backdrop: black_square (slot 22) tiled over the view twice, from 32, 16, stopping a tile short of the right and bottom edges.
+    std::vector<FHudSprite> DrawShade(int ViewWidth, int ViewHeight) const;
+    // FUN_004282a0's text, typed one character at a time: the first Typed characters of Text in v-bonus font Font, lines starting at 64, 80 and 25 pixels apart (for a 640x480 view).
+    // A tab first moves the cursor to the next multiple of 64, then prints like any tab.
+    std::vector<FHudSprite> DrawTypedPage(size_t Font, std::string_view Text, size_t Typed, int ViewWidth, int ViewHeight) const;
 
     const std::vector<Gaf::FFrame>& GetBitmaps(EHudSheet Sheet) const;
 

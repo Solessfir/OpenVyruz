@@ -121,7 +121,7 @@ Font::FColor Font::FColor::Combine(const FColor& Other) const
 }
 
 std::vector<Font::FPlacedGlyph> Font::LayoutText(const FFont& Font, const std::string_view Text, const int32_t X, const int32_t Y,
-    const std::span<const uint32_t> BitmapWidths, const std::optional<int32_t> WrapRight)
+    const std::span<const uint32_t> BitmapWidths, const std::optional<int32_t> WrapRight, int32_t* const EndCursor)
 {
     constexpr char FirstPrintable = 0x20;
     constexpr char Space = ' ';
@@ -216,6 +216,11 @@ std::vector<Font::FPlacedGlyph> Font::LayoutText(const FFont& Font, const std::s
         }
 
         Cursor += AdvanceOf(Glyph);
+    }
+
+    if (EndCursor)
+    {
+        *EndCursor = Cursor;
     }
 
     return Placed;
