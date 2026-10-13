@@ -575,6 +575,22 @@ struct FEffectClass
 };
 
 // A running FX object; an explosion's blast goes off once with it.
+// A map animation: FUN_00433930, at the end of LevelStartMapAnimations (0041f0b0), makes a decor object (category 4) for each slot of each .3DI cell whose descriptor is a loaded Anim one, column by column, and adds it to the cell's object list.
+struct FDecorAnimation
+{
+    // World position: the cell's top left corner.
+    float X = 0.f;
+    float Y = 0.f;
+    std::string GafPath;
+    // 0-based animation of the GAF.
+    size_t Animation = 0;
+    // From the descriptor's terrain type (object +4): EngineVisitViewObjects sorts the frame a row lower for walls and obstacles and two rows lower for roofs, in world pixels.
+    int32_t DepthBias = 0;
+    // Object +0x114: ObjectInitialize (00419580) draws RandomBelow(10000), and EngineVisitViewObjects (00433b30) steps the animation only once the clock (session +0x1024) has passed it.
+    uint32_t StartMilliseconds = 0;
+    FAnimationPlayback Playback;
+};
+
 struct FEffect
 {
     size_t ClassIndex = 0;
@@ -646,6 +662,7 @@ struct FCombat
     std::vector<FProjectile> Projectiles;
     std::vector<FEffectClass> EffectClasses;
     std::vector<FEffect> Effects;
+    std::vector<FDecorAnimation> DecorAnimations;
     FRandom Random;
     // Session +0x259c, the Misc stream of EngineCreateRandomStreams (0043c7a0), which EngineRunLevel seeds like the shared generator; the panel's weapon lights draw from it (RandomPushStream at 00428e20, RandomPopStream at 00428eb0).
     FRandom MiscRandom;

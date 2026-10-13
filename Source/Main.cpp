@@ -461,6 +461,63 @@ std::vector<std::optional<FActorAnimation>> CreateActorAnimations(const std::spa
     return Result;
 }
 
+// The looping animation a placed object other than an actor, a door or a turret plays: Water-Wave FX, items, things.
+// Graphic-update-needed classes (the FX, thing, ammo and decor libraries) advance in EngineUpdateObjects (004406e0) every step wherever they are; the others in ObjectDraw (00431ae0) while in the view's cells, in the update pass and again in the draw pass.
+struct FPlacedAnimation
+{
+    size_t ObjectIndex = 0;
+    size_t SheetIndex = 0;
+    size_t Animation = 0;
+    bool bGraphicUpdate = false;
+    FAnimationPlayback Playback;
+};
+
+std::vector<FPlacedAnimation> CreatePlacedAnimations(const FObjectSprites& Sprites, const FLevel& Level, const std::span<const std::optional<FActorAnimation>> Actors)
+{
+    constexpr uint32_t LoopFlag = 2;
+    std::vector<FPlacedAnimation> Result;
+    for (const FObjectSprite& Sprite : Sprites.Sprites)
+    {
+        const FLevelObject& Object = Level.Objects[Sprite.ObjectIndex];
+        if (Sprite.bShadow || Sprite.bTop || Sprite.bTurretBase || Sprite.bDeltaBase || Actors[Sprite.ObjectIndex] || Object.SubType == "lift" || Object.SubType == "gate" ||
+            Object.SubType == TurretKind || Object.SubType == "vyruz")
+        {
+            continue;
+        }
+
+        const size_t Index = ObjectAnimationIndex(Object, false);
+        const Gaf::FAnimation& Animation = Sprites.Animations[Sprite.SheetIndex][Index];
+        if (Animation.Frames.size() > 1 && (Animation.Flags & LoopFlag) != 0)
+        {
+            Result.push_back({
+                .ObjectIndex = Sprite.ObjectIndex,
+                .SheetIndex = Sprite.SheetIndex,
+                .Animation = Index,
+                .bGraphicUpdate = ParseLevelFloat(Object.Properties.Find("Graphic-update-needed")).value_or(0.f) != 0.f,
+                .Playback = StartAnimation(Animation),
+            });
+        }
+    }
+
+    return Result;
+}
+
+void StepPlacedAnimations(std::vector<FPlacedAnimation>& Animations, const FObjectSprites& Sprites, const FLevel& Level, const FViewCells View, const int32_t StepMilliseconds,
+    const bool bDrawPass)
+{
+    for (FPlacedAnimation& Placed : Animations)
+    {
+        const FLevelObject& Object = Level.Objects[Placed.ObjectIndex];
+        const bool bSteps = Placed.bGraphicUpdate ? !bDrawPass : View.Contains({ .X = Object.X, .Y = Object.Y });
+        if (bSteps && !Object.bRemoved)
+        {
+            const FSoundEmitter Emitter = MakeSoundEmitter(Object.Properties.Find("Sample-channel-range"), Object.Properties.Find("Sample-channel-priority"), Object.X, Object.Y,
+                Object.Altitude);
+            UpdateAnimation(Placed.Playback, Sprites.Animations[Placed.SheetIndex][Placed.Animation], StepMilliseconds, &Emitter);
+        }
+    }
+}
+
 // The actor kinds of ObjectDraw (00431ae0), which runs for every object in the view's cells once per step in the update pass and again in the frame's draw pass; both advance walks by the step.
 // Cops, jeeps, tanks and helis show their pose as a frame of a fixed animation; jeep and tank animations have a single looping frame, so playing them changes nothing.
 void AnimateActors(std::vector<std::optional<FActorAnimation>>& Actors, const std::span<FObjectBody> Bodies, const FLevel& Level, const FObjectSprites& Sprites,
@@ -572,6 +629,54 @@ ESpriteBlend FrameBlend(const Gaf::FAnimationFrame& Frame)
 {
     const uint32_t DrawMode = Frame.DrawFlags & AnimationBlendMask;
     return DrawMode == AdditiveDrawMode ? ESpriteBlend::Additive : DrawMode == InverseSourceDrawMode ? ESpriteBlend::InverseSourceColor : ESpriteBlend::Opaque;
+}
+
+// EngineVisitViewObjects (00433b30) steps the map animations in the view's cells in its update pass, each once the clock has passed its start time, playing their sounds from the cell on any channel at priority 0x3f (AnimStampSoundChannels from ObjectInitialize).
+// Low details (Video Details) leave them out.
+void StepDecorAnimations(std::vector<FDecorAnimation>& DecorAnimations, const FObjectSprites& Sprites, const FViewCells View, const uint32_t Clock, const int32_t StepMilliseconds)
+{
+    constexpr uint32_t DecorSoundPriority = 0x3f;
+    for (FDecorAnimation& Decor : DecorAnimations)
+    {
+        const auto Sheet = Sprites.SheetIndices.find(Decor.GafPath);
+        if (Decor.StartMilliseconds >= Clock || Sheet == Sprites.SheetIndices.end() || !View.Contains({ .X = Decor.X, .Y = Decor.Y }))
+        {
+            continue;
+        }
+
+        const FSoundEmitter Emitter{ .X = Decor.X, .Y = Decor.Y, .ChannelMask = Sound::FMixer::AllChannels, .Priority = DecorSoundPriority };
+        UpdateAnimation(Decor.Playback, Sprites.Animations[Sheet->second][Decor.Animation], StepMilliseconds, &Emitter);
+    }
+}
+
+// The draw pass of EngineVisitViewObjects draws each map animation's frame at its cell in the middle sprite layer, its depth biased by its terrain type.
+void AddDecorSprites(std::vector<FObjectSprite>& Out, const std::span<const FDecorAnimation> DecorAnimations, const FObjectSprites& Sprites, const FViewCells View)
+{
+    for (const FDecorAnimation& Decor : DecorAnimations)
+    {
+        const auto Sheet = Sprites.SheetIndices.find(Decor.GafPath);
+        if (Sheet == Sprites.SheetIndices.end() || !View.Contains({ .X = Decor.X, .Y = Decor.Y }))
+        {
+            continue;
+        }
+
+        const Gaf::FAnimation& Animation = Sprites.Animations[Sheet->second][Decor.Animation];
+        if (Decor.Playback.bEnded || Decor.Playback.Frame == 0 || Decor.Playback.Frame > Animation.Frames.size())
+        {
+            continue;
+        }
+
+        const Gaf::FAnimationFrame& Frame = Animation.Frames[Decor.Playback.Frame - 1];
+        Out.push_back({
+            .SheetIndex = Sheet->second,
+            .ObjectIndex = NoObjectIndex,
+            .Frame = Frame,
+            .X = Decor.X,
+            .Y = Decor.Y,
+            .Depth = (int64_t(Decor.Y) + Decor.DepthBias) * SpriteDepthLayerCount + MiddleDepthLayer,
+            .Blend = FrameBlend(Frame),
+        });
+    }
 }
 
 void DrawHudSprite(FRenderer& Renderer, const FSpriteSheet& Sheet, const FHudSprite& Hud)
@@ -787,12 +892,19 @@ std::expected<FObjectSprites, std::string> CreateObjectSprites(FResourceArchive&
     return Result;
 }
 
-void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std::vector<std::optional<FActorAnimation>>& Actors, const std::span<const FDoor> Doors)
+void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std::vector<std::optional<FActorAnimation>>& Actors, const std::span<const FDoor> Doors,
+    const std::span<const FPlacedAnimation> PlacedAnimations)
 {
     std::vector<const FDoor*> DoorOf(Level.Objects.size(), nullptr);
     for (const FDoor& Door : Doors)
     {
         DoorOf[Door.ObjectIndex] = &Door;
+    }
+
+    std::vector<const FPlacedAnimation*> PlacedOf(Level.Objects.size(), nullptr);
+    for (const FPlacedAnimation& Placed : PlacedAnimations)
+    {
+        PlacedOf[Placed.ObjectIndex] = &Placed;
     }
 
     for (FObjectSprite& Sprite : Sprites.Sprites)
@@ -808,6 +920,13 @@ void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std
             const uint32_t Frame = Sprite.bShadow ? Actor->ShadowFrame : Actor->BodyFrame;
             const bool bShown = Actor->bInView && Index < Animations.size() && Frame >= 1 && Frame <= Animations[Index].Frames.size();
             Sprite.Frame = bShown ? Animations[Index].Frames[Frame - 1] : Gaf::FAnimationFrame{};
+        }
+
+        if (const FPlacedAnimation* const Placed = PlacedOf[Sprite.ObjectIndex]; Placed && !Sprite.bShadow)
+        {
+            const std::vector<Gaf::FAnimationFrame>& Frames = Animations[Placed->Animation].Frames;
+            const uint32_t Frame = Placed->Playback.bEnded ? 0 : Placed->Playback.Frame;
+            Sprite.Frame = Frame >= 1 && Frame <= Frames.size() ? Frames[Frame - 1] : Gaf::FAnimationFrame{};
         }
 
         // A gate or lift shows the animation its state machine plays.
@@ -1780,6 +1899,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     const size_t PlayerIndex = size_t(PlayerObject - Level->Objects.begin());
     std::vector<FPickup> Pickups = CreatePickups(*Level);
     std::vector<std::optional<FActorAnimation>> ActorAnimations = CreateActorAnimations(Bodies, *Level, *Objects);
+    std::vector<FPlacedAnimation> PlacedAnimations = CreatePlacedAnimations(*Objects, *Level, ActorAnimations);
     std::expected<std::vector<FDoor>, std::string> Doors = CreateDoors(*Level, Archive, Bodies);
     if (!Doors)
     {
@@ -1857,6 +1977,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     {
                         std::fprintf(stderr, "Cannot decode FX GAF %s\n", Effect.GafPath.c_str());
                     }
+                }
+
+                for (const FDecorAnimation& Decor : Combat->DecorAnimations)
+                {
+                    FindOrLoadSheet(*Objects, Archive, Renderer, Decor.GafPath);
                 }
             }
             else
@@ -2573,6 +2698,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
 
                 AnimateActors(ActorAnimations, Bodies, *Level, *Objects, View, int32_t(StepMilliseconds));
+                StepPlacedAnimations(PlacedAnimations, *Objects, *Level, View, int32_t(StepMilliseconds), false);
+                if (Combat && !Settings.Details.bLowDetails)
+                {
+                    StepDecorAnimations(Combat->DecorAnimations, *Objects, View, Combat->Clock, int32_t(StepMilliseconds));
+                }
+
                 // The panel's update pass follows the objects' (PanelUpdate at 00435000 with its draw flag clear).
                 if (Panel)
                 {
@@ -2618,7 +2749,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         CameraY = std::clamp(CameraY, 0.0, std::max(0.0, double(MapHeight - ScreenHeight)));
         AnimateActors(ActorAnimations, Bodies, *Level, *Objects, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level),
             int32_t(LastStepMilliseconds));
-        UpdateObjectSprites(*Objects, *Level, ActorAnimations, *Doors);
+        StepPlacedAnimations(PlacedAnimations, *Objects, *Level, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level), int32_t(LastStepMilliseconds), true);
+        UpdateObjectSprites(*Objects, *Level, ActorAnimations, *Doors, PlacedAnimations);
         if (Player)
         {
             // The player's 48 poses are the frames of the rot animation that follows its 24 direction animations; odd poses match them.
@@ -2797,6 +2929,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     .Blend = FrameBlend(Frame),
                     .Stretch = Class.Stretch,
                 });
+            }
+
+            if (!Settings.Details.bLowDetails)
+            {
+                AddDecorSprites(Sprites, Combat->DecorAnimations, *Objects, ViewCellsAround(OriginX, OriginY, *Level));
             }
 
             std::stable_sort(Sprites.begin(), Sprites.end(), [](const FObjectSprite& A, const FObjectSprite& B) { return SpriteDrawsBefore(A.Depth, B.Depth); });

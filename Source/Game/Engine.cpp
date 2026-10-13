@@ -3779,12 +3779,25 @@ std::expected<void, std::string> ArmSeeker(FCombat& Combat, const FLevel& Level,
 namespace
 {
 // LevelStartMapAnimations at 0041f0b0, which VzLoadLevel runs after its reseed and before EngineActivateObjects: every .3DX descriptor whose GAF lies two folders below an Anim directory (Level3dxResolveEntry's kind 1) starts its named animation on RandomRange(1, frames).
-// A name the GAF lacks drops the descriptor without a draw. ponytail: the map animations themselves are not drawn yet, so the frames only keep the draws.
-void StartMapAnimations(const FLevel& Level, FResourceArchive& Archive, FRandom& Random)
+// A name the GAF lacks drops the descriptor without a draw. The decor objects only take the descriptors' GAF and animation; their own animation starts at its first frame, so the start frames only keep the draws.
+int32_t DecorDepthBias(const ETerrain Terrain)
+{
+    if (Terrain == ETerrain::Ground || Terrain == ETerrain::Water)
+    {
+        return 0;
+    }
+
+    return Terrain == ETerrain::Roof ? int32_t(2 * BlockHeight) : int32_t(BlockHeight);
+}
+
+std::vector<FDecorAnimation> StartMapAnimations(const FLevel& Level, FResourceArchive& Archive, FRandom& Random)
 {
     std::unordered_map<int, std::vector<Gaf::FAnimation>> Loaded;
-    for (const auto& [Gaf, Name] : Level.TileReferences)
+    // By descriptor, 1-based like the .3DI tile ids: the GAF and the animation index of a loaded Anim descriptor.
+    std::vector<std::optional<std::pair<int, size_t>>> Descriptors(Level.TileReferences.size() + 1);
+    for (size_t Descriptor = 1; Descriptor <= Level.TileReferences.size(); ++Descriptor)
     {
+        const auto& [Gaf, Name] = Level.TileReferences[Descriptor - 1];
         if (Gaf < 1 || size_t(Gaf) > Level.AnimGafs.size())
         {
             continue;
@@ -3812,8 +3825,37 @@ void StartMapAnimations(const FLevel& Level, FResourceArchive& Archive, FRandom&
         if (Animation != Animations->second.end())
         {
             Random.Range(1, int(Animation->Frames.size()));
+            Descriptors[Descriptor] = std::pair(Gaf, size_t(Animation - Animations->second.begin()));
         }
     }
+
+    constexpr int StartDelayRange = 10000;
+    const uint32_t Height = Level.GridHeight;
+    std::vector<FDecorAnimation> Decor;
+    for (size_t Cell = 0; Cell < Level.Cells.size(); ++Cell)
+    {
+        for (const uint16_t Tile : Level.Cells[Cell])
+        {
+            if (Tile == 0 || Tile >= Descriptors.size() || !Descriptors[Tile])
+            {
+                continue;
+            }
+
+            const auto [Gaf, Animation] = *Descriptors[Tile];
+            const std::vector<Gaf::FAnimation>& Animations = Loaded[Gaf];
+            Decor.push_back({
+                .X = float(Cell / Height * BlockWidth),
+                .Y = float(Cell % Height * BlockHeight),
+                .GafPath = Level.AnimGafs[size_t(Gaf - 1)],
+                .Animation = Animation,
+                .DepthBias = DecorDepthBias(Level.TileTypes[Tile]),
+                .StartMilliseconds = uint32_t(Random.Below(StartDelayRange)),
+                .Playback = StartAnimation(Animations[Animation]),
+            });
+        }
+    }
+
+    return Decor;
 }
 }
 
@@ -3821,7 +3863,7 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
     const bool bDemo)
 {
     FCombat Combat;
-    StartMapAnimations(Level, Archive, Combat.Random);
+    Combat.DecorAnimations = StartMapAnimations(Level, Archive, Combat.Random);
     if (bDemo)
     {
         Combat.Random = FRandom{};
