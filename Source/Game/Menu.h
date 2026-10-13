@@ -63,6 +63,8 @@ struct FMenuState
     bool bCursorShown = false;
     // State +0x20 bit 0: the VZ fire flash, drawn for one frame.
     bool bFlash = false;
+    // Each step that draws the flash counts here, and MenuStep plays electric.wav with it.
+    uint32_t Flashes = 0;
     FAnimationPlayback CursorPlayback;
     std::optional<size_t> Result;
 };

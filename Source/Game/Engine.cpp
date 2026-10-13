@@ -5,6 +5,7 @@
 #include "Pg/Binary.h"
 #include "Pg/Gaf.h"
 #include "Pg/ResourceArchive.h"
+#include "Pg/Sound.h"
 
 #include <algorithm>
 #include <array>
@@ -2846,6 +2847,31 @@ void TurnTurretTop(FTurret& Turret, const uint32_t StepMilliseconds)
 }
 }
 
+namespace
+{
+Sound::FMixer* AnimationMixer = nullptr;
+
+// AnimationFrameSound (0045ea70) picks a frame's sample by event flag 1 and its event value, and AnimationPlaySound (0045e6e0) plays it. Every SMP_ descriptor in the data is zero,
+// so none is positional: it takes any idle channel at priority 0x7f and keeps the channel's own volume and pan.
+void PlayFrameSound(const Gaf::FAnimation& Animation, const Gaf::FAnimationFrame& Frame)
+{
+    constexpr uint32_t SoundEventFlag = 1;
+    constexpr uint32_t FrameSoundPriority = 0x7f;
+    if (!AnimationMixer || (Frame.EventFlags & SoundEventFlag) == 0 || !Animation.Samples || Frame.EventValue == 0 || Frame.EventValue > Animation.Samples->size())
+    {
+        return;
+    }
+
+    const std::shared_ptr<const Sound::FSample> Sample(Animation.Samples, &(*Animation.Samples)[Frame.EventValue - 1]);
+    AnimationMixer->Play(Sample, false, FrameSoundPriority, Sound::FMixer::AllChannels);
+}
+}
+
+void SetAnimationMixer(Sound::FMixer* const Mixer)
+{
+    AnimationMixer = Mixer;
+}
+
 void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, const int32_t Milliseconds)
 {
     constexpr uint32_t LoopFlag = 2;
@@ -2872,6 +2898,7 @@ void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animat
         }
 
         Playback.Timer += Animation.Frames[Playback.Frame - 1].Duration * AnimationPeriodMilliseconds;
+        PlayFrameSound(Animation, Animation.Frames[Playback.Frame - 1]);
     }
 }
 

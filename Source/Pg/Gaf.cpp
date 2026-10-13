@@ -1,6 +1,7 @@
 #include "Pg/Gaf.h"
 
 #include "Pg/Binary.h"
+#include "Pg/Sound.h"
 
 #include <array>
 #include <cstring>
@@ -464,6 +465,21 @@ std::optional<std::vector<Gaf::FAnimation>> Gaf::LoadAnimations(const std::span<
     if (NameOffset != (*Names)[NameRecordSlot].size() || TextOffset != (*Names)[NameTextSlot].size())
     {
         return std::nullopt;
+    }
+
+    std::optional<std::vector<Sound::FSample>> Samples = Sound::DecodeGafSamples(File);
+    if (!Samples)
+    {
+        return std::nullopt;
+    }
+
+    if (!Samples->empty())
+    {
+        const auto Shared = std::make_shared<const std::vector<Sound::FSample>>(std::move(*Samples));
+        for (FAnimation& Animation : Animations)
+        {
+            Animation.Samples = Shared;
+        }
     }
 
     return Animations;

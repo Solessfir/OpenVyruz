@@ -2,10 +2,16 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <vector>
+
+namespace Sound
+{
+struct FSample;
+}
 
 // Original pg-engine GAF container (pgga9902.cpp / pggob.cpp). Format notes live in README.md.
 namespace Gaf
@@ -52,6 +58,8 @@ struct FAnimation
     uint32_t LoopStart = 0;
     // StartAnimation at 0045e770 copies these to the animation instance: 2 loops, 0x20 plays back and forth, 0x40 runs backwards.
     uint32_t Flags = 0;
+    // The GAF's SMP_ samples, shared by its animations: a frame with event flag 1 plays the one its event value names, from 1.
+    std::shared_ptr<const std::vector<Sound::FSample>> Samples;
 };
 
 // ANM_ visual frames and NAM_ names, in original animation-index order. Offsets already account for frame mirroring.

@@ -4,6 +4,11 @@
 
 #include <cstdint>
 
+namespace Sound
+{
+class FMixer;
+}
+
 // UpdateAnimation at 0045e7e0 holds each frame for its duration in ticks; VzRun fixes the tick at 14 ms through AnimationSetFixedPeriod
 // (0045e4c0), so the display period never applies.
 inline constexpr int32_t AnimationPeriodMilliseconds = 14;
@@ -26,6 +31,8 @@ struct FAnimationPlayback
 
 // UpdateAnimation at 0045e7e0. Object animations neither run backwards nor play back and forth, so only looping is handled.
 void UpdateAnimation(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, int32_t Milliseconds);
+// The mixer that frames with a sound event play on; none leaves animations silent, as the verify modes run them.
+void SetAnimationMixer(Sound::FMixer* Mixer);
 FAnimationPlayback StartAnimation(const Gaf::FAnimation& Animation);
 // ObjectDraw at 00431ae0 shows a chosen frame by stepping back to the one before it and replaying the time left, which lands on it.
 void ShowFrame(FAnimationPlayback& Playback, const Gaf::FAnimation& Animation, uint32_t Frame);

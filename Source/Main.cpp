@@ -1,3 +1,4 @@
+#include "Game/Audio.h"
 #include "Game/Collision.h"
 #include "Game/Engine.h"
 #include "Game/Level.h"
@@ -11,6 +12,7 @@
 #include "Pg/Tga.h"
 #include "Pg/Gaf.h"
 #include "Pg/ResourceArchive.h"
+#include "Pg/Sound.h"
 #include "Render/Renderer.h"
 
 #include <GLFW/glfw3.h>
@@ -37,6 +39,9 @@
 
 namespace
 {
+// The game's sound, which the menus and the level loop reach as the original reaches its globals; null while it has no output.
+FAudio* GameAudio = nullptr;
+
 constexpr int64_t SpriteDepthLayerCount = 4;
 constexpr int64_t SpriteDepthLayerMask = SpriteDepthLayerCount - 1;
 constexpr int64_t BodyDepthLayer = 0;
@@ -154,8 +159,25 @@ int VerifyGafs(FResourceArchive& Archive)
     int Failed = 0;
     size_t FrameCount = 0;
     int Images = 0;
+    int Sounds = 0;
+    size_t SoundEvents = 0;
+    size_t SilentEvents = 0;
     for (const std::string& Name : Archive.GetNames())
     {
+        if (Name.ends_with(".wav"))
+        {
+            const std::optional<std::vector<uint8_t>> File = Archive.Read(Name);
+            if (!File || !Sound::DecodeWav(*File))
+            {
+                std::printf("FAIL %s\n", Name.c_str());
+                ++Failed;
+                continue;
+            }
+
+            ++Sounds;
+            continue;
+        }
+
         // The story and ending screens' Targa images decode as well.
         if (Name.ends_with(".tga"))
         {
@@ -182,10 +204,25 @@ int VerifyGafs(FResourceArchive& Archive)
             ++Failed;
             continue;
         }
+
+        // A frame with a sound event (flag 1) plays its GAF's SMP_ sample by event value; AnimationFrameSound (0045ea70) skips a zero value or a missing sample, which
+        // panel.gaf, v-panel.gaf and circular-fx.gaf have.
+        constexpr uint32_t SoundEventFlag = 1;
+        for (const Gaf::FAnimation& Animation : Gaf->Animations)
+        {
+            for (const Gaf::FAnimationFrame& Frame : Animation.Frames)
+            {
+                const bool bPlays = Animation.Samples && Frame.EventValue >= 1 && Frame.EventValue <= Animation.Samples->size();
+                SoundEvents += (Frame.EventFlags & SoundEventFlag) != 0 && bPlays ? 1 : 0;
+                SilentEvents += (Frame.EventFlags & SoundEventFlag) != 0 && !bPlays ? 1 : 0;
+            }
+        }
+
         ++Decoded;
         FrameCount += Gaf->Bitmaps.size();
     }
-    std::printf("GAF: %d decoded (%zu frames) and %d TGA images, %d failed\n", Decoded, FrameCount, Images, Failed);
+    std::printf("GAF: %d decoded (%zu frames, %zu sound events, %zu silent), %d TGA images and %d WAV sounds, %d failed\n", Decoded, FrameCount, SoundEvents, SilentEvents, Images,
+        Sounds, Failed);
     return Failed == 0 ? 0 : 1;
 }
 
@@ -1086,7 +1123,13 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
         for (uint32_t Remaining = Elapsed; Remaining != 0 && !State.Result;)
         {
             const uint32_t StepMilliseconds = NextGameStep(Remaining, FramePeriod, false);
+            const uint32_t Flashes = State.Flashes;
             const std::optional<std::pair<int32_t, int32_t>> Jump = Art.Step(Menu, State, Pending, Random, int32_t(StepMilliseconds));
+            if (GameAudio && State.Flashes != Flashes)
+            {
+                GameAudio->PlayMenuFlash();
+            }
+
             if (Jump)
             {
                 SetScreenCursor(Window, Jump->first, Jump->second);
@@ -1114,6 +1157,11 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
 
     glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     Cursor = std::pair(State.CursorX, State.CursorY);
+    if (GameAudio && State.Result)
+    {
+        GameAudio->PlayMenuAccept();
+    }
+
     return State.Result;
 }
 
@@ -1683,6 +1731,7 @@ struct FSettings
     // the sight, the left button fires, the right one thrusts, Down backs off and Left and Right strafe.
     bool bMouse = false;
     FVideoDetails Details;
+    FAudioSettings Audio;
 };
 
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a
@@ -2023,6 +2072,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     bool bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
     bool bPaused = false;
     bool bPauseKeyDown = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS;
+    // The forward input of the last step, which a blocked motor answers with start-engine.wav, and the surprise whose tune plays.
+    bool bThrustInput = false;
+    ESurprise TuneSurprise = ESurprise::None;
     // EngineApplyDisplayAndCursor (0042f2d0) loads Data\Menu\cursor.gaf's sight (session +0x25b8) for the mouse; EngineRunLevel plays it by the last step and draws it at
     // the mouse after everything else. Any other device hides the cursor altogether.
     const std::optional<FObjectGaf> SightGaf = Settings.bMouse ? LoadObjectGaf(Archive, "common\\data\\menu\\cursor.gaf") : std::nullopt;
@@ -2264,6 +2316,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
 
                     const bool bForward = Pressed(GLFW_KEY_UP) || (Settings.bMouse && glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
+                    bThrustInput = bForward;
                     const bool bLeft = Surprises.bReversed ? bTurnRight : bTurnLeft;
                     const bool bRight = Surprises.bReversed ? bTurnLeft : bTurnRight;
                     const bool bStrafeLeft = Surprises.bReversed ? bSideRight : bSideLeft;
@@ -2290,6 +2343,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         }
 
                         Command = PlayerCommandFromInput(DemoInput);
+                        bThrustInput = (DemoInput & PlayerInputForward) != 0;
                     }
 
                     if (const FObjectBody* const Struck = StepPlayer(*Player, *PlayerClass, Command, StepMilliseconds, *Terrain, *Level, Bodies))
@@ -2458,6 +2512,35 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         PlayerSpriteSize = float(std::min(Bitmap.Width, Bitmap.Height));
                     }
                 }
+            }
+        }
+
+        // EngineRunLevel runs the motor (PlayerUpdateMotorSound (00445c50)) while the player lives and no lift is taking it away. The darkness and the extasy surprises
+        // play their own tunes (SurpriseStart at 0041c390) and give the previous one back when they end (SurpriseEnd).
+        if (GameAudio && Player && PlayerClass)
+        {
+            if (Inventory.Energy > 0.f && !NextLevel)
+            {
+                GameAudio->UpdateMotor(*Player, PlayerClass->ThrustMax, Inventory.Surprises.bBlockedMotor, bThrustInput);
+            }
+
+            const ESurprise Surprise = Inventory.Surprises.Active;
+            const bool bTune = Surprise == ESurprise::Darken || Surprise == ESurprise::Extasy;
+            if (Surprise != TuneSurprise)
+            {
+                if (TuneSurprise != ESurprise::None)
+                {
+                    GameAudio->RestoreMusic();
+                }
+
+                constexpr int DarkenTrack = 2;
+                constexpr int ExtasyTrack = 3;
+                if (bTune)
+                {
+                    GameAudio->SwitchMusic(Surprise == ESurprise::Darken ? DarkenTrack : ExtasyTrack);
+                }
+
+                TuneSurprise = bTune ? Surprise : ESurprise::None;
             }
         }
 
@@ -3005,6 +3088,26 @@ int main(const int ArgCount, char** const Args)
             FDetailKey{ .Name = "low-details", .Field = &FVideoDetails::bLowDetails },
             FDetailKey{ .Name = "high-details", .Field = &FVideoDetails::bLowDetails, .bInverted = true },
         };
+        struct FAudioSwitch
+        {
+            std::string_view Name;
+            bool FAudioSettings::* Field = nullptr;
+        };
+        constexpr std::array AudioSwitches{
+            FAudioSwitch{ .Name = "music", .Field = &FAudioSettings::bMusic },
+            FAudioSwitch{ .Name = "sound-fx", .Field = &FAudioSettings::bSoundFx },
+            FAudioSwitch{ .Name = "voices", .Field = &FAudioSettings::bVoices },
+        };
+        struct FAudioVolume
+        {
+            std::string_view Name;
+            int FAudioSettings::* Field = nullptr;
+        };
+        constexpr std::array AudioVolumes{
+            FAudioVolume{ .Name = "music-volume", .Field = &FAudioSettings::MusicVolume },
+            FAudioVolume{ .Name = "sound-fx-volume", .Field = &FAudioSettings::SoundFxVolume },
+            FAudioVolume{ .Name = "voices-volume", .Field = &FAudioSettings::VoicesVolume },
+        };
         const auto IsSet = [](const std::string_view Value)
         {
             int Number = 0;
@@ -3055,12 +3158,32 @@ int main(const int ArgCount, char** const Args)
             {
                 Settings.Details.*Detail->Field = IsSet(Value) != Detail->bInverted;
             }
+            else if (const auto Switch = std::ranges::find(AudioSwitches, Key, &FAudioSwitch::Name); Switch != AudioSwitches.end())
+            {
+                Settings.Audio.*Switch->Field = IsSet(Value);
+            }
+            else if (const auto Volume = std::ranges::find(AudioVolumes, Key, &FAudioVolume::Name); Volume != AudioVolumes.end())
+            {
+                // ConfigLoad clamps the volumes to 0..0xffff.
+                int Number = 0;
+                std::from_chars(Value.data(), Value.data() + Value.size(), Number);
+                Settings.Audio.*Volume->Field = std::clamp(Number, 0, Sound::MaxVolume);
+            }
         }
     }
 
     if (Panel)
     {
         Panel->SetDetails(Settings.Details);
+    }
+
+    // VzRun at 00446e20 opens the sound (VzOpenSound (004477e0)), applies the volumes and starts the music before the menus.
+    FAudio Audio(Archive);
+    if (Audio.Open())
+    {
+        GameAudio = &Audio;
+        Audio.Apply(Settings.Audio);
+        Audio.StartMusic();
     }
 
     Settings.Folder = SessionDirectory(Settings.PlayerName);
@@ -3129,6 +3252,16 @@ int main(const int ArgCount, char** const Args)
             MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Settings, Demo ? &*Demo : nullptr);
         Restore.reset();
         Renderer.ReleaseSpriteSheets();
+        // EngineRunLevel stops the player's weapon and motor, and LoopLevels brings the first tune back.
+        if (GameAudio)
+        {
+            GameAudio->StopLevelChannels();
+            if (GameAudio->GetMusicTrack() > 1)
+            {
+                GameAudio->SwitchMusic(1);
+            }
+        }
+
         // --start places the player in the first level only.
         Start.reset();
         // A demo always comes back to the menu.

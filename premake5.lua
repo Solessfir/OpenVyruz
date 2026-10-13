@@ -119,7 +119,7 @@ project "Vyruz"
     debugdir(Root)
 
     files { "Source/**.h", "Source/**.cpp" }
-    includedirs { "Source", path.join(GlfwRoot, "include"), ShaderOutputRoot }
+    includedirs { "Source", path.join(GlfwRoot, "include"), path.join(Root, "External/miniaudio"), ShaderOutputRoot }
     defines { "GLFW_INCLUDE_VULKAN" }
     links { "GLFW" }
     dependson { "Shaders" }

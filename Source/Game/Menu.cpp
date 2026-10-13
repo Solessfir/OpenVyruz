@@ -149,6 +149,7 @@ std::optional<std::pair<int32_t, int32_t>> FMenuArt::Step(const FMenu& Menu, FMe
     if (Flash && Random.Next() % FlashChance == 0)
     {
         State.bFlash = true;
+        ++State.Flashes;
     }
 
     State.CursorX = Input.MouseX;
