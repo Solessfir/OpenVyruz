@@ -47,8 +47,28 @@ Resume Game (the default), Options, Retry Level (only with a default session; ot
 
 ## Sessions
 
-`SessionWrite` (`0042ad70`) writes a session as `session\<player>\s%03d` or `session\<player>\default`: the level's objects as a `.3DO` file (`Level3doWrite` (`004163a0`), each object's changed fields by `Level3doWriteObject` (`00416730`)) and a `last.txt` line (`SessionWriteLast` (`0042b190`)). EngineRunLevel writes the default session as a level starts, unless the level came from a session; `ObjectUpdateLevelExit` writes it too. A `saving-plot` object counts 5.5 seconds with "Saving in %d second%s", takes its cost in cash ("Not enough Cash"), and writes a numbered session ("Saving Completed."); leaving it early says "No Saving." (`SavingPlotUpdate` (`0042a3b0`), `SavingPlotLeave` (`0042a650`)).
+`SessionWrite` (`0042ad70`) writes a session into `session\<session-name>\default` or `session\<session-name>\s%03d` in the game folder (`session-name` comes from `vzconf.txt`):
+
+- `<zone>-<level>.3do`, the level's objects (`Level3doWrite`, `004163a0`). It visits the grid from its last row and column back to the first, each cell's newest object first, the same order `EngineActivateObjects` uses; a level loaded from it therefore lists each cell's objects the other way round. `Level3doWriteObject` (`00416730`) writes `Class-name`, `Position` and only the fields that differ from a fresh object of the class: `Energy`, `Shield`, `Dir`, `Behaviour`, `Life-time`, `Inter-frame`, the turn timeouts, the object flags, and the attribute blocks through `FUN_00417210` (`TYPE Gate` and `TYPE Lift` with their state, `TYPE Patrol` with its current `Point-ID`, `TYPE Generator` with `Max-births` but not the births so far, `TYPE Key`, `TYPE Item` timeouts). Carried objects (the player's weapons, ammo and keys) are written before their carrier. Flags 0xb, which every caller passes, leave out the `No-saving` classes (effects and shots) and add `DIFFICULTY-LEVEL`.
+- `last.txt`, one record: `#%d %d`, the session folder, the zone, the `.3di` file, the level name, the clock in milliseconds, the player's energy and shield as `%.3f`, and seven numbers.
+- A `.tga` thumbnail (`FUN_0042b360`), which the session menu shows at 8, 150 for the session under the cursor.
+
+A numbered session takes the highest number in the folder plus one, from `s000`, and the sessions seven or more numbers below it are deleted. EngineRunLevel writes the default session as a level starts, unless the level came from a session; `ObjectUpdateLevelExit` writes it too.
+
+A `Saving-Plot-Area` object (`Saving-zone`, invisible, 64 pixels) and a `Saving-Plot` object (`Saving-plot`, `Reward = -100000`, the cost) lie at the same position. While the living player touches the area, `EngineUpdateObjects` finds the plot in the area's cell at exactly the same position and calls `SavingPlotUpdate` (`0042a3b0`), timed on PgClockNow:
+
+- The first contact starts the count and clears the done flag.
+- Before 5.5 seconds it shows `Saving in %d second%s` with `(6000 - elapsed) / 1000` seconds, the `s` only above one.
+- Then, once: without the cash, `Not enough Cash %s !\n You need %d $\n  to save this game ...` with the player's name, for 5 seconds; otherwise the cost comes off the cash, `SessionWrite` writes a numbered session, and `Saving Completed.` shows for 3 seconds.
+
+The texts print at the plot minus 150, 50 in world space in `v-bonus.gaf` font 6, each replacing the last. Once the player touches no area, `SavingPlotLeave` (`0042a650`) ends the count; before the save or refusal it removes the message at the plot's x - 150, y (not y - 50) and shows `No Saving.` for a second. `SessionLoad` (`0042ba00`) in mode 0 sets the counting flag without restarting the count, so the plot a saved session starts on does not save again until the player leaves it.
+
+`SessionChoose` (`00427c30`) lists up to seven sessions over 265, 70 with items 35 pixels apart, title `Saved sessions`, fonts 4 and 3, each as `%s   [%d h %d mn %d sec] ` with the help `Energy : %d\nShield : %d\nDifficulty : %s ...\n`, then a gap when there are fewer than seven, and `Back`, the default. The cursor starts at the screen's middle.
 
 ## Port
 
-`Source/Game/Menu` draws and steps a menu; `Source/Main.cpp` runs the main menu, the game menu and the questions. `--level` and `--start` skip the main menu at startup. The default session is the level's path and the player brought into it, kept in memory. Not ported yet: saved sessions and save plots, Options and Extras, the idle demo, the exit explosions, the menu sounds and the "Licensed to" line.
+`Source/Game/Menu` draws and steps a menu; `Source/Main.cpp` runs the main menu, the game menu, the questions and the session menu. `--level` and `--start` skip the main menu at startup.
+
+`Source/Game/Session` keeps the port's own session files, since the port does not model carried items as objects: `default.txt` and `s000.txt` onwards in `%APPDATA%\OpenVyruz\session\<session-name>` on Windows and `$XDG_DATA_HOME/OpenVyruz/session/<session-name>` (or `~/.local/share/...`) on Linux, where `<session-name>` comes from the archive's `VZCONF.TXT`, else `Player`. A file holds the level, the clock, energy and shield, the player (pose, inventory with ammo and keys, weapon slots) and, for a session saved during play, every object in the writer's order with its `.3DO` index or class, position, altitude, direction, wreck, energy, shield and door state. Loading replaces the level's objects with these, as loading the original's `.3DO` would; removed objects are left out except the ones carried keys came from. `--verify-game` checks that every level comes back from a session and that a saving plot saves once, for its cost, after 5.5 seconds.
+
+Not ported yet: Options and Extras, the idle demo, the exit explosions, the menu sounds, the "Licensed to" line, the session thumbnails, patrol points and other attribute blocks in sessions, and reading the original's session folders.

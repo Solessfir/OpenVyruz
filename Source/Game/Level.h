@@ -78,6 +78,8 @@ struct FLevelObject
     bool bWrecked = false;
     // A tank's 1-based top pose, the frame of its top animation; zero until its behaviour turns it.
     int TopPose = 0;
+    // The object's place in the level's .3DO; SIZE_MAX for one created during play.
+    size_t FileIndex = SIZE_MAX;
     std::string SubType;
     FLevelPropertyBlock Properties;
 };

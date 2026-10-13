@@ -75,8 +75,9 @@ public:
     uint32_t Add(FMessage Message, EMessagePlacement Placement);
     // FUN_00431aa0 removes one message.
     void Remove(uint32_t Id);
-    // MessageExists (00431050) and MessageSetLife (004319f0) find messages by their whole-pixel position.
+    // MessageExists (00431050) and MessageSetLife (004319f0) find messages by their whole-pixel position, and FUN_00431a40 removes the last one there.
     bool Exists(int32_t X, int32_t Y) const;
+    void RemoveAt(int32_t X, int32_t Y);
     void SetLife(int32_t X, int32_t Y, uint32_t LifeMilliseconds);
     // Both passes move and type the messages by the step; the update pass also ages them and the draw pass prints them with the scroll origin.
     void Update(int32_t StepMilliseconds, int32_t OriginX, int32_t OriginY, const FDraw* Draw);

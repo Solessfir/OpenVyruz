@@ -656,6 +656,42 @@ FPlayerInventory CreateInventory(const FLevelObject& Player);
 size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level,
     FMessages& Messages, FCombat* Combat = nullptr);
 // FUN_0041d290 for the player once a step, before it moves: surprises wait, start, and end. Then the invisible drone's return (FUN_00445380).
+// AnimUpdateBounds at 0041b4b0 recomputes the collision centre from the world position.
+FCollisionPoint CollisionFromWorld(FCollisionPoint World);
+
+// The 64 x 32 world-pixel grid cell an object is linked into.
+struct FWorldCell
+{
+    int X = 0;
+    int Y = 0;
+};
+
+FWorldCell CellOf(FCollisionPoint World);
+
+// A Saving-zone object (class flag 0x4000000) and the Saving-plot object at its exact position, which EngineUpdateObjects looks for in the
+// zone's cell; a zone without one does nothing but keep the count going.
+struct FSavingPlot
+{
+    size_t Zone = 0;
+    std::optional<size_t> Plot;
+};
+
+std::vector<FSavingPlot> FindSavingPlots(const FLevel& Level);
+
+// Session +0x20c0 to +0x20cc: whether a count runs (bit 0), when it started on PgClockNow, whether it saved or refused (bit 1), and the plot.
+struct FSavingState
+{
+    bool bCounting = false;
+    uint32_t Start = 0;
+    bool bDone = false;
+    std::optional<size_t> Plot;
+};
+
+// SavingPlotUpdate at 0042a3b0 for each zone the living player touches, and SavingPlotLeave at 0042a650 once it touches none: after 5.5 seconds
+// on a plot the plot's cost (its negative Reward) is paid and the session is saved. True when the session is to be written now.
+bool StepSavingPlots(FSavingState& State, std::span<const FSavingPlot> Plots, const FLevel& Level, const FPlayerState& Player, float PlayerRadius,
+    FPlayerInventory& Inventory, FMessages& Messages, uint32_t NowMilliseconds, std::string_view PlayerName);
+
 // FUN_00439510 for the player after its surprises: a complete code with a timeout counts down on its first part, warns, and at the end goes
 // back into the level (or is destroyed without Reactivate-after).
 void StepCodeTimeouts(FPlayerInventory& Inventory, FLevel& Level, FMessages& Messages, uint32_t StepMilliseconds);

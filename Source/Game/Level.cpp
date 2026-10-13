@@ -934,6 +934,7 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
 
         Object->X = Position->first;
         Object->Y = Position->second;
+        Object->FileIndex = Level.Objects.size();
         Level.Objects.push_back(std::move(*Object));
     }
 

@@ -2,6 +2,7 @@
 #include "Game/Engine.h"
 #include "Game/Level.h"
 #include "Game/Menu.h"
+#include "Game/Session.h"
 #include "Game/Loop.h"
 #include "Game/Panel.h"
 #include "Pg/File.h"
@@ -24,6 +25,7 @@
 #include <format>
 #include <limits>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -741,18 +743,6 @@ uint32_t ClockMilliseconds()
     return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(Elapsed).count());
 }
 
-// What LoopLevels (004467d0) keeps of the player object for the next level: everything but its position and velocity.
-struct FCarriedPlayer
-{
-    FLevelObject Object;
-    FPlayerState State;
-    FPlayerInventory Inventory;
-    FWeaponState Weapon;
-    size_t WeaponSlot = 1;
-    std::vector<FWeaponState> WeaponSlots;
-    uint32_t Clock = 1;
-};
-
 // ShowImageWait at 00404950: an image centred on the screen for up to 5 seconds; WaitForInput (00404910) ends the wait early on a key or a mouse button.
 void ShowImage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string_view Path)
 {
@@ -1031,38 +1021,74 @@ std::optional<bool> Confirm(GLFWwindow* const Window, FRenderer& Renderer, const
     return Item ? std::optional(*Item == 0) : std::nullopt;
 }
 
-// The default session (session\<name>\default), which EngineRunLevel writes through SessionWrite at 0042ad70 as a level starts: the level and the player
-// brought into it, for Restart Level and Retry Level. ponytail: kept in memory until the saved sessions are written to disk.
-struct FDefaultSession
-{
-    std::string LevelPath;
-    std::string LevelName;
-    std::optional<FCarriedPlayer> Carried;
-    uint32_t Clock = 0;
-    float Energy = 0.f;
-    float Shield = 0.f;
-};
+constexpr uint32_t MillisecondsPerHour = 3600000;
+constexpr uint32_t MillisecondsPerMinute = 60000;
 
-// SessionDescribeDefault at 00427ad0: the session's help text, naming the difficulty through DifficultyName at 00403310; the port plays Normal, the original's default.
-std::string SessionHelp(const FDefaultSession& Session)
+// The difficulty DifficultyName at 00403310 names; the port plays Normal, the original's default.
+constexpr std::string_view DifficultyText = "Normal";
+
+// SessionDescribeDefault at 00427ad0: the default session's help text.
+std::string SessionHelp(const FSession& Session)
 {
-    constexpr uint32_t MillisecondsPerHour = 3600000;
-    constexpr uint32_t MillisecondsPerMinute = 60000;
-    return std::format("{}   ({}:{}:{})\nEnergy : {}\nShield : {}\nDifficulty : Normal ...\n", Session.LevelName, Session.Clock / MillisecondsPerHour,
+    return std::format("{}   ({}:{}:{})\nEnergy : {}\nShield : {}\nDifficulty : {} ...\n", Session.LevelName, Session.Clock / MillisecondsPerHour,
         Session.Clock % MillisecondsPerHour / MillisecondsPerMinute, Session.Clock % MillisecondsPerMinute / MillisecondsPerSecond, int32_t(Session.Energy),
-        int32_t(Session.Shield));
+        int32_t(Session.Shield), DifficultyText);
+}
+
+// SessionChoose at 00427c30: up to seven saved sessions with their level and clock, then Back, the default. Returns the chosen session.
+// ponytail: the session's thumbnail (its .tga, drawn at 8, 150 for the item under the cursor) is not written.
+std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random,
+    const std::span<const FSession> Sessions)
+{
+    constexpr int32_t Left = 0x109;
+    constexpr int32_t Top = 0x46;
+    constexpr int32_t StepY = 0x23;
+    constexpr size_t MaxSessions = 7;
+    constexpr size_t HighlightFont = 4;
+    constexpr size_t ItemFont = 3;
+    FMenu Menu{
+        .Left = Left,
+        .Top = Top,
+        .Right = int32_t(ScreenWidth),
+        .Bottom = int32_t(ScreenHeight),
+        .StepY = StepY,
+        .Title = "Saved sessions",
+        .HighlightFont = HighlightFont,
+        .ItemFont = ItemFont,
+    };
+    for (const FSession& Session : Sessions | std::views::take(MaxSessions))
+    {
+        Menu.Items.push_back({
+            .Text = std::format("{}   [{} h {} mn {} sec] ", Session.LevelName, Session.Clock / MillisecondsPerHour, Session.Clock % MillisecondsPerHour / MillisecondsPerMinute,
+                Session.Clock % MillisecondsPerMinute / MillisecondsPerSecond),
+            .Help = std::format("Energy : {}\nShield : {}\nDifficulty : {} ...\n", int32_t(Session.Energy), int32_t(Session.Shield), DifficultyText),
+        });
+    }
+
+    if (Menu.Items.size() < MaxSessions)
+    {
+        Menu.Items.emplace_back();
+    }
+
+    Menu.Items.push_back({ .Text = "Back" });
+    Menu.DefaultItem = Menu.Items.size() - 1;
+    std::optional<std::pair<int32_t, int32_t>> Cursor = std::pair(int32_t(ScreenWidth) / 2, int32_t(ScreenHeight) / 2);
+    const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
+    return Item && *Item < std::min(Sessions.size(), MaxSessions) ? Item : std::nullopt;
 }
 
 enum class EMenuChoice : uint8_t
 {
     NewGame,
-    RestartLevel,
+    // Restart Level and Load Game: the session in Chosen.
+    Session,
     Quit,
 };
 
-// MenuMain at 004271a0, the main menu. Load Game finds no saved session; Options and Extras open nothing yet. RandomNext's draws here do not matter,
-// since every level reseeds the generator.
-EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FDefaultSession* const Session)
+// MenuMain at 004271a0, the main menu. Options and Extras open nothing yet. RandomNext's draws here do not matter, since every level reseeds the
+// generator.
+EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FSession* const Session,
+    const std::filesystem::path& SessionFolder, FSession& Chosen)
 {
     enum EItem : size_t
     {
@@ -1073,7 +1099,9 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMe
         ExtrasItem,
         ExitItem,
     };
-    const FMenu Menu{
+    std::vector<FSession> Saved = ReadSavedSessions(SessionFolder);
+    const auto LoadHelp = [&] { return Saved.empty() ? std::string("No saved session.") : std::format("{} saved session{} available.", Saved.size(), Saved.size() > 1 ? "s" : ""); };
+    FMenu Menu{
         .Left = MenuLeft,
         .Top = MenuTop,
         .Right = int32_t(ScreenWidth),
@@ -1082,7 +1110,7 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMe
         .Items = {
             Session ? FMenuItem{ .Text = "Restart Level", .Help = SessionHelp(*Session) } : FMenuItem{},
             { .Text = "Start New Game" },
-            { .Text = "Load Game", .Help = "No saved session." },
+            { .Text = "Load Game", .Help = LoadHelp() },
             { .Text = "Options", .Help = "Video, Audio, Control, User settings, Language." },
             { .Text = "Extras", .Help = "Scores, Credits, Intro, Slide Show, Demo." },
             { .Text = "Exit" },
@@ -1105,14 +1133,32 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMe
         {
             constexpr size_t NoThanks = 1;
             const std::optional<bool> Retry = Confirm(Window, Renderer, Art, Sheets, Random, "Retry level ?", "Yes please !", "No thanks.", NoThanks);
-            if (!Retry || *Retry)
+            if (Retry && *Retry)
             {
-                return Retry ? EMenuChoice::RestartLevel : EMenuChoice::Quit;
+                Chosen = *Session;
+                return EMenuChoice::Session;
+            }
+
+            if (!Retry)
+            {
+                return EMenuChoice::Quit;
             }
         }
         else if (*Item == NewGameItem)
         {
             return EMenuChoice::NewGame;
+        }
+        else if (*Item == LoadItem)
+        {
+            // SessionLoad at 0042ba00 in mode 0 chooses a saved session; back in the menu, the list is read again.
+            if (const std::optional<size_t> Index = RunSessionMenu(Window, Renderer, Art, Sheets, Random, Saved))
+            {
+                Chosen = Saved[*Index];
+                return EMenuChoice::Session;
+            }
+
+            Saved = ReadSavedSessions(SessionFolder);
+            Menu.Items[LoadItem].Help = LoadHelp();
         }
         else if (*Item == ExitItem)
         {
@@ -1203,11 +1249,19 @@ std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Render
     }
 }
 
+// Where the player's sessions go, and the name the saving plots address.
+struct FSessionContext
+{
+    std::filesystem::path Folder;
+    std::string PlayerName;
+};
+
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a
-// menu ends or restarts the level. Session becomes the level's default session.
+// menu ends or restarts the level. A level loaded from a session takes its objects from Restore; any other becomes the default session, in
+// Session and on disk.
 std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
     const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
-    FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FDefaultSession>& Session)
+    FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, const FSessionContext& Sessions)
 {
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
     if (!Level)
@@ -1215,9 +1269,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         return std::unexpected(std::format("Cannot load level: {}", Level.error()));
     }
 
+    if (Restore && Restore->Objects)
+    {
+        RestoreObjects(*Level, *Restore->Objects);
+    }
+
     const auto PlayerObject = std::ranges::find_if(Level->Objects, [](const FLevelObject& Object) { return Object.Behaviour == "Player"; });
-    // LoopLevels puts the carried player object where the new level's player starts.
-    if (Carried && PlayerObject != Level->Objects.end())
+    // LoopLevels puts the carried player object where the new level's player starts; a session's player keeps the level's object.
+    if (Carried && !Carried->Object.ClassName.empty() && PlayerObject != Level->Objects.end())
     {
         const float X = PlayerObject->X;
         const float Y = PlayerObject->Y;
@@ -1335,13 +1394,62 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
     }
 
-    Session = FDefaultSession{
-        .LevelPath = LevelPath,
-        .LevelName = Level->Name,
-        .Carried = Carried,
-        .Clock = Combat ? Combat->Clock : 0,
-        .Energy = Inventory.Energy,
-        .Shield = Inventory.Shield,
+    // EngineRunLevel writes the default session as the level starts, unless the level came from a session.
+    if (!Restore)
+    {
+        Session = FSession{
+            .LevelPath = LevelPath,
+            .LevelName = Level->Name,
+            .Clock = Combat ? Combat->Clock : 0,
+            .Energy = Inventory.Energy,
+            .Shield = Inventory.Shield,
+            .Player = Carried,
+        };
+        if (!WriteSessionFile(DefaultSessionPath(Sessions.Folder), *Session))
+        {
+            std::fprintf(stderr, "Cannot write the default session in %s\n", Sessions.Folder.string().c_str());
+        }
+    }
+
+    const std::vector<FSavingPlot> SavingPlots = FindSavingPlots(*Level);
+    // SessionLoad (0042ba00) in mode 0 leaves a count running, so the plot a saved session starts on does not save again until the player
+    // leaves it. The original keeps the done bit from its last save; the port sets it, as after the save that wrote the session.
+    FSavingState Saving{ .bCounting = Restore && Restore->Objects, .bDone = Restore && Restore->Objects };
+    // The level objects follow their bodies and the player after the steps; a session written during the steps needs them too.
+    const auto SyncObjects = [&]
+    {
+        for (const FObjectBody& Body : Bodies)
+        {
+            FLevelObject& Object = Level->Objects[Body.ObjectIndex];
+            Object.X = Body.State.Position.X;
+            Object.Y = Body.State.Position.Y;
+            // A turret turns its top; its base sprite stays fixed.
+            if (Body.Turret)
+            {
+                Object.Direction = Body.Turret->Direction;
+            }
+            else if (Body.Actor)
+            {
+                Object.Direction = Body.State.Direction;
+                Object.TopPose = Body.Actor->bTwoPieces ? Body.Actor->TopPose : 0;
+            }
+        }
+
+        PlayerObject->X = Player->Position.X;
+        PlayerObject->Y = Player->Position.Y;
+        PlayerObject->Direction = (Player->Pose - 1) / (PlayerPoseCount / ObjectDirectionCount);
+    };
+    const auto CarriedNow = [&]
+    {
+        return FCarriedPlayer{
+            .Object = *PlayerObject,
+            .State = *Player,
+            .Inventory = Inventory,
+            .Weapon = Combat ? Combat->PlayerWeapon : FWeaponState{},
+            .WeaponSlot = Combat ? Combat->PlayerSlot : 1,
+            .WeaponSlots = Combat ? Combat->PlayerSlotStates : std::vector<FWeaponState>{},
+            .Clock = Combat ? Combat->Clock : 1,
+        };
     };
     std::optional<FMenuSheets> MenuSheets;
     bool bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
@@ -1578,6 +1686,25 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     std::fflush(stdout);
                 }
 
+                if (StepSavingPlots(Saving, SavingPlots, *Level, *Player, PlayerClass->Radius, Inventory, Messages, ClockMilliseconds(), Sessions.PlayerName))
+                {
+                    SyncObjects();
+                    FSession Saved{
+                        .LevelPath = LevelPath,
+                        .LevelName = Level->Name,
+                        .Clock = Combat ? Combat->Clock : 0,
+                        .Energy = Inventory.Energy,
+                        .Shield = Inventory.Shield,
+                        .Player = CarriedNow(),
+                    };
+                    Saved.Player->Object = {};
+                    Saved.Objects = CaptureObjects(*Level, Bodies, *Doors, Saved.Player->Inventory.Keys);
+                    if (!WriteSavedSession(Sessions.Folder, Saved))
+                    {
+                        std::fprintf(stderr, "Cannot write a session in %s\n", Sessions.Folder.string().c_str());
+                    }
+                }
+
                 // The update pass of MessagesUpdate (004315f0) follows the game update.
                 Messages.Update(int32_t(StepMilliseconds), 0, 0, nullptr);
 
@@ -1613,26 +1740,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         if (Player)
         {
-            for (const FObjectBody& Body : Bodies)
-            {
-                FLevelObject& Object = Level->Objects[Body.ObjectIndex];
-                Object.X = Body.State.Position.X;
-                Object.Y = Body.State.Position.Y;
-                // A turret turns its top; its base sprite stays fixed.
-                if (Body.Turret)
-                {
-                    Object.Direction = Body.Turret->Direction;
-                }
-                else if (Body.Actor)
-                {
-                    Object.Direction = Body.State.Direction;
-                    Object.TopPose = Body.Actor->bTwoPieces ? Body.Actor->TopPose : 0;
-                }
-            }
-
-            PlayerObject->X = Player->Position.X;
-            PlayerObject->Y = Player->Position.Y;
-            PlayerObject->Direction = (Player->Pose - 1) / (PlayerPoseCount / ObjectDirectionCount);
+            SyncObjects();
             // Match the sprite's rounding so fractional movement cannot shift the ship against the camera.
             const int ViewWidth = int(ScreenWidth);
             const int ViewHeight = int(ScreenHeight);
@@ -1869,15 +1977,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         // The level ends after the frame in which the player took a lift.
         if (NextLevel && Player && PlayerObject != Level->Objects.end())
         {
-            Carried = FCarriedPlayer{
-                .Object = *PlayerObject,
-                .State = *Player,
-                .Inventory = Inventory,
-                .Weapon = Combat ? Combat->PlayerWeapon : FWeaponState{},
-                .WeaponSlot = Combat ? Combat->PlayerSlot : 1,
-                .WeaponSlots = Combat ? Combat->PlayerSlotStates : std::vector<FWeaponState>{},
-                .Clock = Combat ? Combat->Clock : 1,
-            };
+            Carried = CarriedNow();
             return FLevelEnd{ .Kind = ELevelEnd::Lift, .NextLevel = *NextLevel };
         }
     }
@@ -2028,9 +2128,11 @@ int main(const int ArgCount, char** const Args)
         std::printf("Patrols: %s\n", Patrols ? Patrols->c_str() : Patrols.error().c_str());
         const std::expected<std::string, std::string> Doors = VerifyDoors(Archive);
         std::printf("Gates and lifts: %s\n", Doors ? Doors->c_str() : Doors.error().c_str());
+        const std::expected<std::string, std::string> SessionCheck = VerifySessions(Archive);
+        std::printf("Sessions: %s\n", SessionCheck ? SessionCheck->c_str() : SessionCheck.error().c_str());
         std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
             Collision ? "passed" : Collision.error().c_str(), Movement ? "passed" : Movement.error().c_str());
-        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols && Doors ? 0 : 1;
+        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols && Doors && SessionCheck ? 0 : 1;
     }
 
     if (!glfwInit())
@@ -2059,8 +2161,33 @@ int main(const int ArgCount, char** const Args)
         std::fprintf(stderr, "No menus: %s\n", MenuArt.error().c_str());
     }
 
+    // VZCONF.TXT's session-name names the session folder and the player.
+    FSessionContext Sessions{ .PlayerName = "Player" };
+    {
+        const std::string_view Text(reinterpret_cast<const char*>(Config->data()), Config->size());
+        for (const auto Part : std::views::split(Text, '\n'))
+        {
+            const std::string_view Row(Part.begin(), Part.end());
+            constexpr std::string_view Key = "session-name";
+            const size_t Equals = Row.find('=');
+            if (Row.starts_with(Key) && Equals != std::string_view::npos)
+            {
+                std::string_view Value = Row.substr(Equals + 1);
+                constexpr std::string_view Blanks = " \t\r";
+                Value.remove_prefix(std::min(Value.size(), Value.find_first_not_of(Blanks)));
+                Value = Value.substr(0, Value.find_last_not_of(Blanks) + 1);
+                if (!Value.empty() && Value.find_first_of("\\/:*?\"<>|.") == std::string_view::npos)
+                {
+                    Sessions.PlayerName = std::string(Value);
+                }
+            }
+        }
+    }
+
+    Sessions.Folder = SessionDirectory(Sessions.PlayerName);
     std::optional<FCarriedPlayer> Carried;
-    std::optional<FDefaultSession> Session;
+    std::optional<FSession> Session = ReadSessionFile(DefaultSessionPath(Sessions.Folder));
+    std::optional<FSession> Restore;
     // Every level in the archive by file name, so each tower's floors follow each other, for the debug next-level key.
     std::vector<std::string> DebugLevels;
     for (const std::string& Name : Archive.GetNames())
@@ -2085,20 +2212,23 @@ int main(const int ArgCount, char** const Args)
     {
         if (bMenu)
         {
-            const EMenuChoice Choice = RunMainMenu(Window, Renderer, *MenuArt, Session ? &*Session : nullptr);
+            FSession Chosen;
+            const EMenuChoice Choice = RunMainMenu(Window, Renderer, *MenuArt, Session ? &*Session : nullptr, Sessions.Folder, Chosen);
             Renderer.ReleaseSpriteSheets();
             if (Choice == EMenuChoice::Quit)
             {
                 break;
             }
 
-            Path = Choice == EMenuChoice::NewGame ? LevelPath : Session->LevelPath;
-            Carried = Choice == EMenuChoice::NewGame ? std::nullopt : Session->Carried;
+            Path = Choice == EMenuChoice::NewGame ? LevelPath : Chosen.LevelPath;
+            Carried = Choice == EMenuChoice::NewGame ? std::nullopt : Chosen.Player;
+            Restore = Choice == EMenuChoice::NewGame ? std::nullopt : std::optional(std::move(Chosen));
             bMenu = false;
         }
 
         const std::expected<FLevelEnd, std::string> End = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Carried, DebugLevels, Panel ? &*Panel : nullptr,
-            MenuArt ? &*MenuArt : nullptr, Session);
+            MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Sessions);
+        Restore.reset();
         Renderer.ReleaseSpriteSheets();
         // --start places the player in the first level only.
         Start.reset();
@@ -2120,8 +2250,10 @@ int main(const int ArgCount, char** const Args)
         }
         else if (End->Kind == ELevelEnd::Restart)
         {
+            // SessionLoad mode 2 loads the default session.
             Path = Session->LevelPath;
-            Carried = Session->Carried;
+            Carried = Session->Player;
+            Restore = Session;
         }
         else
         {

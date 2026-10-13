@@ -76,6 +76,19 @@ void FMessages::Remove(const uint32_t Id)
     }
 }
 
+void FMessages::RemoveAt(const int32_t X, const int32_t Y)
+{
+    for (size_t Index = Slots.size(); Index-- > 0;)
+    {
+        if (Slots[Index] && IsAt(*Slots[Index], X, Y))
+        {
+            Slots[Index].reset();
+            FreeSlot = Index;
+            return;
+        }
+    }
+}
+
 bool FMessages::Exists(const int32_t X, const int32_t Y) const
 {
     return std::ranges::any_of(Slots, [&](const std::optional<FMessage>& Slot) { return Slot && IsAt(*Slot, X, Y); });

@@ -35,6 +35,9 @@ struct FMenu
     std::string Title;
     // Menu +0x74, the title's v-menu.gaf font.
     size_t TitleFont = 1;
+    // Menu +0x80 and +0x84: the fonts of the item under the cursor and of the others.
+    size_t HighlightFont = 2;
+    size_t ItemFont = 1;
     std::vector<FMenuItem> Items;
     // Menu +0x5c, what Escape and Backspace choose.
     std::optional<size_t> DefaultItem;

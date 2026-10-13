@@ -155,7 +155,8 @@ constexpr FCollisionPoint WorldFacingVector(const int Direction)
     return { .X = std::bit_cast<float>(WorldFacingBits[Index]), .Y = std::bit_cast<float>(WorldFacingBits[Index + 1]) };
 }
 
-// AnimUpdateBounds at 0041b4b0 recomputes the collision centre from the world position.
+}
+
 FCollisionPoint CollisionFromWorld(const FCollisionPoint World)
 {
     constexpr double InverseWidth = 1. / BlockWidth;
@@ -166,6 +167,9 @@ FCollisionPoint CollisionFromWorld(const FCollisionPoint World)
         .Y = float((double(World.Y) * InverseHeight - double(World.X) * InverseWidth) * CellDiagonal),
     };
 }
+
+namespace
+{
 
 bool IsZero(const FCollisionPoint Point)
 {
@@ -1896,17 +1900,15 @@ void ApplyDamage(FObjectBody& Body, const float Amount)
     ApplyDamage(Body.Energy, Body.Shield, Amount);
 }
 
-struct FWorldCell
-{
-    int X = 0;
-    int Y = 0;
-};
+}
 
-// The 64 x 32 world-pixel grid cell an object is linked into.
 FWorldCell CellOf(const FCollisionPoint World)
 {
     return { .X = int(uint32_t(int64_t(World.X)) / BlockWidth), .Y = int(uint32_t(int64_t(World.Y)) / BlockHeight) };
 }
+
+namespace
+{
 
 static_assert(TruncateLow(-2.7) == -2);
 static_assert(TruncateLow(std::numeric_limits<double>::quiet_NaN()) == 0);
@@ -3136,6 +3138,133 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
 
     State.Active = Type;
 }
+}
+
+std::vector<FSavingPlot> FindSavingPlots(const FLevel& Level)
+{
+    const auto Flag = [&](const FLevelObject& Object, const std::string_view Field) { return ParseLevelFloat(Object.Properties.Find(Field)).value_or(0.f) != 0.f; };
+    std::vector<FSavingPlot> Plots;
+    for (size_t Zone = 0; Zone < Level.Objects.size(); ++Zone)
+    {
+        const FLevelObject& Object = Level.Objects[Zone];
+        if (!Flag(Object, "Saving-zone"))
+        {
+            continue;
+        }
+
+        FSavingPlot& Saving = Plots.emplace_back(FSavingPlot{ .Zone = Zone });
+        for (size_t Plot = 0; Plot < Level.Objects.size(); ++Plot)
+        {
+            const FLevelObject& Candidate = Level.Objects[Plot];
+            if (Plot != Zone && Flag(Candidate, "Saving-plot") && Candidate.X == Object.X && Candidate.Y == Object.Y)
+            {
+                Saving.Plot = Plot;
+                break;
+            }
+        }
+    }
+
+    return Plots;
+}
+
+bool StepSavingPlots(FSavingState& State, const std::span<const FSavingPlot> Plots, const FLevel& Level, const FPlayerState& Player, const float PlayerRadius,
+    FPlayerInventory& Inventory, FMessages& Messages, const uint32_t NowMilliseconds, const std::string_view PlayerName)
+{
+    // PgClockNow time: 5.5 seconds of standing, counted down from six.
+    constexpr int32_t SaveDelay = 0x157c;
+    constexpr int32_t CountFrom = 6000;
+    constexpr int32_t MillisecondsPerSecondSigned = int32_t(MillisecondsPerSecond);
+    constexpr int32_t TextX = -0x96;
+    constexpr int32_t TextY = -0x32;
+    constexpr uint32_t CountLife = 500;
+    constexpr uint32_t RefusedLife = 5000;
+    constexpr uint32_t SavedLife = 3000;
+    constexpr uint32_t LeftLife = 1000;
+    constexpr uint32_t Font = 6;
+    const auto Say = [&](const FLevelObject& Plot, std::string Text, const uint32_t Life)
+    {
+        Messages.Add({
+            .Text = std::move(Text),
+            .X = float(TruncateLow(Plot.X) + TextX),
+            .Y = float(TruncateLow(Plot.Y) + TextY),
+            .LifeMilliseconds = Life,
+            .bWorld = true,
+            .Font = Font,
+        }, EMessagePlacement::Replace);
+    };
+
+    bool bContact = false;
+    bool bSave = false;
+    for (const FSavingPlot& Saving : Plots)
+    {
+        const FLevelObject& Zone = Level.Objects[Saving.Zone];
+        const FCollisionCircle ZoneCircle{ .Center = CollisionFromWorld({ .X = Zone.X, .Y = Zone.Y }), .Radius = float(Zone.BoundingBoxSize) };
+        if (Inventory.Energy <= 0.f || Zone.bRemoved || !IntersectCircles({ .Center = Player.Center, .Radius = PlayerRadius }, ZoneCircle))
+        {
+            continue;
+        }
+
+        bContact = true;
+        if (!Saving.Plot)
+        {
+            continue;
+        }
+
+        const FLevelObject& Plot = Level.Objects[*Saving.Plot];
+        State.Plot = Saving.Plot;
+        if (!State.bCounting)
+        {
+            State.bCounting = true;
+            State.Start = NowMilliseconds;
+            State.bDone = false;
+            continue;
+        }
+
+        const int32_t Elapsed = int32_t(NowMilliseconds - State.Start);
+        if (Elapsed < SaveDelay)
+        {
+            const int32_t Seconds = (CountFrom - Elapsed) / MillisecondsPerSecondSigned;
+            Say(Plot, std::format("Saving in {} second{}", Seconds, Seconds > 1 ? "s" : ""), CountLife);
+            continue;
+        }
+
+        if (State.bDone)
+        {
+            continue;
+        }
+
+        State.bDone = true;
+        // The plot's Reward is its cost, paid from the player's cash.
+        const int32_t Reward = int32_t(ParseLevelFloat(Plot.Properties.Find("Reward")).value_or(0.f));
+        if (Reward < 0 && Inventory.Money < float(-Reward))
+        {
+            Say(Plot, std::format("Not enough Cash {} !\n You need {} $\n  to save this game ...", PlayerName, -Reward), RefusedLife);
+            continue;
+        }
+
+        if (Reward < 0)
+        {
+            Inventory.Money += float(Reward);
+        }
+
+        Say(Plot, "Saving Completed.", SavedLife);
+        bSave = true;
+    }
+
+    if (!bContact && State.bCounting)
+    {
+        if (!State.bDone && State.Plot)
+        {
+            const FLevelObject& Plot = Level.Objects[*State.Plot];
+            Messages.RemoveAt(TruncateLow(Plot.X) + TextX, TruncateLow(Plot.Y));
+            Say(Plot, "No Saving.", LeftLife);
+        }
+
+        State.bCounting = false;
+        State.Plot.reset();
+    }
+
+    return bSave;
 }
 
 void StepCodeTimeouts(FPlayerInventory& Inventory, FLevel& Level, FMessages& Messages, const uint32_t StepMilliseconds)

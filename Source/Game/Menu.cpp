@@ -17,9 +17,7 @@ constexpr size_t FlashAnimation = 6;
 // MenuStep at 00421780 flashes the VZ fire on one random draw in 87.
 constexpr uint32_t FlashChance = 87;
 
-// v-menu.gaf fonts: menu +0x80 for the item under the cursor, +0x84 for the others, 4 for help texts and 5 for the build date.
-constexpr size_t HighlightFont = 2;
-constexpr size_t ItemFont = 1;
+// v-menu.gaf fonts: 4 for help texts and 5 for the build date.
 constexpr size_t HelpFont = 4;
 constexpr size_t DateFont = 5;
 constexpr size_t FontCount = DateFont;
@@ -236,7 +234,7 @@ std::vector<FHudSprite> FMenuArt::Draw(const FMenu& Menu, FMenuState& State) con
 
     for (size_t Item = 0; Item < Menu.Items.size(); ++Item)
     {
-        DrawText(Out, State.UnderCursor == Item ? HighlightFont : ItemFont, Menu.Left + int32_t(Item) * Menu.StepX, Menu.Top + int32_t(Item) * Menu.StepY,
+        DrawText(Out, State.UnderCursor == Item ? Menu.HighlightFont : Menu.ItemFont, Menu.Left + int32_t(Item) * Menu.StepX, Menu.Top + int32_t(Item) * Menu.StepY,
             Menu.Items[Item].Text);
     }
 
