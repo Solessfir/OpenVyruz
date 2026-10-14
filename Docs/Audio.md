@@ -41,7 +41,7 @@ The port mixes the channels itself in miniaudio's callback, resampling each samp
 
 The music is three WAV loops, not the CD (`MusicLoad`, `0042eaf0`): 1 `techno.wav`, 2 `darken.wav` and 3 `hardcore.wav`.
 
-- **Start**: `MusicStart` (`0042ec70`) loads them and, with music on, loops tune 1 on channel 1 at priority `0xff`, centred, at the music volume. `VzRun` starts it before the menus, and it plays through the menus and the levels.
+- **Start**: `MusicStart` (`0042ec70`) loads them and, with music on, loops tune 1 on channel 1 at priority `0xff`, centred, at the music volume. `VzRun` starts it after the story page and the intro, before the menus, and it plays through the menus and the levels.
 - **Switch and restore**: `MusicSwitch` (`0042ed60`) changes the tune and remembers the old one; `MusicRestore` (`0042ed00`) brings it back.
 - **Surprises**: `SurpriseStart` switches to tune 2 for the darkness surprise and tune 3 for the extasy surprise, and `SurpriseEnd` restores.
 - **Level end**: `LoopLevels` goes back to tune 1 after each level.

@@ -4361,13 +4361,12 @@ int main(const int ArgCount, char** const Args)
         Panel->SetDetails(Settings.Details);
     }
 
-    // VzRun at 00446e20 opens the sound (VzOpenSound (004477e0)), applies the volumes and starts the music before the menus.
+    // VzRun at 00446e20 opens the sound (VzOpenSound (004477e0)) and applies the volumes; the music waits for the story page and the intro.
     FAudio Audio(Archive);
     if (Audio.Open())
     {
         GameAudio = &Audio;
         Audio.Apply(Settings.Audio);
-        Audio.StartMusic();
     }
 
     Settings.Folder = SessionDirectory(Settings.PlayerName);
@@ -4417,6 +4416,12 @@ int main(const int ArgCount, char** const Args)
     if (bMenu && FindIntro(DataPath->parent_path()))
     {
         PlayIntro(Window, Renderer, DataPath->parent_path());
+    }
+
+    // Then MusicLoad and MusicStart, before VzMenuLoop.
+    if (GameAudio)
+    {
+        GameAudio->StartMusic();
     }
 
     for (std::string Path = LevelPath;;)
