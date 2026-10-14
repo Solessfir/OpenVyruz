@@ -3927,6 +3927,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             .Y = Player ? Player->Position.Y : 0.f,
             .Direction = Player ? Player->Direction : 0,
             .Inventory = &Inventory,
+            .State = Player ? &*Player : nullptr,
+            .TurnTimeout = PlayerClass ? PlayerClass->TurnTimeout : 0,
         };
         return std::pair(Written, FormatSessionObjects(*Level, Bodies, *Doors, Writer, Settings.DifficultyLevel));
     };
@@ -4099,8 +4101,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     int32_t FinaleFlashTimer = 0;
     bool bFinaleFlash = false;
     // The class's acceleration and turn timeout, which the speed surprises and the speed toggle change.
+    // A session's Turn-timeout is the player's own; high speed goes back to the class's.
     const float ClassAcceleration = PlayerClass ? PlayerClass->AccelerationStep : 0.f;
-    const int ClassTurnTimeout = PlayerClass ? PlayerClass->TurnTimeout : 0;
+    std::string PlayerClassName = PlayerObject != Level->Objects.end() ? PlayerObject->ClassName : std::string();
+    std::ranges::transform(PlayerClassName, PlayerClassName.begin(), [](const unsigned char Character) { return char(std::tolower(Character)); });
+    const auto PlayerClassBlock = Level->Classes.find(PlayerClassName);
+    const int ClassTurnTimeout = PlayerClassBlock != Level->Classes.end() ? int(ParseLevelFloat(PlayerClassBlock->second.Find("Turn-timeout")).value_or(0.f))
+                                 : PlayerClass                           ? PlayerClass->TurnTimeout
+                                                                         : 0;
     bool bSpeedKeyDown = ActionDown(EAction::ToggleSpeed);
     FRandom NoMiscRandom;
     const auto PanelValues = [&]

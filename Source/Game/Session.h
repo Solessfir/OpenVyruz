@@ -55,6 +55,9 @@ struct FSessionPlayer
     float Y = 0.f;
     int Direction = 0;
     const FPlayerInventory* Inventory = nullptr;
+    // Its motion, pose and flags, and its turn timeout, which the speed toggle changes.
+    const FPlayerState* State = nullptr;
+    int TurnTimeout = 0;
 };
 
 // Level3doWrite (004163a0) with flags 0xb: the header, then every object from the grid's last row and column back to the first, each cell's newest object first, leaving out the No-saving classes.

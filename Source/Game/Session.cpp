@@ -161,9 +161,26 @@ void WriteAttribute(std::string& Out, const FLevelPropertyBlock& Block, const FL
     }
 }
 
-// What Level3doWriteObject writes before the attributes: the class, the position, a name of its own, the facing, and the energy and shield that differ from the class's.
-void WriteObjectHead(std::string& Out, const FLevel& Level, const FLevelObject& Object, const float X, const float Y, const int Direction, const std::optional<float> Energy,
-    const std::optional<float> Shield)
+// What an object holds beyond its class at the moment of the save.
+struct FObjectHead
+{
+    int Direction = 0;
+    std::optional<float> Energy;
+    std::optional<float> Shield;
+    std::optional<float> ShieldUpStep;
+    std::optional<bool> bInvisible;
+    // The motion of a body: its velocity (object +0x140), and for the player and actors also the speed (+0x198) and the body pose turning toward its target (+0x230, +0x234).
+    const FPlayerState* State = nullptr;
+    bool bActor = false;
+    // Object +0xec and a heli's tilt (+0x21c).
+    int TurnTimeout = 0;
+    int Tilt = 0;
+};
+
+// What Level3doWriteObject writes before the attributes: the class, the position, a name of its own, then what differs from a fresh object of the class: the facing, the motion, the energy and shield,
+// the shield's step, the turn timeout, the Invisible and Only-base flags (object +0x128 bits 8 and 0x20), the tilt, the pose, and a wreck's behaviour.
+// ponytail: Life-time (object +0x120), the age the original adds each step only while an object is in its update list, is left out: the port does not keep that list, and nothing it runs reads the age of a saved object.
+void WriteObjectHead(std::string& Out, const FLevel& Level, const FLevelObject& Object, const float X, const float Y, const FObjectHead& Head)
 {
     Out += std::format("\nCREATE-OBJECT [\n\tClass-name\t= {}\n\tPosition\t= {:.3f}, {:.3f}\n", Object.ClassName, X, Y);
     const FLevelPropertyBlock* const Class = FindClass(Level, Object.ClassName);
@@ -172,19 +189,71 @@ void WriteObjectHead(std::string& Out, const FLevel& Level, const FLevelObject& 
         Out += std::format("\tName\t= {}\n", Name);
     }
 
-    if (Direction > 0 && Direction < ObjectDirectionCount)
+    if (Head.Direction > 0 && Head.Direction < ObjectDirectionCount)
     {
-        Out += std::format("\tDir\t= {}\n", DirectionNames[size_t(Direction)]);
+        Out += std::format("\tDir\t= {}\n", DirectionNames[size_t(Head.Direction)]);
     }
 
-    if (Class && Energy && *Energy != ClassValue(*Class, "Energy"))
+    if (!Class)
     {
-        Out += std::format("\tEnergy\t= {:.3f}\n", *Energy);
+        return;
     }
 
-    if (Class && Shield && *Shield != ClassValue(*Class, "Shield"))
+    const auto Flag = [&](const std::string_view Field) { return ClassValue(*Class, Field) != 0.f; };
+    if (Head.State && (Head.State->Velocity.X != 0.f || Head.State->Velocity.Y != 0.f))
     {
-        Out += std::format("\tShield\t= {:.3f}\n", *Shield);
+        Out += std::format("\tInertia\t= {:.3f}, {:.3f}\n", Head.State->Velocity.X, Head.State->Velocity.Y);
+    }
+
+    if (Head.State && Head.bActor && Head.State->Speed != ClassValue(*Class, "Thrust"))
+    {
+        Out += std::format("\tThrust\t= {:.3f}\n", Head.State->Speed);
+    }
+
+    if (Head.Energy && *Head.Energy != ClassValue(*Class, "Energy"))
+    {
+        Out += std::format("\tEnergy\t= {:.3f}\n", *Head.Energy);
+    }
+
+    if (Head.Shield && *Head.Shield != ClassValue(*Class, "Shield"))
+    {
+        Out += std::format("\tShield\t= {:.3f}\n", *Head.Shield);
+    }
+
+    if (Head.ShieldUpStep && *Head.ShieldUpStep != ClassValue(*Class, "Shield-up-step"))
+    {
+        Out += std::format("\tShield-up-step\t= {:.3f}\n", *Head.ShieldUpStep);
+    }
+
+    if (Head.bActor && Head.TurnTimeout != int(ClassValue(*Class, "Turn-timeout")))
+    {
+        Out += std::format("\tTurn-timeout\t= {}\n", Head.TurnTimeout);
+    }
+
+    if (Head.bInvisible && *Head.bInvisible != Flag("Invisible"))
+    {
+        Out += std::format("\tInvisible\t= {}\n", int(*Head.bInvisible));
+    }
+
+    if (Object.bWrecked != Flag("Only-base"))
+    {
+        Out += std::format("\tOnly-base\t= {}\n", int(Object.bWrecked));
+    }
+
+    if (Head.bActor && Head.Tilt != 0)
+    {
+        Out += std::format("\tBanking-level\t= {}\n", Head.Tilt);
+    }
+
+    if (Head.State && Head.bActor)
+    {
+        Out += std::format("\tInter-frame\t= {}, {}\n", Head.State->Pose, Head.State->TargetPose);
+    }
+
+    // A wreck's behaviour is Fixed (8), named by FUN_004161e0 with the blank it leaves for a target behaviour.
+    if (Object.bWrecked && ParseBehaviour(Class->Find("Behaviour")) != BehaviourFixed)
+    {
+        Out += "\tBehaviour\t= Fixed \n";
     }
 }
 
@@ -198,7 +267,7 @@ void WriteCarried(std::string& Out, const FLevel& Level, const std::string_view 
     }
 
     const FLevelObject Object{ .ClassName = std::string(ClassName), .Properties = *Class };
-    WriteObjectHead(Out, Level, Object, X, Y, 0, std::nullopt, std::nullopt);
+    WriteObjectHead(Out, Level, Object, X, Y, {});
     for (const FLevelPropertyBlock& Block : Class->Children)
     {
         WriteAttribute(Out, Block, Class, nullptr, Timeout);
@@ -313,8 +382,22 @@ std::string FormatSessionObjects(const FLevel& Level, const std::span<const FObj
         if (Index != Player.ObjectIndex || !Player.Inventory)
         {
             const FObjectBody* const Body = BodyOf[Index];
-            WriteObjectHead(Out, Level, Object, Object.X, Object.Y, Object.Direction == ObjectDirectionCount ? 0 : Object.Direction,
-                Body ? std::optional(Body->Energy) : std::nullopt, Body ? std::optional(Body->Shield) : std::nullopt);
+            FObjectHead Head{ .Direction = Object.Direction == ObjectDirectionCount ? 0 : Object.Direction };
+            if (Body)
+            {
+                Head.Energy = Body->Energy;
+                Head.Shield = Body->Shield;
+                Head.ShieldUpStep = Body->ShieldUpStep;
+                Head.bInvisible = Body->bInvisible;
+                // A generator is written like an item, without motion.
+                Head.State = Body->Generator ? nullptr : &Body->State;
+                // A wreck turns Fixed, which a reload gives no actor.
+                Head.bActor = Body->Actor.has_value() && !Object.bWrecked;
+                Head.TurnTimeout = Body->Class.TurnTimeout;
+                Head.Tilt = Body->Actor ? Body->Actor->Tilt : 0;
+            }
+
+            WriteObjectHead(Out, Level, Object, Object.X, Object.Y, Head);
             for (const FLevelPropertyBlock& Block : Object.Properties.Children)
             {
                 WriteAttribute(Out, Block, Class, DoorOf[Index], std::nullopt);
@@ -345,7 +428,15 @@ std::string FormatSessionObjects(const FLevel& Level, const std::span<const FObj
             }
         }
 
-        WriteObjectHead(Out, Level, Object, Player.X, Player.Y, Player.Direction, Inventory.Energy, Inventory.Shield);
+        WriteObjectHead(Out, Level, Object, Player.X, Player.Y, {
+            .Direction = Player.Direction,
+            .Energy = Inventory.Energy,
+            .Shield = Inventory.Shield,
+            .bInvisible = Player.State ? std::optional(Player.State->bInvisible) : std::nullopt,
+            .State = Player.State,
+            .bActor = Player.State != nullptr,
+            .TurnTimeout = Player.TurnTimeout,
+        });
         for (const FLevelPropertyBlock& Block : Object.Properties.Children)
         {
             if (ToLowerCopy(Block.Kind) != "add" || ToLowerCopy(Block.Name) != "ammo")
@@ -665,6 +756,9 @@ std::expected<std::string, std::string> VerifySessions(FResourceArchive& Archive
     constexpr float CreatedOffset = 10.f;
     constexpr size_t DifficultyLevel = 2;
     size_t Levels = 0;
+    // The levels whose session carried each object state field.
+    constexpr std::array<std::string_view, 6> StateFields = { "\tInertia\t", "\tThrust\t", "\tTurn-timeout\t", "\tBanking-level\t", "\tInter-frame\t= 3, 5\n", "\tOnly-base\t= 1\n" };
+    std::array<size_t, StateFields.size()> FieldLevels{};
     size_t Objects = 0;
     for (const std::string& Name : Archive.GetNames())
     {
@@ -715,6 +809,39 @@ std::expected<std::string, std::string> VerifySessions(FResourceArchive& Archive
             ++Door.UsageCount;
         }
 
+        // An actor in motion, mid-turn, tilted and turning slower, a pushed body and a wreck.
+        constexpr FCollisionPoint SavedVelocity{ .X = 1.25f, .Y = -0.5f };
+        constexpr int SavedPose = 3;
+        constexpr int SavedTargetPose = 5;
+        constexpr int SavedTilt = 4;
+        constexpr int SlowerTurn = 7;
+        if (const auto Actor = std::ranges::find_if(Bodies, [&](const FObjectBody& Body) { return Body.Actor && !Level->Objects[Body.ObjectIndex].bRemoved; }); Actor != Bodies.end())
+        {
+            Actor->State.Velocity = SavedVelocity;
+            Actor->State.Speed += 1.f;
+            Actor->State.Pose = SavedPose;
+            Actor->State.TargetPose = SavedTargetPose;
+            Actor->Class.TurnTimeout += SlowerTurn;
+            Actor->Actor->Tilt = SavedTilt;
+        }
+
+        if (const auto Pushed = std::ranges::find_if(Bodies, [&](const FObjectBody& Body) { return !Body.Actor && !Body.Generator && !Level->Objects[Body.ObjectIndex].bRemoved; });
+            Pushed != Bodies.end())
+        {
+            Pushed->State.Velocity = SavedVelocity;
+        }
+
+        if (const auto Wreck = std::ranges::find_if(Bodies, [&](const FObjectBody& Body)
+            {
+                const FLevelObject& Object = Level->Objects[Body.ObjectIndex];
+                return !Object.bRemoved && ParseLevelFloat(Object.Properties.Find("Two-pieces")).value_or(0.f) != 0.f;
+            });
+            Wreck != Bodies.end())
+        {
+            Level->Objects[Wreck->ObjectIndex].bWrecked = true;
+            Wreck->ShieldUpStep = 0.f;
+        }
+
         const size_t PlayerIndex = size_t(PlayerObject - Level->Objects.begin());
         FPlayerInventory Inventory = CreateInventory(*PlayerObject);
         if (!Inventory.Ammo.empty())
@@ -727,7 +854,19 @@ std::expected<std::string, std::string> VerifySessions(FResourceArchive& Archive
             Inventory.Keys.push_back({ .ClassName = std::string(KeyClass->second.Find("Name")), .X = PlayerObject->X, .Y = PlayerObject->Y });
         }
 
-        const FSessionPlayer Player{ .ObjectIndex = PlayerIndex, .X = PlayerObject->X, .Y = PlayerObject->Y, .Direction = 1, .Inventory = &Inventory };
+        const std::expected<FMovementClass, std::string> PlayerClass = ReadMovementClass(*PlayerObject);
+        FPlayerState PlayerState = PlayerClass ? SpawnPlayer(*PlayerObject, *PlayerClass) : FPlayerState{};
+        PlayerState.Velocity = SavedVelocity;
+        PlayerState.Pose = SavedTargetPose;
+        const FSessionPlayer Player{
+            .ObjectIndex = PlayerIndex,
+            .X = PlayerObject->X,
+            .Y = PlayerObject->Y,
+            .Direction = 1,
+            .Inventory = &Inventory,
+            .State = &PlayerState,
+            .TurnTimeout = PlayerClass ? PlayerClass->TurnTimeout + SlowerTurn : 0,
+        };
         const std::string Text = FormatSessionObjects(*Level, Bodies, *Doors, Player, DifficultyLevel);
 
         // Loaded back, the level and the player write the same session.
@@ -764,7 +903,17 @@ std::expected<std::string, std::string> VerifySessions(FResourceArchive& Archive
 
         std::vector<FObjectBody> ReadBodies = CreateObjectBodies(*Read);
         std::expected<std::vector<FDoor>, std::string> ReadDoors = CreateDoors(*Read, Archive, ReadBodies);
-        const FSessionPlayer Again{ .ObjectIndex = ReadIndex, .X = ReadPlayer->X, .Y = ReadPlayer->Y, .Direction = ReadPlayer->Direction, .Inventory = &ReadInventory };
+        const std::expected<FMovementClass, std::string> ReadClass = ReadMovementClass(*ReadPlayer);
+        const FPlayerState ReadState = ReadClass ? SpawnPlayer(*ReadPlayer, *ReadClass) : FPlayerState{};
+        const FSessionPlayer Again{
+            .ObjectIndex = ReadIndex,
+            .X = ReadPlayer->X,
+            .Y = ReadPlayer->Y,
+            .Direction = ReadPlayer->Direction,
+            .Inventory = &ReadInventory,
+            .State = &ReadState,
+            .TurnTimeout = ReadClass ? ReadClass->TurnTimeout : 0,
+        };
         // A loaded level lists each cell's objects the other way round, so the blocks are compared in any order.
         const auto Blocks = [](const std::string_view Session)
         {
@@ -780,6 +929,11 @@ std::expected<std::string, std::string> VerifySessions(FResourceArchive& Archive
         if (!ReadDoors || Blocks(FormatSessionObjects(*Read, ReadBodies, *ReadDoors, Again, DifficultyLevel)) != Blocks(Text))
         {
             return std::unexpected(std::format("{}: the loaded session writes differently", LevelPath));
+        }
+
+        for (size_t Field = 0; Field < StateFields.size(); ++Field)
+        {
+            FieldLevels[Field] += Text.contains(StateFields[Field]) ? 1 : 0;
         }
 
         ++Levels;
@@ -836,5 +990,12 @@ std::expected<std::string, std::string> VerifySessions(FResourceArchive& Archive
         return std::unexpected("the saving plot did not save once after 5.5 seconds for its cost");
     }
 
-    return std::format("{} levels ({} objects) written and loaded back as sessions, saving plot passed", Levels, Objects);
+    if (std::ranges::contains(FieldLevels, size_t{ 0 }))
+    {
+        return std::unexpected("a session wrote no motion, turn, tilt, pose or wreck");
+    }
+
+    return std::format("{} levels ({} objects) written and loaded back as sessions, with motion in {}, speed in {}, turn timeouts in {}, tilts in {}, poses in {} and wrecks in {}, "
+                       "saving plot passed",
+        Levels, Objects, FieldLevels[0], FieldLevels[1], FieldLevels[2], FieldLevels[3], FieldLevels[4], FieldLevels[5]);
 }

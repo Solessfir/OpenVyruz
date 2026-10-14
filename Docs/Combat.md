@@ -126,7 +126,7 @@ A StaticGen (kind 0x17, the `Generator-*` classes of tower 3) carries a `TYPE Ge
 
 ## Wrecks
 
-A class with `Two-pieces` (class `+0x20` bit 2: tanks and turrets) dies twice. On the first death `EngineUpdateObjects` calls `ObjectDestroy` with its keep flag: the explosions go off and the reward is paid, but nothing drops and the enemy count stays. The object becomes a wreck (object `+0x128` bit `0x20`): its energy and shield go back to the class's initial values, and its behaviour becomes plain Fixed (8), so it neither moves nor looks for the player. `ObjectDraw` leaves out a wreck's upper half, a tank's top or a turret's gun, and keeps the turret's base (the animation after its 24 gun poses) and the shadow. The second death destroys it for good. Gold boxes leave `Gold` (500 money), and many classes drop a `Surprise` power-up by chance.
+A class with `Two-pieces` (class `+0x20` bit 2: tanks and turrets) dies twice. On the first death `EngineUpdateObjects` calls `ObjectDestroy` with its keep flag: the explosions go off and the reward is paid, but nothing drops and the enemy count stays. The object becomes a wreck (object `+0x128` bit `0x20`, Only-base, which other classes may start with): its energy and shield go back to the class's initial values, its shield step drops to zero, and its behaviour becomes plain Fixed (8), so it neither moves nor looks for the player. `ObjectDraw` leaves out a wreck's upper half, a tank's top or a turret's gun, and keeps the turret's base (the animation after its 24 gun poses) and the shadow. The second death destroys it for good. Gold boxes leave `Gold` (500 money), and many classes drop a `Surprise` power-up by chance.
 
 ## Turrets
 

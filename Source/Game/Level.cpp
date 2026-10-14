@@ -807,6 +807,8 @@ std::expected<FLevelObject, std::string> BuildObject(const std::vector<std::stri
         .bZShadow = *ZShadow != 0,
         .bDirectional = std::ranges::find(DirectionalTypes, SubType) != std::end(DirectionalTypes),
         .bDetail = IntegerProperty("Is-detail").value_or(0) != 0,
+        // Only-base (object +0x128 bit 0x20): a session's wreck of a two-piece object.
+        .bWrecked = IntegerProperty("Only-base").value_or(0) != 0,
         .SubType = SubType,
         .Properties = std::move(Properties),
     };

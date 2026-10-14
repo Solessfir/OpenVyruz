@@ -797,6 +797,25 @@ std::expected<FMovementClass, std::string> ReadMovementClass(const FLevelObject&
     return ReadMovementProperties(Object.Properties, Object.ClassName, Object.BoundingBoxSize);
 }
 
+namespace
+{
+// LevelLoad3do (00413d80) gives an object created from a session the velocity (Inertia), the speed (Thrust) and the body pose and its target (Inter-frame, only when both are set) it was saved with.
+void ApplySavedMotion(const FLevelPropertyBlock& Properties, FPlayerState& State)
+{
+    if (const std::optional<FCollisionPoint> Inertia = ParsePair(Properties.Find("Inertia")))
+    {
+        State.Velocity = *Inertia;
+    }
+
+    State.Speed = ParseLevelFloat(Properties.Find("Thrust")).value_or(State.Speed);
+    if (const std::optional<FCollisionPoint> Poses = ParsePair(Properties.Find("Inter-frame")); Poses && Poses->X != 0.f && Poses->Y != 0.f)
+    {
+        State.Pose = int(Poses->X);
+        State.TargetPose = int(Poses->Y);
+    }
+}
+}
+
 FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class)
 {
     FPlayerState Player{
@@ -807,6 +826,7 @@ FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class
     Player.PreviousPosition = Player.Position;
     Player.Center = CollisionFromWorld(Player.Position);
     Player.Pose = Player.TargetPose = Player.Direction * PosesPerDirection + 1;
+    ApplySavedMotion(Object.Properties, Player);
     return Player;
 }
 
@@ -1082,6 +1102,7 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
     Body.Shield = ParseLevelFloat(Properties.Find("Shield")).value_or(Body.Shield);
     Body.State.Position = Body.State.PreviousPosition = { .X = Object.X, .Y = Object.Y };
     Body.State.Center = CollisionFromWorld(Body.State.Position);
+    ApplySavedMotion(Properties, Body.State);
     if (bActor)
     {
         const std::optional<uint32_t> Behaviour = ParseBehaviour(Object.Behaviour);
@@ -1101,6 +1122,7 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
         // PlayerAdvancePose (00438390) turns cops, burners and things through 48 poses, the other actors through 24.
         const int ActorPoses = Object.SubType == CopKind || Object.SubType == BurnerKind || Object.SubType == ThingKind ? PosesPerDirection : 1;
         Body.State.Pose = Body.State.TargetPose = Body.State.Direction * ActorPoses + 1;
+        ApplySavedMotion(Properties, Body.State);
         constexpr float TankCorrectionScale = 0.01f;
         FActor& Actor = Body.Actor.emplace(FActor{
             .Behaviour = *Behaviour,
@@ -1110,8 +1132,9 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
             .CorrectionScale = Object.SubType == TankKind || bLegged ? TankCorrectionScale : 1.f,
             .bSpider = Object.SubType == SpiderKind,
             .TopPose = Body.State.Pose,
-            .TopTargetPose = Body.State.Pose,
+            .TopTargetPose = Body.State.TargetPose,
             .TopTurnTimeout = int32_t(Number(&Properties, "Turret-turn-timeout")),
+            .Tilt = int(Number(&Properties, "Banking-level")),
         });
         if (const FLevelPropertyBlock* const Patrol = FindTypeBlock(Properties, "Patrol"); Patrol && (*Behaviour & BehaviourMovementMask) == BehaviourPatrol)
         {
@@ -6008,7 +6031,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
         if (bFirstOfTwo)
         {
-            // The wreck starts over with the class's initial energy and shield.
+            // The wreck starts over with the class's initial energy and shield, and its shield no longer builds up.
             const auto Initial = [&](const std::string_view Kind)
             {
                 const FLevelPropertyBlock* const Block = FindBlock(Object.Properties, Kind);
@@ -6017,6 +6040,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             Object.bWrecked = true;
             Body.Energy = Initial("Energy");
             Body.Shield = Initial("Shield");
+            Body.ShieldUpStep = 0.f;
             Body.bDamaged = false;
             return false;
         }
