@@ -51,7 +51,7 @@ With the keyboard and the absolute command (Control's `Direction : ABSOLUTE`), `
 
 An object hit is resolved by `ObjectPush` (`00436dd0`). Moving away from the contact accepts the move, as for terrain. A target with zero `Friction-factor` is immovable and reflects the mover's velocity component along the contact normal, scaled by `Elasticity`. Otherwise both exchange that component weighted by `Weight / 10`, and the target is flagged as pushed: its velocity then carries it with friction until its speed drops below 1.
 
-The port treats static scenery with a bounding box as solid. Pickups, gates, lifts, keys, teleports and actors are left out until their behaviours exist, and the demo replay stays terrain-only: the recording shoots barrels and crates and shoves pallets, so its path crosses their start positions.
+The port treats static scenery with a bounding box as solid. Pickups, gates, lifts, keys, teleports and actors are left out until their behaviours exist, and the demo replay stays terrain-only. Running the level's objects alongside it (doors, keys, the player's recorded fire, cops, turrets and shots) made 20 more steps exact and 843 fewer, because the recording keeps only the player, so the port's world drifts from the original's and objects stand where the recorded path went. Of the 5811 steps that miss, about 3860 match exactly with other step lengths, which the 1 ms timestamps cannot pin down; of the rest, about 1010 are off by less than 0.2 pixels on runs of 6, 7 and 10 ms steps, which also points at the split, and about 200 are jumps of around 2 pixels from rest across the facing, the shove of an enemy shot (`40 / Weight`), which the replay does not fire.
 
 ## Object kinds and pickups
 

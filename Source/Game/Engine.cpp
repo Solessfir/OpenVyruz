@@ -1674,7 +1674,7 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
     constexpr float CloseTolerance = 0.5f;
     size_t Exact = 0;
     size_t Close = 0;
-    // ponytail: the replay steps the player against the terrain alone; the demo shoots barrels and crates and shoves pallets, so the recorded path crosses where those objects started.
+    // ponytail: the replay steps the player against the terrain alone. The recording keeps only the player, so a simulated world drifts from the original's and blocks more steps than it explains; the misses come from the inferred step split and from enemy shots' shoves.
     FPlayerState Player = SpawnPlayer(*Object, *Class);
     FPlayerState FreeRun = Player;
     FLevel PickupLevel = *Level;
