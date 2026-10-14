@@ -6,7 +6,7 @@
 
 `PlayIntro` (`004033b0`) plays it in three places:
 
-- `VzRun` (`00446e20`) at startup, after `ConfigLoad` and before the main menu.
+- `VzRun` (`00446e20`) at startup, after `ConfigLoad` and before the main menu. Just before it, `ShowStoryPage` (`00447c80`) shows `story.tga` with `story-en.txt` (`story-fr.txt` in French) in v-bonus font 4 from (128, 100), read aloud by `v-intro-uk.wav` (`v-intro-fr.wav`) on channel 5 at the voices volume, until a key or mouse button goes down or 30 seconds pass; the voice stops with the page. The port shows it too.
 - `VzMenuLoop` (`00447820`), case 10, unless session flag `0x2000` is set.
 - The Extras menu (`MenuExtras`, `00427820`), item 2, while `IntroPresent` (`00403370`) finds the file. The item's help reads `Intro animation file is not present.` otherwise, or `Install Indeo 5.11 or higher to see the intro.` when `IndeoInstalled` (`00403030`) finds no Indeo codec.
 

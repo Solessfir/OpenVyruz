@@ -444,8 +444,10 @@ std::vector<FHudSprite> FPanel::DrawTypedPage(const size_t Font, const std::stri
 
 std::vector<FHudSprite> FPanel::DrawPage(const size_t Font, const std::string_view Text, const int32_t Left, const int32_t Top, const int32_t Right) const
 {
+    // The text page's callback (00402640) sets the cursor to the font's baseline (font +0x28) below the page's top.
     std::vector<FHudSprite> Out;
-    DrawText(Out, EHudSheet::Bonus, Font, Left, Top, Text, {}, Right);
+    const int32_t Baseline = Font >= 1 && Font <= BonusFonts.size() ? BonusFonts[Font - 1].Baseline : 0;
+    DrawText(Out, EHudSheet::Bonus, Font, Left, Top + Baseline, Text, {}, Right);
     return Out;
 }
 

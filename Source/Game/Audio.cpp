@@ -272,6 +272,17 @@ void FAudio::PlayMovieSound(std::shared_ptr<const Sound::FSample> Sample)
     Mixer.Play(std::move(Sample), false, MusicPriority, ChannelBit(MusicChannel), Sound::MaxVolume, 0);
 }
 
+void FAudio::PlayStoryVoice()
+{
+    Mixer.Stop(ChannelBit(VoiceChannel));
+    Mixer.Play(Load("v-intro-uk.wav"), false, MenuPriority, ChannelBit(VoiceChannel), Settings.VoicesVolume);
+}
+
+void FAudio::StopStoryVoice()
+{
+    Mixer.Stop(ChannelBit(VoiceChannel));
+}
+
 void FAudio::StopMovieSound()
 {
     Mixer.Stop(ChannelBit(MusicChannel));

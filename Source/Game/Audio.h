@@ -132,6 +132,9 @@ public:
     // PlayIntro (004033b0) leaves the intro's sound to MCI, which plays it at full volume while the music is stopped.
     void PlayMovieSound(std::shared_ptr<const Sound::FSample> Sample);
     void StopMovieSound();
+    // ShowStoryPage (00447c80) reads the story aloud, v-intro-uk.wav on channel 5 at the voices volume and priority 0xbf, and stops it when the page closes.
+    void PlayStoryVoice();
+    void StopStoryVoice();
     // The whole game, sound included, stands still while it is inactive.
     void SetPaused(bool bPaused) { Mixer.SetPaused(bPaused); }
 

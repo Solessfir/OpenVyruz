@@ -16,8 +16,8 @@ struct FFontRecord
     int32_t LineGap;
     int32_t CharSpacing;
     int32_t Reserved0;
-    // Lines whose top lies this far past the clip bottom are not drawn.
-    int32_t ClipMargin;
+    // The baseline's depth below a line's top (runtime font +0x28), where a text page puts its first line.
+    int32_t Baseline;
     int32_t Advance;
     int32_t LineHeight;
     uint32_t DrawMode;
@@ -70,6 +70,7 @@ std::optional<std::vector<Font::FFont>> Font::LoadFonts(const std::span<const ui
             .CharSpacing = Record.CharSpacing,
             .Advance = Record.Advance,
             .LineHeight = Record.LineHeight,
+            .Baseline = Record.Baseline,
         };
         if ((Record.Flags & FontDrawSettings) != 0)
         {

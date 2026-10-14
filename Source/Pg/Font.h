@@ -49,6 +49,8 @@ struct FFont
     // A fixed-width glyph's advance, and a space's.
     int32_t Advance = 0;
     int32_t LineHeight = 0;
+    // The baseline's depth below a line's top, where a text page puts its first line.
+    int32_t Baseline = 0;
     // A font without draw settings gets mode 1 and white from PgFontSelect (0044c3c0).
     uint32_t DrawMode = 1;
     FColor Color;

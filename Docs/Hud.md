@@ -52,6 +52,7 @@ While the map is open, every pass of `PanelUpdate` in modes 1 to 5 takes 30 cash
 
 - A tilde prints as a percent sign. A space advances by the font's advance.
 - With word wrap on (the story and ending pages), `PgFontPrint` measures each word first: when one of its bitmaps would pass the clip's right edge, measured from the cursor minus one with each glyph's X offset, the word starts a new line at the clip's left edge.
+- The text page of the story and the ending (`ShowTextPage`, `004027f0`, callback `00402640`) starts the cursor at the font's baseline (font record `+0x14`) below the page's top, so v-bonus font 4's first line sits 17 pixels lower than the page's top suggests. It closes on a key or mouse button, or after its timeout, counted down by the frame time (`FUN_00450d50`): 30 seconds for the story, none for the ending.
 - A line break goes back to the starting column and down by the line height, plus the line gap for a proportional font. Word wrap at the clip edge would start the line at the clip's left instead, but `FUN_0043be00` turns it off when a level starts.
 - `PgFontSetColor` (`0044cc30`) combines a colour into the font's with `ColorCombine` (`0044f310`): each diffuse channel becomes `c - (256 - m) * c / 256`, the speculars add with saturation and the alphas multiply. A draw mode set before `PgFontSelect` is overwritten by the font's.
 - Each glyph's bitmap is placed so that its trimmed top-left lands at the cursor plus the glyph's offset. Its overlay bitmap follows.

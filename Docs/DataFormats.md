@@ -156,7 +156,7 @@ Slot 0 has one 72-byte record per font:
 | `+0x08` | extra line gap of a proportional font |
 | `+0x0c` | spacing added to a proportional glyph's width |
 | `+0x10` | reserved |
-| `+0x14` | clip margin of a line |
+| `+0x14` | baseline: its depth below a line's top (17 for v-bonus font 4), where a text page starts its first line |
 | `+0x18` | advance of a fixed-width glyph and of a space |
 | `+0x1c` | line height |
 | `+0x20` | draw mode, then a 12-byte colour |

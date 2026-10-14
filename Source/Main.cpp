@@ -1089,9 +1089,10 @@ void ShowImage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& 
     }
 }
 
-// The story and ending screens' text page (FUN_004027f0 with the callback at 00402640): a full-screen Targa image and a text in v-bonus.gaf font 4 with word wrap from Left, 100 to the screen's right edge, until a key or mouse button goes down (FUN_00401880).
+// The story and ending screens' text page (ShowTextPage at 004027f0 with the callback at 00402640): a full-screen Targa image and a text in v-bonus.gaf font 4 with word wrap from Left, 100 to the screen's right edge, until a key or mouse button goes down (FUN_00401880).
+// A non-zero timeout also closes it, counted in display frames by FUN_00450d50.
 void ShowTextPage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FPanel& Panel, const std::string_view ImagePath,
-    const std::string_view TextPath, const int32_t Left)
+    const std::string_view TextPath, const int32_t Left, const uint32_t TimeoutMilliseconds = 0)
 {
     constexpr size_t PageFont = 4;
     constexpr int32_t PageTop = 100;
@@ -1121,7 +1122,8 @@ void ShowTextPage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchiv
     };
 
     std::vector<bool> Previous = Inputs();
-    while (!glfwWindowShouldClose(Window))
+    const uint32_t Start = ClockMilliseconds();
+    while (!glfwWindowShouldClose(Window) && (TimeoutMilliseconds == 0 || ClockMilliseconds() - Start < TimeoutMilliseconds))
     {
         PollEvents(Window);
         const std::vector<bool> Now = Inputs();
@@ -4393,7 +4395,25 @@ int main(const int ArgCount, char** const Args)
     // VzRun's loop (VzMenuLoop at 00447820): the main menu, then levels until a menu or the game's end brings it back. New Game starts at LevelPath.
     int Result = 0;
     bool bMenu = MenuArt && !bSkipMenu;
-    // VzRun plays the intro before the main menu.
+    // VzRun shows the story page (ShowStoryPage at 00447c80, read aloud, for up to 30 seconds), then plays the intro, before the main menu.
+    if (bMenu && Panel)
+    {
+        constexpr int32_t StoryLeft = 0x80;
+        constexpr uint32_t StoryMilliseconds = 30000;
+        if (GameAudio)
+        {
+            GameAudio->PlayStoryVoice();
+        }
+
+        ShowTextPage(Window, Renderer, Archive, *Panel, "common\\data\\extra\\story.tga", "common\\data\\extra\\story-en.txt", StoryLeft, StoryMilliseconds);
+        if (GameAudio)
+        {
+            GameAudio->StopStoryVoice();
+        }
+
+        Renderer.ReleaseSpriteSheets();
+    }
+
     if (bMenu && FindIntro(DataPath->parent_path()))
     {
         PlayIntro(Window, Renderer, DataPath->parent_path());
