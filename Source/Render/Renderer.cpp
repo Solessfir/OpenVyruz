@@ -417,6 +417,7 @@ bool FRenderer::CreateSwapchain()
 
     // Wayland reports 0xFFFFFFFF here and lets the client pick the size.
     VkExtent2D Extent = Caps.currentExtent;
+    bCanCapture = (Caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
     if (Extent.width == UINT32_MAX)
     {
         Extent.width = std::clamp(static_cast<uint32_t>(Width), Caps.minImageExtent.width, Caps.maxImageExtent.width);
@@ -438,7 +439,7 @@ bool FRenderer::CreateSwapchain()
         .imageColorSpace = Format.colorSpace,
         .imageExtent = Extent,
         .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | (bCanCapture ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0u),
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = Caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -908,14 +909,113 @@ void FRenderer::DrawGamma()
     }
 }
 
+void FRenderer::RequestCapture(const uint32_t Width, const uint32_t Height)
+{
+    CaptureSize = VkExtent2D{ Width, Height };
+}
+
+std::optional<std::vector<uint16_t>> FRenderer::TakeCapture()
+{
+    if (CaptureBuffer == VK_NULL_HANDLE || !CaptureSize)
+    {
+        return std::nullopt;
+    }
+
+    vkQueueWaitIdle(Queue);
+    const VkExtent2D Size = *CaptureSize;
+    const VkExtent2D Region = CaptureRegion;
+    const bool bBgra = SwapchainFormat == VK_FORMAT_B8G8R8A8_UNORM || SwapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
+    void* Mapped = nullptr;
+    vkMapMemory(Device, CaptureMemory, 0, VK_WHOLE_SIZE, 0, &Mapped);
+    const auto* const Source = static_cast<const uint8_t*>(Mapped);
+    std::vector<uint16_t> Pixels(size_t(Size.width) * Size.height);
+    // Each pixel averages the block of the view it covers.
+    constexpr uint32_t ChannelShift = 3;
+    constexpr uint32_t RedShift = 10;
+    constexpr uint32_t GreenShift = 5;
+    for (uint32_t Y = 0; Y < Size.height; ++Y)
+    {
+        const uint32_t Top = Y * Region.height / Size.height;
+        const uint32_t Bottom = std::max(Top + 1, (Y + 1) * Region.height / Size.height);
+        for (uint32_t X = 0; X < Size.width; ++X)
+        {
+            const uint32_t Left = X * Region.width / Size.width;
+            const uint32_t Right = std::max(Left + 1, (X + 1) * Region.width / Size.width);
+            std::array<uint32_t, 3> Sum{};
+            for (uint32_t Row = Top; Row < Bottom; ++Row)
+            {
+                for (uint32_t Column = Left; Column < Right; ++Column)
+                {
+                    const uint8_t* const Pixel = Source + (size_t(Row) * Region.width + Column) * 4;
+                    Sum[0] += Pixel[bBgra ? 2 : 0];
+                    Sum[1] += Pixel[1];
+                    Sum[2] += Pixel[bBgra ? 0 : 2];
+                }
+            }
+
+            const uint32_t Count = (Bottom - Top) * (Right - Left);
+            Pixels[size_t(Y) * Size.width + X] =
+                uint16_t((Sum[0] / Count >> ChannelShift) << RedShift | (Sum[1] / Count >> ChannelShift) << GreenShift | (Sum[2] / Count >> ChannelShift));
+        }
+    }
+
+    vkUnmapMemory(Device, CaptureMemory);
+    vkDestroyBuffer(Device, CaptureBuffer, nullptr);
+    vkFreeMemory(Device, CaptureMemory, nullptr);
+    CaptureBuffer = VK_NULL_HANDLE;
+    CaptureMemory = VK_NULL_HANDLE;
+    CaptureSize.reset();
+    return Pixels;
+}
+
 void FRenderer::EndFrame()
 {
     DrawGamma();
     FFrame& Frame = Frames[FrameIndex];
     const VkCommandBuffer Cmd = Frame.CommandBuffer;
     vkCmdEndRendering(Cmd);
-    TransitionImage(Cmd, SwapchainImages[ImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
+    const VkImage Image = SwapchainImages[ImageIndex];
+    if (CaptureSize && bCanCapture && CaptureBuffer == VK_NULL_HANDLE)
+    {
+        // The letterboxed view, as BeginFrame placed it.
+        const float Scale = std::min(SwapchainExtent.width / ScreenWidth, SwapchainExtent.height / ScreenHeight);
+        CaptureRegion = { std::max(1u, uint32_t(ScreenWidth * Scale)), std::max(1u, uint32_t(ScreenHeight * Scale)) };
+        const int32_t OffsetX = int32_t((SwapchainExtent.width - ScreenWidth * Scale) * 0.5f);
+        const int32_t OffsetY = int32_t((SwapchainExtent.height - ScreenHeight * Scale) * 0.5f);
+        const VkDeviceSize ByteSize = VkDeviceSize(CaptureRegion.width) * CaptureRegion.height * 4;
+        const VkBufferCreateInfo BufferInfo{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = ByteSize,
+            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        Check(vkCreateBuffer(Device, &BufferInfo, nullptr, &CaptureBuffer), "vkCreateBuffer");
+        VkMemoryRequirements Requirements;
+        vkGetBufferMemoryRequirements(Device, CaptureBuffer, &Requirements);
+        const VkMemoryAllocateInfo Alloc{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = Requirements.size,
+            .memoryTypeIndex = FindMemoryType(Requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+        };
+        Check(vkAllocateMemory(Device, &Alloc, nullptr, &CaptureMemory), "vkAllocateMemory");
+        vkBindBufferMemory(Device, CaptureBuffer, CaptureMemory, 0);
+        TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        const VkBufferImageCopy Region{
+            .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+            .imageOffset = { std::max(0, OffsetX), std::max(0, OffsetY), 0 },
+            .imageExtent = { CaptureRegion.width, CaptureRegion.height, 1 },
+        };
+        vkCmdCopyImageToBuffer(Cmd, Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, CaptureBuffer, 1, &Region);
+        TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
+    }
+    else
+    {
+        TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
+    }
+
     vkEndCommandBuffer(Cmd);
 
     const VkSemaphoreSubmitInfo WaitInfo{

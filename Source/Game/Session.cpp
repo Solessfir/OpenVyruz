@@ -1,9 +1,11 @@
 #include "Game/Session.h"
 
 #include "Game/Collision.h"
+#include "Pg/File.h"
 #include "Pg/ResourceArchive.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstdlib>
 #include <format>
@@ -14,153 +16,17 @@
 
 namespace
 {
-constexpr std::string_view Signature = "OpenVyruz-session";
-constexpr int FormatVersion = 2;
-constexpr char Separator = '\t';
 // SessionWrite keeps the six sessions before the one it writes.
 constexpr int KeptSessions = 7;
-constexpr std::string_view SessionExtension = ".txt";
+constexpr std::string_view LastFileName = "last.txt";
+constexpr std::string_view DefaultFolderName = "default";
+// Larger than any level's snapshot; a bigger file is not a session.
+constexpr std::uintmax_t MaxSessionBytes = 16 * 1024 * 1024;
 
-// Strings go between tab separators, so tabs, line breaks and backslashes are escaped.
-std::string Escape(const std::string_view Text)
-{
-    std::string Result;
-    for (const char Character : Text)
-    {
-        switch (Character)
-        {
-        case '\\':
-            Result += "\\\\";
-            break;
-        case '\t':
-            Result += "\\t";
-            break;
-        case '\n':
-            Result += "\\n";
-            break;
-        case '\r':
-            Result += "\\r";
-            break;
-        default:
-            Result += Character;
-        }
-    }
-
-    return Result;
-}
-
-std::optional<std::string> Unescape(const std::string_view Text)
-{
-    std::string Result;
-    for (size_t Index = 0; Index < Text.size(); ++Index)
-    {
-        if (Text[Index] != '\\')
-        {
-            Result += Text[Index];
-            continue;
-        }
-
-        if (++Index == Text.size())
-        {
-            return std::nullopt;
-        }
-
-        switch (Text[Index])
-        {
-        case '\\':
-            Result += '\\';
-            break;
-        case 't':
-            Result += '\t';
-            break;
-        case 'n':
-            Result += '\n';
-            break;
-        case 'r':
-            Result += '\r';
-            break;
-        default:
-            return std::nullopt;
-        }
-    }
-
-    return Result;
-}
-
-// One line of tab-separated fields, read in order.
-class FFields
-{
-public:
-    explicit FFields(const std::string_view Line)
-    {
-        for (const auto Part : std::views::split(Line, Separator))
-        {
-            Parts.emplace_back(Part.begin(), Part.end());
-        }
-    }
-
-    std::string_view Kind() const { return Parts.empty() ? std::string_view() : Parts.front(); }
-    bool AtEnd() const { return Next == Parts.size(); }
-
-    std::optional<std::string> Text()
-    {
-        return Next < Parts.size() ? Unescape(Parts[Next++]) : std::nullopt;
-    }
-
-    template <typename T>
-    std::optional<T> Number()
-    {
-        if (Next >= Parts.size())
-        {
-            return std::nullopt;
-        }
-
-        const std::string_view Part = Parts[Next++];
-        T Value{};
-        const auto [End, Error] = std::from_chars(Part.data(), Part.data() + Part.size(), Value);
-        return Error == std::errc() && End == Part.data() + Part.size() ? std::optional(Value) : std::nullopt;
-    }
-
-    std::optional<bool> Flag()
-    {
-        const std::optional<int> Value = Number<int>();
-        return Value && (*Value == 0 || *Value == 1) ? std::optional(*Value == 1) : std::nullopt;
-    }
-
-private:
-    std::vector<std::string_view> Parts;
-    // The kind is the first part.
-    size_t Next = 1;
+// dir_to_string at 00407850, by direction.
+constexpr std::array<std::string_view, ObjectDirectionCount> DirectionNames{
+    "SW", "SW_1", "SW_2", "S", "S_1", "S_2", "SE", "SE_1", "SE_2", "E", "E_1", "E_2", "NE", "NE_1", "NE_2", "N", "N_1", "N_2", "NW", "NW_1", "NW_2", "W", "W_1", "W_2",
 };
-
-// Floats print in their shortest round-trip form, so a session reads back exactly.
-template <typename... TArgs>
-void Line(std::string& Out, const std::string_view Kind, const TArgs&... Args)
-{
-    Out += Kind;
-    ((Out += Separator, Out += std::format("{}", Args)), ...);
-    Out += '\n';
-}
-
-void WriteWeapon(std::string& Out, const std::string_view Kind, const FWeaponState& Weapon)
-{
-    Line(Out, Kind, Weapon.Weapon, Weapon.LastFireTime, int(Weapon.bTriggerHeld), Weapon.Slope, int(Weapon.bAlternateSide));
-}
-
-std::optional<FWeaponState> ReadWeapon(FFields& Fields)
-{
-    const std::optional<size_t> Weapon = Fields.Number<size_t>();
-    const std::optional<uint32_t> LastFireTime = Fields.Number<uint32_t>();
-    const std::optional<bool> bTriggerHeld = Fields.Flag();
-    const std::optional<float> Slope = Fields.Number<float>();
-    const std::optional<bool> bAlternateSide = Fields.Flag();
-    if (!Weapon || !LastFireTime || !bTriggerHeld || !Slope || !bAlternateSide)
-    {
-        return std::nullopt;
-    }
-
-    return FWeaponState{ .Weapon = *Weapon, .LastFireTime = *LastFireTime, .bTriggerHeld = *bTriggerHeld, .Slope = *Slope, .bAlternateSide = *bAlternateSide };
-}
 
 std::string ToLowerCopy(const std::string_view Text)
 {
@@ -169,11 +35,16 @@ std::string ToLowerCopy(const std::string_view Text)
     return Result;
 }
 
-FLevelPropertyBlock* FindTypeChild(FLevelPropertyBlock& Properties, const std::string_view Name)
+int Integer(const std::string_view Text)
+{
+    return int(ParseLevelFloat(Text).value_or(0.f));
+}
+
+FLevelPropertyBlock* FindChild(FLevelPropertyBlock& Properties, const std::string_view Kind, const std::string_view Name)
 {
     for (FLevelPropertyBlock& Child : Properties.Children)
     {
-        if (ToLowerCopy(Child.Kind) == "type" && ToLowerCopy(Child.Name) == ToLowerCopy(Name))
+        if (ToLowerCopy(Child.Kind) == Kind && ToLowerCopy(Child.Name) == ToLowerCopy(Name))
         {
             return &Child;
         }
@@ -182,35 +53,583 @@ FLevelPropertyBlock* FindTypeChild(FLevelPropertyBlock& Properties, const std::s
     return nullptr;
 }
 
-std::optional<int> SessionNumber(const std::filesystem::path& Path)
+const FLevelPropertyBlock* FindChild(const FLevelPropertyBlock& Properties, const std::string_view Kind, const std::string_view Name)
 {
-    constexpr char Prefix = 's';
-    const std::string Stem = Path.stem().string();
-    if (Path.extension() != SessionExtension || Stem.size() < 2 || Stem.front() != Prefix)
-    {
-        return std::nullopt;
-    }
-
-    int Number = 0;
-    const auto [End, Error] = std::from_chars(Stem.data() + 1, Stem.data() + Stem.size(), Number);
-    return Error == std::errc() && End == Stem.data() + Stem.size() && Number >= 0 ? std::optional(Number) : std::nullopt;
+    return FindChild(const_cast<FLevelPropertyBlock&>(Properties), Kind, Name);
 }
 
-std::vector<std::pair<int, std::filesystem::path>> NumberedSessions(const std::filesystem::path& Directory)
+// The class's Energy, Shield and the like: the Initial of its block, or the plain value.
+float ClassValue(const FLevelPropertyBlock& Class, const std::string_view Field)
+{
+    for (const FLevelPropertyBlock& Child : Class.Children)
+    {
+        if (ToLowerCopy(Child.Kind) == ToLowerCopy(Field))
+        {
+            return ParseLevelFloat(Child.Find("Initial")).value_or(0.f);
+        }
+    }
+
+    return ParseLevelFloat(Class.Find(Field)).value_or(0.f);
+}
+
+const FLevelPropertyBlock* FindClass(const FLevel& Level, const std::string_view ClassName)
+{
+    const auto Class = Level.Classes.find(ToLowerCopy(ClassName));
+    return Class == Level.Classes.end() ? nullptr : &Class->second;
+}
+
+// The object's name (object +0xc4), which is its class's unless the .3do gave it one.
+std::string_view ObjectName(const FLevelPropertyBlock& Properties)
+{
+    return Properties.Find("Name");
+}
+
+// write_3do_attributes (FUN_00417210) for one attribute block, with the live state the port keeps for gates and lifts.
+void WriteAttribute(std::string& Out, const FLevelPropertyBlock& Block, const FLevelPropertyBlock* const ClassBlocks, const FDoor* const Door,
+    const std::optional<int32_t> ItemTimeout)
+{
+    const std::string Kind = ToLowerCopy(Block.Kind);
+    const std::string Name = ToLowerCopy(Block.Name);
+    const auto Value = [&](const std::string_view Field) { return Integer(Block.Find(Field)); };
+    const auto DoorFlag = [&](const std::string_view Field, const uint32_t Bit) { return Door ? int((Door->Flags & Bit) != 0) : Value(Field); };
+    if (Kind == "type" && Name == "generator")
+    {
+        Out += std::format("\tTYPE Generator [\n\t\tProduct\t= {}\n\t\tMax-births\t= {}\n\t\tBirth-delay\t= {}\n\t\tBirth-duration\t= {}\n\t\tStressable\t= {}\n\t\tActive\t= {}\n"
+                           "\t\tStable-population\t= {}\n\t]\n",
+            Block.Find("Product"), Value("Max-births"), Value("Birth-delay"), Value("Birth-duration"), Value("Stressable"), Value("Active"), Value("Stable-population"));
+    }
+    else if (Kind == "type" && Name == "lift")
+    {
+        Out += std::format("\tTYPE Lift [\n\t\tPresent\t= {}\n\t\tActive\t= {}\n\t\tGoing-Up\t= {}\n\t\tDelay\t= {}\n\t\tStay-Up\t= {}\n\t\tStay-Down\t= {}\n\t\tUsage-Count\t= {}\n"
+                           "\t\tFull-load\t= {}\n\t\tDestroy-key\t= {}\n\t\tKey-always-needed\t= {}\n\t\tId\t= {}\n\t\tNeeds-code\t= {}\n",
+            DoorFlag("Present", DoorOpen), DoorFlag("Active", DoorActive), DoorFlag("Going-Up", DoorOpening), Value("Delay"), DoorFlag("Stay-Up", DoorStayOpen),
+            DoorFlag("Stay-Down", DoorStayClosed), Door ? Door->UsageCount : Value("Usage-Count"), Value("Full-load"), Value("Destroy-key"), Value("Key-always-needed"),
+            Value("Id"), Value("Needs-code"));
+        if (const std::string_view Scenery = Block.Find("Scenery"); !Scenery.empty())
+        {
+            Out += std::format("\t\tScenery\t= {}\n", Scenery);
+        }
+
+        if (const std::string_view File = Block.Find("3do-file"); !File.empty())
+        {
+            Out += std::format("\t\t3do-file\t= {}\n", File);
+        }
+
+        Out += "\t]\n";
+    }
+    else if (Kind == "type" && Name == "gate")
+    {
+        Out += std::format("\tTYPE Gate [\n\t\tOpened\t= {}\n\t\tActive\t= {}\n\t\tClosing\t= {}\n\t\tSensor\t= {}\n\t\tDelay\t= {}\n\t\tStay-Opened\t= {}\n\t\tStay-Closed\t= {}\n"
+                           "\t\tDestroy-key\t= {}\n\t\tKey-always-needed\t= {}\n\t\tId\t= {}\n\t\tNeeds-Code\t= {}\n\t]\n",
+            DoorFlag("Opened", DoorOpen), DoorFlag("Active", DoorActive), DoorFlag("Closing", DoorOpening), Value("Sensor"), Value("Delay"), DoorFlag("Stay-Opened", DoorStayOpen),
+            DoorFlag("Stay-Closed", DoorStayClosed), Value("Destroy-key"), Value("Key-always-needed"), Value("Id"), Value("Needs-Code"));
+    }
+    else if (Kind == "type" && Name == "key")
+    {
+        Out += Value("Is-Code") == 0 ? std::format("\tTYPE Key [\n\t\tId\t= {}\n\t]\n", Value("Id"))
+                                     : std::format("\tTYPE Key [\n\t\tId\t= {}\n\t\tIs-Code\t= 1\n\t\tCode-Part-Id\t= {}\n\t\tCode-Part-Count\t= {}\n\t\tCode-String\t= {}\n\t]\n",
+                                           Value("Id"), Value("Code-Part-Id"), Value("Code-Part-Count"), Block.Find("Code-String"));
+    }
+    // The original writes TYPE Guardian only while its location or centre is still unset (-1), which activation fills in, so a running level never has one.
+    else if (Kind == "type" && Name == "patrol")
+    {
+        if (Value("Path-ID") != 0)
+        {
+            Out += std::format("\tTYPE Patrol [\n\t\tPath-ID\t= {}\n\t\tPoint-ID\t= {}\n\t\tReverse\t= {}\n\t\tClosed\t= {}\n\t\tLoop\t= {}\n\t]\n", Value("Path-ID"), Value("Point-ID"),
+                Value("Reverse"), Value("Closed"), Value("Loop"));
+        }
+    }
+    else if (Kind == "type" && Name == "item")
+    {
+        if (const int32_t Timeout = ItemTimeout.value_or(Value("Timeout")); Timeout != 0)
+        {
+            Out += std::format("\tTYPE Item [\n\t\tTimeout\t= {}\n\t]\n", Timeout);
+        }
+    }
+    else if (Kind == "add" && Name == "ammo")
+    {
+        // Only a stock the class has not, with the same count and maximum.
+        const bool bClassHas = ClassBlocks && std::ranges::any_of(ClassBlocks->Children, [&](const FLevelPropertyBlock& Class)
+        {
+            return ToLowerCopy(Class.Kind) == "add" && ToLowerCopy(Class.Name) == "ammo" && Class.Find("Name") == Block.Find("Name") && Integer(Class.Find("Count")) == Value("Count") &&
+                Integer(Class.Find("Max")) == Value("Max");
+        });
+        if (!bClassHas)
+        {
+            Out += std::format("\tADD Ammo [\n\t\tName\t= {}\n\t\tCount\t= {}\n\t\tMax\t= {}\n\t]\n", Block.Find("Name"), Value("Count"), Value("Max"));
+        }
+    }
+}
+
+// What Level3doWriteObject writes before the attributes: the class, the position, a name of its own, the facing, and the energy and shield that differ from the class's.
+void WriteObjectHead(std::string& Out, const FLevel& Level, const FLevelObject& Object, const float X, const float Y, const int Direction, const std::optional<float> Energy,
+    const std::optional<float> Shield)
+{
+    Out += std::format("\nCREATE-OBJECT [\n\tClass-name\t= {}\n\tPosition\t= {:.3f}, {:.3f}\n", Object.ClassName, X, Y);
+    const FLevelPropertyBlock* const Class = FindClass(Level, Object.ClassName);
+    if (const std::string_view Name = ObjectName(Object.Properties); Class && !Name.empty() && Name != ObjectName(*Class))
+    {
+        Out += std::format("\tName\t= {}\n", Name);
+    }
+
+    if (Direction > 0 && Direction < ObjectDirectionCount)
+    {
+        Out += std::format("\tDir\t= {}\n", DirectionNames[size_t(Direction)]);
+    }
+
+    if (Class && Energy && *Energy != ClassValue(*Class, "Energy"))
+    {
+        Out += std::format("\tEnergy\t= {:.3f}\n", *Energy);
+    }
+
+    if (Class && Shield && *Shield != ClassValue(*Class, "Shield"))
+    {
+        Out += std::format("\tShield\t= {:.3f}\n", *Shield);
+    }
+}
+
+// A carried item: its class's attributes, with a key's own timeout.
+void WriteCarried(std::string& Out, const FLevel& Level, const std::string_view ClassName, const float X, const float Y, const std::optional<int32_t> Timeout)
+{
+    const FLevelPropertyBlock* const Class = FindClass(Level, ClassName);
+    if (!Class)
+    {
+        return;
+    }
+
+    const FLevelObject Object{ .ClassName = std::string(ClassName), .Properties = *Class };
+    WriteObjectHead(Out, Level, Object, X, Y, 0, std::nullopt, std::nullopt);
+    for (const FLevelPropertyBlock& Block : Class->Children)
+    {
+        WriteAttribute(Out, Block, Class, nullptr, Timeout);
+    }
+
+    Out += "]\n";
+}
+
+std::vector<std::pair<int, std::filesystem::path>> NumberedSessions(const std::filesystem::path& PlayerFolder)
 {
     std::vector<std::pair<int, std::filesystem::path>> Result;
     std::error_code Error;
-    for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(Directory, Error))
+    for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(PlayerFolder, Error))
     {
-        if (const std::optional<int> Number = SessionNumber(Entry.path()))
+        const std::string Name = Entry.path().filename().string();
+        int Number = 0;
+        if (Entry.is_directory(Error) && Name.size() > 1 && (Name.front() == 's' || Name.front() == 'S') &&
+            std::from_chars(Name.data() + 1, Name.data() + Name.size(), Number).ec == std::errc() && Number >= 0)
         {
-            Result.emplace_back(*Number, Entry.path());
+            Result.emplace_back(Number, Entry.path());
         }
     }
 
     std::ranges::sort(Result, std::ranges::greater{}, &std::pair<int, std::filesystem::path>::first);
     return Result;
 }
+
+// The level's file name in the session, <zone>-<level>.<extension>.
+std::filesystem::path SessionFile(const FSession& Session, const std::string_view Extension)
+{
+    std::string Name = Session.LevelPath;
+    std::ranges::replace(Name, '\\', '-');
+    return Session.Folder / std::format("{}.{}", Name, Extension);
+}
+
+std::optional<std::string> ReadSmallFile(const std::filesystem::path& Path)
+{
+    std::error_code Error;
+    const std::uintmax_t Size = std::filesystem::file_size(Path, Error);
+    if (Error || Size > MaxSessionBytes)
+    {
+        return std::nullopt;
+    }
+
+    std::ifstream File(Path, std::ios::binary);
+    std::ostringstream Text;
+    Text << File.rdbuf();
+    return File ? std::optional(Text.str()) : std::nullopt;
+}
+}
+
+std::string FormatSessionObjects(const FLevel& Level, const std::span<const FObjectBody> Bodies, const std::span<const FDoor> Doors, const FSessionPlayer& Player,
+    const size_t DifficultyLevel)
+{
+    std::vector<const FObjectBody*> BodyOf(Level.Objects.size(), nullptr);
+    for (const FObjectBody& Body : Bodies)
+    {
+        BodyOf[Body.ObjectIndex] = &Body;
+    }
+
+    std::vector<const FDoor*> DoorOf(Level.Objects.size(), nullptr);
+    for (const FDoor& Door : Doors)
+    {
+        DoorOf[Door.ObjectIndex] = &Door;
+    }
+
+    const auto Position = [&](const size_t Index)
+    {
+        return Index == Player.ObjectIndex ? std::pair(Player.X, Player.Y) : std::pair(Level.Objects[Index].X, Level.Objects[Index].Y);
+    };
+    std::vector<size_t> Order;
+    for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
+    {
+        const FLevelObject& Object = Level.Objects[Index];
+        if (!Object.bRemoved && ParseLevelFloat(Object.Properties.Find("No-saving")).value_or(0.f) == 0.f)
+        {
+            Order.push_back(Index);
+        }
+    }
+
+    std::ranges::sort(Order, std::ranges::greater{}, [&](const size_t Index)
+    {
+        const auto [X, Y] = Position(Index);
+        const FWorldCell Cell = CellOf({ .X = X, .Y = Y });
+        return std::tuple(Cell.Y, Cell.X, Index);
+    });
+
+    std::string Out = "################\n1.3 # File format version\n################\n#\n";
+    if (!Level.Name.empty())
+    {
+        Out += std::format("LEVEL-NAME [{}]\n", Level.Name);
+    }
+
+    int Tower = 0;
+    int Floor = 0;
+    if (const size_t Dot = Level.Id.find('.'); Dot != std::string::npos)
+    {
+        std::from_chars(Level.Id.data(), Level.Id.data() + Dot, Tower);
+        std::from_chars(Level.Id.data() + Dot + 1, Level.Id.data() + Level.Id.size(), Floor);
+    }
+
+    if (Tower != 0 && Floor != 0)
+    {
+        Out += std::format("LEVEL-ID [ {}.{} ]\n", Tower, Floor);
+    }
+
+    Out += std::format("OBJECT-COUNT [ {} ]\n3DG-FILENAME [{}]\nDIFFICULTY-LEVEL\t= {}\n", Order.size(), Level.GraphicsName, DifficultyLevel);
+    for (const size_t Index : Order)
+    {
+        const FLevelObject& Object = Level.Objects[Index];
+        const FLevelPropertyBlock* const Class = FindClass(Level, Object.ClassName);
+        if (Index != Player.ObjectIndex || !Player.Inventory)
+        {
+            const FObjectBody* const Body = BodyOf[Index];
+            WriteObjectHead(Out, Level, Object, Object.X, Object.Y, Object.Direction == ObjectDirectionCount ? 0 : Object.Direction,
+                Body ? std::optional(Body->Energy) : std::nullopt, Body ? std::optional(Body->Shield) : std::nullopt);
+            for (const FLevelPropertyBlock& Block : Object.Properties.Children)
+            {
+                WriteAttribute(Out, Block, Class, DoorOf[Index], std::nullopt);
+            }
+
+            Out += "]\n";
+            continue;
+        }
+
+        // The objects the player carries come first, newest first; a surprise in effect is written but not named as carried.
+        const FPlayerInventory& Inventory = *Player.Inventory;
+        std::vector<std::string> Have;
+        for (const FCarriedSurprise& Surprise : Inventory.Surprises.Carried)
+        {
+            WriteCarried(Out, Level, Surprise.ClassName, Surprise.X, Surprise.Y, std::nullopt);
+            if (const FLevelPropertyBlock* const SurpriseClass = FindClass(Level, Surprise.ClassName); SurpriseClass && !Surprise.bStarted)
+            {
+                Have.emplace_back(ObjectName(*SurpriseClass));
+            }
+        }
+
+        for (const FCarriedKey& Key : std::views::reverse(Inventory.Keys))
+        {
+            WriteCarried(Out, Level, Key.ClassName, Key.X, Key.Y, Key.bHasTimeout ? std::optional(Key.Timeout) : std::nullopt);
+            if (const FLevelPropertyBlock* const KeyClass = FindClass(Level, Key.ClassName))
+            {
+                Have.emplace_back(ObjectName(*KeyClass));
+            }
+        }
+
+        WriteObjectHead(Out, Level, Object, Player.X, Player.Y, Player.Direction, Inventory.Energy, Inventory.Shield);
+        for (const FLevelPropertyBlock& Block : Object.Properties.Children)
+        {
+            if (ToLowerCopy(Block.Kind) != "add" || ToLowerCopy(Block.Name) != "ammo")
+            {
+                WriteAttribute(Out, Block, Class, nullptr, std::nullopt);
+            }
+        }
+
+        for (const FAmmoStock& Stock : Inventory.Ammo)
+        {
+            const FLevelPropertyBlock Ammo{
+                .Kind = "ADD",
+                .Name = "Ammo",
+                .Fields = { { "Name", Stock.Name }, { "Count", std::to_string(int(Stock.Count)) }, { "Max", std::to_string(int(Stock.Max)) } },
+            };
+            WriteAttribute(Out, Ammo, Class, nullptr, std::nullopt);
+        }
+
+        for (const std::string& Name : Have)
+        {
+            Out += std::format("\tHAVE {}\n", Name);
+        }
+
+        Out += "]\n";
+    }
+
+    return Out;
+}
+
+std::vector<std::vector<size_t>> ResolveCarriedObjects(FLevel& Level)
+{
+    std::vector<std::vector<size_t>> Carried(Level.Objects.size());
+    for (size_t Carrier = 0; Carrier < Level.Objects.size(); ++Carrier)
+    {
+        for (const std::string& Line : Level.Objects[Carrier].CarriedNames)
+        {
+            const size_t Blank = Line.find_first_of(" \t");
+            const std::string_view Name = std::string_view(Line).substr(0, Blank);
+            std::optional<size_t> Found;
+            std::tuple<int, int, size_t> Best{};
+            for (size_t Index = 0; Index < Carrier; ++Index)
+            {
+                const FLevelObject& Object = Level.Objects[Index];
+                if (Object.bRemoved || ObjectName(Object.Properties) != Name)
+                {
+                    continue;
+                }
+
+                const FWorldCell Cell = CellOf({ .X = Object.X, .Y = Object.Y });
+                if (const std::tuple Rank(Cell.Y, Cell.X, Index); !Found || Rank > Best)
+                {
+                    Found = Index;
+                    Best = Rank;
+                }
+            }
+
+            if (!Found)
+            {
+                continue;
+            }
+
+            FLevelObject& Object = Level.Objects[*Found];
+            Object.bRemoved = true;
+            Carried[Carrier].push_back(*Found);
+            // "HAVE <name> <timeout>" sets the carried item's timeout.
+            if (Blank != std::string::npos)
+            {
+                if (FLevelPropertyBlock* const Item = FindChild(Object.Properties, "type", "Item"))
+                {
+                    const std::string_view Count = std::string_view(Line).substr(Line.find_first_not_of(" 	", Blank));
+                    Item->Fields.emplace_back("Timeout", std::string(Count));
+                }
+            }
+        }
+    }
+
+    return Carried;
+}
+
+std::filesystem::path PlayerSessionFolder(const std::filesystem::path& GameFolder, const std::string_view PlayerName)
+{
+    return GameFolder / "session" / std::filesystem::path(PlayerName);
+}
+
+std::filesystem::path DefaultSessionFolder(const std::filesystem::path& PlayerFolder)
+{
+    return PlayerFolder / DefaultFolderName;
+}
+
+std::string FormatLastText(const FSession& Session, const std::string_view RelativeFolder)
+{
+    const size_t Separator = Session.LevelPath.rfind('\\');
+    const std::string_view Zone = std::string_view(Session.LevelPath).substr(0, Separator == std::string::npos ? 0 : Separator);
+    const std::string_view Level = std::string_view(Session.LevelPath).substr(Separator == std::string::npos ? 0 : Separator + 1);
+    return std::format("#0 1\n{}\n{}\n{}.3di\n{}\n{}\n{:.3f}\n{:.3f}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", RelativeFolder, Zone, Level, Session.LevelName, int32_t(Session.Clock),
+        Session.Energy, Session.Shield, Session.WeaponSlot, Session.DifficultyLevel, Session.ShotsHit, Session.ShotsMissed, Session.Kills, Session.Earned, Session.Money);
+}
+
+std::optional<FSession> ParseLastText(const std::string_view Text)
+{
+    std::vector<std::string_view> Lines;
+    for (const auto Part : std::views::split(Text, '\n'))
+    {
+        std::string_view Line(Part.begin(), Part.end());
+        if (Line.ends_with('\r'))
+        {
+            Line.remove_suffix(1);
+        }
+
+        Lines.push_back(Line);
+    }
+
+    enum ELine : size_t
+    {
+        HeaderLine,
+        FolderLine,
+        ZoneLine,
+        FileLine,
+        NameLine,
+        ClockLine,
+        EnergyLine,
+        ShieldLine,
+        SlotLine,
+        DifficultyLine,
+        HitsLine,
+        MissesLine,
+        KillsLine,
+        EarnedLine,
+        MoneyLine,
+        LineCount,
+    };
+    if (Lines.size() < LineCount || !Lines[HeaderLine].starts_with('#'))
+    {
+        return std::nullopt;
+    }
+
+    const auto Number = [&](const size_t Line, auto& Out)
+    {
+        const std::string_view Value = Lines[Line];
+        return std::from_chars(Value.data(), Value.data() + Value.size(), Out).ec == std::errc();
+    };
+    FSession Session;
+    int Clock = 0;
+    int Slot = 0;
+    int Difficulty = 0;
+    const std::string_view File = Lines[FileLine];
+    const size_t Dot = File.rfind('.');
+    if (!Number(ClockLine, Clock) || !Number(EnergyLine, Session.Energy) || !Number(ShieldLine, Session.Shield) || !Number(SlotLine, Slot) ||
+        !Number(DifficultyLine, Difficulty) || !Number(HitsLine, Session.ShotsHit) || !Number(MissesLine, Session.ShotsMissed) || !Number(KillsLine, Session.Kills) ||
+        !Number(EarnedLine, Session.Earned) || !Number(MoneyLine, Session.Money) || Lines[ZoneLine].empty() || Dot == 0 || Dot == std::string_view::npos ||
+        Difficulty < 0 || Difficulty >= int(DifficultyLevelCount) || Slot < 0)
+    {
+        return std::nullopt;
+    }
+
+    Session.LevelPath = std::format("{}\\{}", ToLowerCopy(Lines[ZoneLine]), ToLowerCopy(File.substr(0, Dot)));
+    Session.LevelName = std::string(Lines[NameLine]);
+    Session.Clock = uint32_t(Clock);
+    Session.WeaponSlot = size_t(Slot);
+    Session.DifficultyLevel = size_t(Difficulty);
+    return Session;
+}
+
+std::optional<FSession> ReadSession(const std::filesystem::path& Folder)
+{
+    const std::optional<std::string> Text = ReadSmallFile(Folder / LastFileName);
+    std::optional<FSession> Session = Text ? ParseLastText(*Text) : std::nullopt;
+    if (Session)
+    {
+        Session->Folder = Folder;
+    }
+
+    return Session;
+}
+
+std::optional<std::string> ReadSessionObjects(const FSession& Session)
+{
+    return ReadSmallFile(SessionFile(Session, "3do"));
+}
+
+std::vector<FSession> ReadSavedSessions(const std::filesystem::path& PlayerFolder)
+{
+    std::vector<FSession> Sessions;
+    for (const auto& [Number, Folder] : NumberedSessions(PlayerFolder))
+    {
+        if (std::optional<FSession> Session = ReadSession(Folder))
+        {
+            Sessions.push_back(std::move(*Session));
+        }
+    }
+
+    return Sessions;
+}
+
+std::optional<std::vector<uint16_t>> ReadSessionThumbnail(const FSession& Session)
+{
+    // An uncompressed 16-bit Targa (image type 2) stored from the bottom row up.
+    constexpr size_t HeaderBytes = 18;
+    constexpr uint8_t TrueColor = 2;
+    constexpr size_t TypeOffset = 2;
+    constexpr size_t WidthOffset = 12;
+    constexpr size_t HeightOffset = 14;
+    constexpr size_t DepthOffset = 16;
+    constexpr uint8_t Depth = 16;
+    const std::optional<std::string> File = ReadSmallFile(SessionFile(Session, "tga"));
+    constexpr size_t PixelCount = size_t(ThumbnailWidth) * ThumbnailHeight;
+    const auto Word = [&](const size_t Offset) { return uint32_t(uint8_t((*File)[Offset])) | uint32_t(uint8_t((*File)[Offset + 1])) << 8; };
+    if (!File || File->size() < HeaderBytes + PixelCount * 2 || uint8_t((*File)[TypeOffset]) != TrueColor || Word(WidthOffset) != ThumbnailWidth ||
+        Word(HeightOffset) != ThumbnailHeight || uint8_t((*File)[DepthOffset]) != Depth)
+    {
+        return std::nullopt;
+    }
+
+    const size_t Start = HeaderBytes + uint8_t((*File)[0]);
+    if (File->size() < Start + PixelCount * 2)
+    {
+        return std::nullopt;
+    }
+
+    std::vector<uint16_t> Pixels(PixelCount);
+    for (uint32_t Row = 0; Row < ThumbnailHeight; ++Row)
+    {
+        for (uint32_t Column = 0; Column < ThumbnailWidth; ++Column)
+        {
+            Pixels[size_t(ThumbnailHeight - 1 - Row) * ThumbnailWidth + Column] = uint16_t(Word(Start + (size_t(Row) * ThumbnailWidth + Column) * 2));
+        }
+    }
+
+    return Pixels;
+}
+
+bool WriteSession(const std::filesystem::path& PlayerFolder, const bool bDefault, const FSession& Session, const std::string_view Objects,
+    const std::span<const uint16_t> Thumbnail)
+{
+    std::filesystem::path Folder = DefaultSessionFolder(PlayerFolder);
+    std::string Leaf(DefaultFolderName);
+    std::error_code Error;
+    if (!bDefault)
+    {
+        const std::vector<std::pair<int, std::filesystem::path>> Existing = NumberedSessions(PlayerFolder);
+        const int Next = Existing.empty() ? 0 : Existing.front().first + 1;
+        for (const auto& [Number, Path] : Existing)
+        {
+            if (Number <= Next - KeptSessions)
+            {
+                std::filesystem::remove_all(Path, Error);
+            }
+        }
+
+        Leaf = std::format("s{:03}", Next);
+        Folder = PlayerFolder / Leaf;
+    }
+
+    std::filesystem::create_directories(Folder, Error);
+    FSession Written = Session;
+    Written.Folder = Folder;
+    const std::string Relative = std::format("session\\{}\\{}", PlayerFolder.filename().string(), Leaf);
+    bool bWritten = WriteFileText(SessionFile(Written, "3do"), Objects) && WriteFileText(Folder / LastFileName, FormatLastText(Written, Relative));
+    constexpr size_t PixelCount = size_t(ThumbnailWidth) * ThumbnailHeight;
+    if (!bDefault && Thumbnail.size() == PixelCount)
+    {
+        std::string Tga(18, '\0');
+        constexpr uint8_t TrueColor = 2;
+        constexpr uint8_t Depth = 16;
+        Tga[2] = char(TrueColor);
+        Tga[12] = char(ThumbnailWidth & 0xff);
+        Tga[13] = char(ThumbnailWidth >> 8);
+        Tga[14] = char(ThumbnailHeight & 0xff);
+        Tga[15] = char(ThumbnailHeight >> 8);
+        Tga[16] = char(Depth);
+        for (uint32_t Row = ThumbnailHeight; Row-- > 0;)
+        {
+            for (uint32_t Column = 0; Column < ThumbnailWidth; ++Column)
+            {
+                const uint16_t Pixel = Thumbnail[size_t(Row) * ThumbnailWidth + Column];
+                Tga += char(Pixel & 0xff);
+                Tga += char(Pixel >> 8);
+            }
+        }
+
+        bWritten = WriteFileText(SessionFile(Written, "tga"), Tga) && bWritten;
+    }
+
+    return bWritten;
 }
 
 std::filesystem::path UserDataDirectory()
@@ -239,484 +658,12 @@ std::filesystem::path UserDataDirectory()
     return std::filesystem::path(Application);
 }
 
-std::vector<FSessionObject> CaptureObjects(const FLevel& Level, const std::span<const FObjectBody> Bodies, const std::span<const FDoor> Doors,
-    std::vector<FCarriedKey>& Keys)
-{
-    std::vector<const FObjectBody*> BodyOf(Level.Objects.size(), nullptr);
-    for (const FObjectBody& Body : Bodies)
-    {
-        BodyOf[Body.ObjectIndex] = &Body;
-    }
-
-    std::vector<const FDoor*> DoorOf(Level.Objects.size(), nullptr);
-    for (const FDoor& Door : Doors)
-    {
-        DoorOf[Door.ObjectIndex] = &Door;
-    }
-
-    std::vector<size_t> Order;
-    for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
-    {
-        if (!Level.Objects[Index].bRemoved || std::ranges::contains(Keys, Index, &FCarriedKey::ObjectIndex))
-        {
-            Order.push_back(Index);
-        }
-    }
-
-    std::ranges::sort(Order, std::ranges::greater{}, [&](const size_t Index)
-    {
-        const FWorldCell Cell = CellOf({ .X = Level.Objects[Index].X, .Y = Level.Objects[Index].Y });
-        return std::tuple(Cell.Y, Cell.X, Index);
-    });
-
-    std::vector<FSessionObject> Result;
-    std::vector<size_t> NewIndex(Level.Objects.size(), SIZE_MAX);
-    for (const size_t Index : Order)
-    {
-        const FLevelObject& Object = Level.Objects[Index];
-        FSessionObject Saved{
-            .FileIndex = Object.FileIndex,
-            .ClassName = Object.ClassName,
-            .X = Object.X,
-            .Y = Object.Y,
-            .Altitude = Object.Altitude,
-            .Direction = Object.Direction,
-            .TopPose = Object.TopPose,
-            .bWrecked = Object.bWrecked,
-            .bRemoved = Object.bRemoved,
-        };
-        if (const FObjectBody* const Body = BodyOf[Index])
-        {
-            Saved.Energy = Body->Energy;
-            Saved.Shield = Body->Shield;
-        }
-
-        if (const FDoor* const Door = DoorOf[Index])
-        {
-            Saved.DoorFlags = Door->Flags;
-            Saved.UsageCount = Door->UsageCount;
-        }
-
-        NewIndex[Index] = Result.size();
-        Result.push_back(std::move(Saved));
-    }
-
-    for (FCarriedKey& Key : Keys)
-    {
-        Key.ObjectIndex = Key.ObjectIndex < NewIndex.size() ? NewIndex[Key.ObjectIndex] : SIZE_MAX;
-    }
-
-    return Result;
-}
-
-void RestoreObjects(FLevel& Level, const std::span<const FSessionObject> Objects)
-{
-    const std::vector<FLevelObject> FileObjects = std::exchange(Level.Objects, {});
-    for (const FSessionObject& Saved : Objects)
-    {
-        const bool bFromFile = Saved.FileIndex < FileObjects.size() && ToLowerCopy(FileObjects[Saved.FileIndex].ClassName) == ToLowerCopy(Saved.ClassName);
-        if (bFromFile)
-        {
-            Level.Objects.push_back(FileObjects[Saved.FileIndex]);
-        }
-        else if (!CreateLevelObject(Level, Saved.ClassName, Saved.X, Saved.Y))
-        {
-            continue;
-        }
-
-        FLevelObject& Object = Level.Objects.back();
-        Object.X = Saved.X;
-        Object.Y = Saved.Y;
-        Object.Altitude = Saved.Altitude;
-        Object.Direction = Saved.Direction;
-        Object.TopPose = Saved.TopPose;
-        Object.bWrecked = Saved.bWrecked;
-        Object.bRemoved = Saved.bRemoved;
-        // The writer's Energy and Shield fields, which CreateObjectBody reads over the class's.
-        if (Saved.Energy)
-        {
-            Object.Properties.Fields.emplace_back("Energy", std::format("{}", *Saved.Energy));
-        }
-
-        if (Saved.Shield)
-        {
-            Object.Properties.Fields.emplace_back("Shield", std::format("{}", *Saved.Shield));
-        }
-
-        // FUN_00417210's TYPE Gate and TYPE Lift fields, which CreateDoors reads.
-        const bool bLift = Object.SubType == "lift";
-        FLevelPropertyBlock* const Door = Saved.DoorFlags ? FindTypeChild(Object.Properties, bLift ? "Lift" : "Gate") : nullptr;
-        if (Door)
-        {
-            const auto Set = [&](const std::string_view Field, const uint32_t Bit) { Door->Fields.emplace_back(Field, (*Saved.DoorFlags & Bit) != 0 ? "1" : "0"); };
-            Set("Active", DoorActive);
-            Set(bLift ? "Present" : "Opened", DoorOpen);
-            Set(bLift ? "Going-up" : "Closing", DoorOpening);
-            Set(bLift ? "Stay-up" : "Stay-opened", DoorStayOpen);
-            Set(bLift ? "Stay-down" : "Stay-closed", DoorStayClosed);
-            Door->Fields.emplace_back("Usage-count", std::to_string(Saved.UsageCount));
-        }
-    }
-}
-
-std::string FormatSession(const FSession& Session)
-{
-    std::string Out;
-    Line(Out, Signature, FormatVersion);
-    Line(Out, "level", Escape(Session.LevelPath), Escape(Session.LevelName));
-    Line(Out, "summary", Session.Clock, Session.Energy, Session.Shield);
-    if (const std::optional<FCarriedPlayer>& Player = Session.Player)
-    {
-        const FPlayerState& State = Player->State;
-        Line(Out, "player", Player->Clock, State.Direction, State.Pose, State.TargetPose, State.TurnTimer, State.Speed, State.SpeedMagnitude);
-        const FPlayerInventory& Inventory = Player->Inventory;
-        Line(Out, "inventory", Inventory.Energy, Inventory.EnergyMax, Inventory.Shield, Inventory.ShieldMax, Inventory.Money, Inventory.Kills, Inventory.Earned,
-            Inventory.ShotsHit, Inventory.ShotsMissed);
-        for (const FAmmoStock& Ammo : Inventory.Ammo)
-        {
-            Line(Out, "ammo", Escape(Ammo.Name), Ammo.Count, Ammo.Max);
-        }
-
-        for (const FCarriedKey& Key : Inventory.Keys)
-        {
-            Line(Out, "key", Key.Id, int(Key.bCode), Key.PartId, Key.PartCount, Key.ObjectIndex, int(Key.bHasTimeout), Key.Timeout, Key.WarnTimeout, Key.WarnX,
-                Key.WarnY, Key.ReactivateAfter, Escape(Key.WarnFormat));
-        }
-
-        Line(Out, "slot", Player->WeaponSlot);
-        WriteWeapon(Out, "weapon", Player->Weapon);
-        for (const FWeaponState& Slot : Player->WeaponSlots)
-        {
-            WriteWeapon(Out, "slot-weapon", Slot);
-        }
-    }
-
-    if (Session.Objects)
-    {
-        Line(Out, "objects", Session.Objects->size());
-        for (const FSessionObject& Object : *Session.Objects)
-        {
-            const std::string FileIndex = Object.FileIndex == SIZE_MAX ? "-" : std::to_string(Object.FileIndex);
-            Line(Out, "object", FileIndex, Escape(Object.ClassName), Object.X, Object.Y, Object.Altitude, Object.Direction, Object.TopPose, int(Object.bWrecked),
-                int(Object.bRemoved), Object.Energy ? std::format("{}", *Object.Energy) : "-", Object.Shield ? std::format("{}", *Object.Shield) : "-",
-                Object.DoorFlags ? std::to_string(*Object.DoorFlags) : "-", Object.UsageCount);
-        }
-    }
-
-    return Out;
-}
-
-std::optional<FSession> ParseSession(const std::string_view Text)
-{
-    FSession Session;
-    bool bSigned = false;
-    bool bLevel = false;
-    size_t ExpectedObjects = 0;
-    // An optional number written as '-' when absent.
-    const auto OptionalNumber = [](FFields& Fields, auto Type) -> std::optional<std::optional<decltype(Type)>>
-    {
-        using T = decltype(Type);
-        if (const std::optional<std::string> Raw = Fields.Text(); Raw && *Raw == "-")
-        {
-            return std::optional<std::optional<T>>(std::in_place);
-        }
-        else if (Raw)
-        {
-            T Value{};
-            const auto [End, Error] = std::from_chars(Raw->data(), Raw->data() + Raw->size(), Value);
-            if (Error == std::errc() && End == Raw->data() + Raw->size())
-            {
-                return std::optional<std::optional<T>>(Value);
-            }
-        }
-
-        return std::nullopt;
-    };
-
-    for (const auto Part : std::views::split(Text, '\n'))
-    {
-        std::string_view Row(Part.begin(), Part.end());
-        if (!Row.empty() && Row.back() == '\r')
-        {
-            Row.remove_suffix(1);
-        }
-
-        if (Row.empty())
-        {
-            continue;
-        }
-
-        FFields Fields(Row);
-        const std::string_view Kind = Fields.Kind();
-        bool bValid = true;
-        if (!bSigned)
-        {
-            bSigned = Kind == Signature && Fields.Number<int>() == FormatVersion;
-            bValid = bSigned;
-        }
-        else if (Kind == "level")
-        {
-            const std::optional<std::string> Path = Fields.Text();
-            const std::optional<std::string> Name = Fields.Text();
-            bValid = Path && Name && !Path->empty();
-            Session.LevelPath = Path.value_or("");
-            Session.LevelName = Name.value_or("");
-            bLevel = bValid;
-        }
-        else if (Kind == "summary")
-        {
-            const std::optional<uint32_t> Clock = Fields.Number<uint32_t>();
-            const std::optional<float> Energy = Fields.Number<float>();
-            const std::optional<float> Shield = Fields.Number<float>();
-            bValid = Clock && Energy && Shield;
-            Session.Clock = Clock.value_or(0);
-            Session.Energy = Energy.value_or(0.f);
-            Session.Shield = Shield.value_or(0.f);
-        }
-        else if (Kind == "player")
-        {
-            FCarriedPlayer& Player = Session.Player.emplace();
-            const std::optional<uint32_t> Clock = Fields.Number<uint32_t>();
-            const std::optional<int> Direction = Fields.Number<int>();
-            const std::optional<int> Pose = Fields.Number<int>();
-            const std::optional<int> TargetPose = Fields.Number<int>();
-            const std::optional<int> TurnTimer = Fields.Number<int>();
-            const std::optional<float> Speed = Fields.Number<float>();
-            const std::optional<float> SpeedMagnitude = Fields.Number<float>();
-            bValid = Clock && Direction && Pose && TargetPose && TurnTimer && Speed && SpeedMagnitude;
-            Player.Clock = Clock.value_or(1);
-            Player.State = {
-                .Speed = Speed.value_or(0.f),
-                .SpeedMagnitude = SpeedMagnitude.value_or(0.f),
-                .Direction = Direction.value_or(0),
-                .Pose = Pose.value_or(1),
-                .TargetPose = TargetPose.value_or(1),
-                .TurnTimer = TurnTimer.value_or(0),
-            };
-        }
-        else if (Kind == "inventory" && Session.Player)
-        {
-            FPlayerInventory& Inventory = Session.Player->Inventory;
-            const std::optional<float> Energy = Fields.Number<float>();
-            const std::optional<float> EnergyMax = Fields.Number<float>();
-            const std::optional<float> Shield = Fields.Number<float>();
-            const std::optional<float> ShieldMax = Fields.Number<float>();
-            const std::optional<float> Money = Fields.Number<float>();
-            const std::optional<int> Kills = Fields.Number<int>();
-            const std::optional<float> Earned = Fields.Number<float>();
-            const std::optional<int> ShotsHit = Fields.Number<int>();
-            const std::optional<int> ShotsMissed = Fields.Number<int>();
-            bValid = Energy && EnergyMax && Shield && ShieldMax && Money && Kills && Earned && ShotsHit && ShotsMissed;
-            Inventory.Energy = Energy.value_or(0.f);
-            Inventory.EnergyMax = EnergyMax.value_or(0.f);
-            Inventory.Shield = Shield.value_or(0.f);
-            Inventory.ShieldMax = ShieldMax.value_or(0.f);
-            Inventory.Money = Money.value_or(0.f);
-            Inventory.Kills = Kills.value_or(0);
-            Inventory.Earned = Earned.value_or(0.f);
-            Inventory.ShotsHit = ShotsHit.value_or(0);
-            Inventory.ShotsMissed = ShotsMissed.value_or(0);
-        }
-        else if (Kind == "ammo" && Session.Player)
-        {
-            const std::optional<std::string> Name = Fields.Text();
-            const std::optional<float> Count = Fields.Number<float>();
-            const std::optional<float> Max = Fields.Number<float>();
-            bValid = Name && Count && Max;
-            Session.Player->Inventory.Ammo.push_back({ .Name = Name.value_or(""), .Count = Count.value_or(0.f), .Max = Max.value_or(0.f) });
-        }
-        else if (Kind == "key" && Session.Player)
-        {
-            const std::optional<int> Id = Fields.Number<int>();
-            const std::optional<bool> bCode = Fields.Flag();
-            const std::optional<int> PartId = Fields.Number<int>();
-            const std::optional<int> PartCount = Fields.Number<int>();
-            const std::optional<size_t> ObjectIndex = Fields.Number<size_t>();
-            const std::optional<bool> bHasTimeout = Fields.Flag();
-            const std::optional<int32_t> Timeout = Fields.Number<int32_t>();
-            const std::optional<int32_t> WarnTimeout = Fields.Number<int32_t>();
-            const std::optional<int32_t> WarnX = Fields.Number<int32_t>();
-            const std::optional<int32_t> WarnY = Fields.Number<int32_t>();
-            const std::optional<int32_t> ReactivateAfter = Fields.Number<int32_t>();
-            const std::optional<std::string> WarnFormat = Fields.Text();
-            bValid = Id && bCode && PartId && PartCount && ObjectIndex && bHasTimeout && Timeout && WarnTimeout && WarnX && WarnY && ReactivateAfter && WarnFormat;
-            if (bValid)
-            {
-                Session.Player->Inventory.Keys.push_back({
-                    .Id = *Id,
-                    .bCode = *bCode,
-                    .PartId = *PartId,
-                    .PartCount = *PartCount,
-                    .ObjectIndex = *ObjectIndex,
-                    .bHasTimeout = *bHasTimeout,
-                    .Timeout = *Timeout,
-                    .WarnTimeout = *WarnTimeout,
-                    .WarnFormat = *WarnFormat,
-                    .WarnX = *WarnX,
-                    .WarnY = *WarnY,
-                    .ReactivateAfter = *ReactivateAfter,
-                });
-            }
-        }
-        else if (Kind == "slot" && Session.Player)
-        {
-            const std::optional<size_t> Slot = Fields.Number<size_t>();
-            bValid = Slot.has_value();
-            Session.Player->WeaponSlot = Slot.value_or(1);
-        }
-        else if ((Kind == "weapon" || Kind == "slot-weapon") && Session.Player)
-        {
-            const std::optional<FWeaponState> Weapon = ReadWeapon(Fields);
-            bValid = Weapon.has_value();
-            if (Weapon && Kind == "weapon")
-            {
-                Session.Player->Weapon = *Weapon;
-            }
-            else if (Weapon)
-            {
-                Session.Player->WeaponSlots.push_back(*Weapon);
-            }
-        }
-        else if (Kind == "objects")
-        {
-            const std::optional<size_t> Count = Fields.Number<size_t>();
-            bValid = Count.has_value();
-            ExpectedObjects = Count.value_or(0);
-            Session.Objects.emplace();
-        }
-        else if (Kind == "object" && Session.Objects)
-        {
-            FSessionObject Object;
-            const std::optional<std::optional<size_t>> FileIndex = OptionalNumber(Fields, size_t{});
-            const std::optional<std::string> ClassName = Fields.Text();
-            const std::optional<float> X = Fields.Number<float>();
-            const std::optional<float> Y = Fields.Number<float>();
-            const std::optional<float> Altitude = Fields.Number<float>();
-            const std::optional<int> Direction = Fields.Number<int>();
-            const std::optional<int> TopPose = Fields.Number<int>();
-            const std::optional<bool> bWrecked = Fields.Flag();
-            const std::optional<bool> bRemoved = Fields.Flag();
-            const std::optional<std::optional<float>> Energy = OptionalNumber(Fields, float{});
-            const std::optional<std::optional<float>> Shield = OptionalNumber(Fields, float{});
-            const std::optional<std::optional<uint32_t>> DoorFlags = OptionalNumber(Fields, uint32_t{});
-            const std::optional<int> UsageCount = Fields.Number<int>();
-            bValid = FileIndex && ClassName && X && Y && Altitude && Direction && TopPose && bWrecked && bRemoved && Energy && Shield && DoorFlags && UsageCount;
-            if (bValid)
-            {
-                Session.Objects->push_back({
-                    .FileIndex = FileIndex->value_or(SIZE_MAX),
-                    .ClassName = *ClassName,
-                    .X = *X,
-                    .Y = *Y,
-                    .Altitude = *Altitude,
-                    .Direction = *Direction,
-                    .TopPose = *TopPose,
-                    .bWrecked = *bWrecked,
-                    .bRemoved = *bRemoved,
-                    .Energy = *Energy,
-                    .Shield = *Shield,
-                    .DoorFlags = *DoorFlags,
-                    .UsageCount = *UsageCount,
-                });
-            }
-        }
-        else
-        {
-            bValid = false;
-        }
-
-        if (!bValid || !Fields.AtEnd())
-        {
-            return std::nullopt;
-        }
-    }
-
-    if (!bSigned || !bLevel || (Session.Objects && Session.Objects->size() != ExpectedObjects))
-    {
-        return std::nullopt;
-    }
-
-    return Session;
-}
-
-std::filesystem::path SessionDirectory(const std::string_view PlayerName)
-{
-    return UserDataDirectory() / "session" / std::filesystem::path(PlayerName);
-}
-
-bool WriteSessionFile(const std::filesystem::path& Path, const FSession& Session)
-{
-    std::error_code Error;
-    std::filesystem::create_directories(Path.parent_path(), Error);
-    std::ofstream File(Path, std::ios::binary | std::ios::trunc);
-    const std::string Text = FormatSession(Session);
-    File.write(Text.data(), std::streamsize(Text.size()));
-    return bool(File);
-}
-
-std::optional<FSession> ReadSessionFile(const std::filesystem::path& Path)
-{
-    // Larger than any level's snapshot; a bigger file is not a session.
-    constexpr std::uintmax_t MaxSessionBytes = 16 * 1024 * 1024;
-    std::error_code Error;
-    const std::uintmax_t Size = std::filesystem::file_size(Path, Error);
-    if (Error || Size > MaxSessionBytes)
-    {
-        return std::nullopt;
-    }
-
-    std::ifstream File(Path, std::ios::binary);
-    std::ostringstream Text;
-    Text << File.rdbuf();
-    return File ? ParseSession(Text.str()) : std::nullopt;
-}
-
-std::filesystem::path DefaultSessionPath(const std::filesystem::path& Directory)
-{
-    return Directory / std::format("default{}", SessionExtension);
-}
-
-std::vector<FSession> ReadSavedSessions(const std::filesystem::path& Directory)
-{
-    std::vector<FSession> Sessions;
-    for (const auto& [Number, Path] : NumberedSessions(Directory))
-    {
-        if (std::optional<FSession> Session = ReadSessionFile(Path))
-        {
-            Sessions.push_back(std::move(*Session));
-        }
-    }
-
-    return Sessions;
-}
-
-bool WriteSavedSession(const std::filesystem::path& Directory, const FSession& Session)
-{
-    const std::vector<std::pair<int, std::filesystem::path>> Existing = NumberedSessions(Directory);
-    const int Next = Existing.empty() ? 0 : Existing.front().first + 1;
-    for (const auto& [Number, Path] : Existing)
-    {
-        if (Number <= Next - KeptSessions)
-        {
-            std::error_code Error;
-            std::filesystem::remove(Path, Error);
-        }
-    }
-
-    return WriteSessionFile(Directory / std::format("s{:03}{}", Next, SessionExtension), Session);
-}
-
 std::expected<std::string, std::string> VerifySessions(FResourceArchive& Archive)
 {
-    // Every seventh object is gone, as collected or destroyed, and every eleventh is wrecked.
+    // Every seventh object is gone, as collected or destroyed.
     constexpr size_t RemovedEvery = 7;
-    constexpr size_t WreckedEvery = 11;
     constexpr float CreatedOffset = 10.f;
-    const auto Key = [](const FSessionObject& Object)
-    {
-        return std::tuple(Object.FileIndex, Object.ClassName, Object.X, Object.Y, Object.Direction, Object.TopPose, Object.bWrecked, Object.bRemoved, Object.Energy,
-            Object.Shield, Object.DoorFlags, Object.UsageCount);
-    };
+    constexpr size_t DifficultyLevel = 2;
     size_t Levels = 0;
     size_t Objects = 0;
     for (const std::string& Name : Archive.GetNames())
@@ -728,25 +675,38 @@ std::expected<std::string, std::string> VerifySessions(FResourceArchive& Archive
 
         const std::string LevelPath = Name.substr(0, Name.size() - 4);
         std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
-        std::expected<FLevel, std::string> Fresh = LoadLevel(Archive, LevelPath);
-        if (!Level || !Fresh || Level->Objects.empty())
+        if (!Level || Level->Objects.empty())
         {
-            return std::unexpected(std::format("{}: {}", LevelPath, !Level ? Level.error() : !Fresh ? Fresh.error() : "no objects"));
+            return std::unexpected(std::format("{}: {}", LevelPath, !Level ? Level.error() : "no objects"));
         }
 
         const std::string CreatedClass = Level->Objects.front().ClassName;
         const std::optional<size_t> Created = CreateLevelObject(*Level, CreatedClass, Level->Objects.front().X + CreatedOffset, Level->Objects.front().Y);
-        std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
-        std::expected<std::vector<FDoor>, std::string> Doors = CreateDoors(*Level, Archive, Bodies);
-        if (!Created || !Doors)
+        const std::optional<size_t> PlayerFound = FindPlayerObject(*Level);
+        const auto PlayerObject = PlayerFound ? Level->Objects.begin() + std::ptrdiff_t(*PlayerFound) : Level->Objects.end();
+        // A key class none of the level's objects has, so its HAVE line can only find the carried one.
+        const auto KeyClass = std::ranges::find_if(Level->Classes, [&](const auto& Class)
         {
-            return std::unexpected(std::format("{}: {}", LevelPath, !Doors ? Doors.error() : "no object created"));
+            const auto Template = Level->ClassObjects.find(Class.first);
+            return FindChild(Class.second, "type", "Key") && FindChild(Class.second, "type", "Item") && Template != Level->ClassObjects.end() &&
+                Template->second.SubType == "item" && ParseLevelFloat(Class.second.Find("Indestructible")).value_or(0.f) != 0.f &&
+                std::ranges::none_of(Level->Objects, [&](const FLevelObject& Object) { return ObjectName(Object.Properties) == Class.second.Find("Name"); });
+        });
+        if (!Created || PlayerObject == Level->Objects.end())
+        {
+            continue;
         }
 
         for (size_t Index = 0; Index < Level->Objects.size(); ++Index)
         {
-            Level->Objects[Index].bRemoved = Index % RemovedEvery == RemovedEvery - 1;
-            Level->Objects[Index].bWrecked = Index % WreckedEvery == WreckedEvery - 1;
+            Level->Objects[Index].bRemoved = Index % RemovedEvery == RemovedEvery - 1 && Level->Objects[Index].Behaviour != "Player";
+        }
+
+        std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+        std::expected<std::vector<FDoor>, std::string> Doors = CreateDoors(*Level, Archive, Bodies);
+        if (!Doors)
+        {
+            return std::unexpected(std::format("{}: {}", LevelPath, Doors.error()));
         }
 
         for (FDoor& Door : *Doors)
@@ -755,37 +715,83 @@ std::expected<std::string, std::string> VerifySessions(FResourceArchive& Archive
             ++Door.UsageCount;
         }
 
-        std::vector<FCarriedKey> Keys = { { .Id = 1, .ObjectIndex = RemovedEvery - 1 } };
-        FSession Session{ .LevelPath = LevelPath, .LevelName = Level->Name, .Player = FCarriedPlayer{ .Inventory = { .Keys = Keys } } };
-        Session.Objects = CaptureObjects(*Level, Bodies, *Doors, Session.Player->Inventory.Keys);
-        const std::string Text = FormatSession(Session);
-        const std::optional<FSession> Read = ParseSession(Text);
-        if (!Read || FormatSession(*Read) != Text)
+        const size_t PlayerIndex = size_t(PlayerObject - Level->Objects.begin());
+        FPlayerInventory Inventory = CreateInventory(*PlayerObject);
+        if (!Inventory.Ammo.empty())
         {
-            return std::unexpected(std::format("{}: the session does not read back", LevelPath));
+            Inventory.Ammo.front().Count = std::max(0.f, Inventory.Ammo.front().Count - 1.f);
         }
 
-        const size_t KeyObject = Read->Player->Inventory.Keys.front().ObjectIndex;
-        if (KeyObject >= Read->Objects->size() || !(*Read->Objects)[KeyObject].bRemoved)
+        if (KeyClass != Level->Classes.end())
         {
-            return std::unexpected(std::format("{}: the carried key's object is lost", LevelPath));
+            Inventory.Keys.push_back({ .ClassName = std::string(KeyClass->second.Find("Name")), .X = PlayerObject->X, .Y = PlayerObject->Y });
         }
 
-        RestoreObjects(*Fresh, *Read->Objects);
-        std::vector<FObjectBody> FreshBodies = CreateObjectBodies(*Fresh);
-        std::expected<std::vector<FDoor>, std::string> FreshDoors = CreateDoors(*Fresh, Archive, FreshBodies);
-        std::vector<FCarriedKey> FreshKeys = Read->Player->Inventory.Keys;
-        std::vector<FSessionObject> Again = FreshDoors ? CaptureObjects(*Fresh, FreshBodies, *FreshDoors, FreshKeys) : std::vector<FSessionObject>{};
-        std::vector<FSessionObject> Expected = *Read->Objects;
-        std::ranges::sort(Again, {}, Key);
-        std::ranges::sort(Expected, {}, Key);
-        if (!std::ranges::equal(Again, Expected, {}, Key, Key))
+        const FSessionPlayer Player{ .ObjectIndex = PlayerIndex, .X = PlayerObject->X, .Y = PlayerObject->Y, .Direction = 1, .Inventory = &Inventory };
+        const std::string Text = FormatSessionObjects(*Level, Bodies, *Doors, Player, DifficultyLevel);
+
+        // Loaded back, the level and the player write the same session.
+        std::expected<FLevel, std::string> Read = LoadLevel(Archive, LevelPath, Text);
+        if (!Read)
         {
-            return std::unexpected(std::format("{}: the restored level differs from its session", LevelPath));
+            return std::unexpected(std::format("{}: the session does not load: {}", LevelPath, Read.error()));
+        }
+
+        const std::vector<std::vector<size_t>> Carried = ResolveCarriedObjects(*Read);
+        // The carrier: with two players in one cell (HITEK\T1H1) the reload makes the other one the player, as in the original.
+        const auto Carrier = std::ranges::find_if(Carried, [](const std::vector<size_t>& Objects) { return !Objects.empty(); });
+        const std::optional<size_t> ReadFound = Carrier != Carried.end() ? std::optional(size_t(Carrier - Carried.begin())) : FindPlayerObject(*Read);
+        const auto ReadPlayer = ReadFound ? Read->Objects.begin() + std::ptrdiff_t(*ReadFound) : Read->Objects.end();
+        if (ReadPlayer == Read->Objects.end() || Read->DifficultyLevel != int(DifficultyLevel))
+        {
+            return std::unexpected(std::format("{}: the session lost its player or difficulty", LevelPath));
+        }
+
+        const size_t ReadIndex = size_t(ReadPlayer - Read->Objects.begin());
+        FPlayerInventory ReadInventory = CreateInventory(*ReadPlayer);
+        for (const size_t Index : Carried[ReadIndex])
+        {
+            if (const std::optional<FPickup> Pickup = CreatePickup(*Read, Index); Pickup && Pickup->Key)
+            {
+                ReadInventory.Keys.push_back(*Pickup->Key);
+            }
+        }
+
+        if (ReadInventory.Keys.size() != Inventory.Keys.size())
+        {
+            return std::unexpected(std::format("{}: the carried key is lost", LevelPath));
+        }
+
+        std::vector<FObjectBody> ReadBodies = CreateObjectBodies(*Read);
+        std::expected<std::vector<FDoor>, std::string> ReadDoors = CreateDoors(*Read, Archive, ReadBodies);
+        const FSessionPlayer Again{ .ObjectIndex = ReadIndex, .X = ReadPlayer->X, .Y = ReadPlayer->Y, .Direction = ReadPlayer->Direction, .Inventory = &ReadInventory };
+        // A loaded level lists each cell's objects the other way round, so the blocks are compared in any order.
+        const auto Blocks = [](const std::string_view Session)
+        {
+            std::vector<std::string> Result;
+            for (const auto Part : std::views::split(Session, std::string_view("\nCREATE-OBJECT [")))
+            {
+                Result.emplace_back(Part.begin(), Part.end());
+            }
+
+            std::ranges::sort(Result);
+            return Result;
+        };
+        if (!ReadDoors || Blocks(FormatSessionObjects(*Read, ReadBodies, *ReadDoors, Again, DifficultyLevel)) != Blocks(Text))
+        {
+            return std::unexpected(std::format("{}: the loaded session writes differently", LevelPath));
         }
 
         ++Levels;
-        Objects += Expected.size();
+        Objects += Read->Objects.size();
+    }
+
+    // last.txt reads back.
+    const FSession Last{ .LevelPath = "underground\\t1u1", .LevelName = "Entering Tower 1", .Clock = 5216, .Energy = 5000.f, .Shield = 4999.5f, .WeaponSlot = 3, .Kills = 4 };
+    const std::string LastText = FormatLastText(Last, "session\\Player\\s000");
+    if (const std::optional<FSession> Parsed = ParseLastText(LastText); !Parsed || FormatLastText(*Parsed, "session\\Player\\s000") != LastText)
+    {
+        return std::unexpected("last.txt does not read back");
     }
 
     // CAVE\T1C1's first saving plot, with the player on it.
@@ -830,5 +836,5 @@ std::expected<std::string, std::string> VerifySessions(FResourceArchive& Archive
         return std::unexpected("the saving plot did not save once after 5.5 seconds for its cost");
     }
 
-    return std::format("{} levels ({} objects) restored from their sessions, saving plot passed", Levels, Objects);
+    return std::format("{} levels ({} objects) written and loaded back as sessions, saving plot passed", Levels, Objects);
 }

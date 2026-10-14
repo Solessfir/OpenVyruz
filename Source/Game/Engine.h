@@ -175,6 +175,10 @@ struct FCarriedSurprise
     bool bStarted = false;
     // The blinking icon message at the screen's corner.
     uint32_t IconMessage = 0;
+    // The item the surprise came from, which a session writes before the player.
+    std::string ClassName;
+    float X = 0.f;
+    float Y = 0.f;
 };
 
 // What the surprise in effect changes on the player and the session.
@@ -451,6 +455,10 @@ struct FCarriedKey
     int32_t WarnX = 0;
     int32_t WarnY = 0;
     int32_t ReactivateAfter = 0;
+    // The item's class and where it lay, which a session writes before the player as the object it carries.
+    std::string ClassName;
+    float X = 0.f;
+    float Y = 0.f;
 };
 
 // A collectable item: an indestructible Item-kind object with a TYPE Item block.
@@ -848,6 +856,8 @@ void SelectPlayerWeapon(FCombat& Combat, size_t Slot, const FPlayerInventory& In
 // The stock that feeds the weapon in hand, if the player carries one.
 const FAmmoStock* PlayerSlotAmmo(const FCombat& Combat, const FPlayerInventory& Inventory);
 std::optional<FPickup> CreatePickup(const FLevel& Level, size_t ObjectIndex);
+// FUN_0041cf40 with the item it comes from: the surprise in effect ends and the new one is carried, announced and waits half a second.
+void CarrySurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Type, const FLevelObject& Item, FMessages& Messages);
 FPlayerInventory CreateInventory(const FLevelObject& Player);
 // Collects every pickup the player's circle touches; returns how many were taken and marks them removed in the level.
 size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level,
@@ -864,6 +874,9 @@ struct FWorldCell
 };
 
 FWorldCell CellOf(FCollisionPoint World);
+// The player object: EngineActivateObjects (0043c700) visits the grid from its last cell back, each cell's newest object first, and every Player it activates becomes session +0x203c (FUN_0043c150),
+// so the player is the one in the lowest cell, the oldest there. Levels such as HITEK\T1H1 place two.
+std::optional<size_t> FindPlayerObject(const FLevel& Level);
 
 // A Saving-zone object (class flag 0x4000000) and the Saving-plot object at its exact position, which EngineUpdateObjects looks for in the zone's cell; a zone without one does nothing but keep the count going.
 struct FSavingPlot

@@ -15,7 +15,6 @@
 // What LoopLevels (004467d0) keeps of the player object for the next level: everything but its position and velocity.
 struct FCarriedPlayer
 {
-    // Empty when read from a session file; the level's own player object stands in.
     FLevelObject Object;
     FPlayerState State;
     FPlayerInventory Inventory;
@@ -25,66 +24,72 @@ struct FCarriedPlayer
     uint32_t Clock = 1;
 };
 
-// One object as Level3doWriteObject (00416730) writes it: its class, position and the fields that differ from a fresh object.
-struct FSessionObject
-{
-    // The object's place in the level's .3DO, or SIZE_MAX for one created during play, which comes from its class.
-    size_t FileIndex = SIZE_MAX;
-    std::string ClassName;
-    float X = 0.f;
-    float Y = 0.f;
-    float Altitude = 0.f;
-    int Direction = ObjectDirectionCount;
-    int TopPose = 0;
-    bool bWrecked = false;
-    // A carried key's object, kept so a timed code can return to the level.
-    bool bRemoved = false;
-    std::optional<float> Energy;
-    std::optional<float> Shield;
-    // A gate's or lift's EDoorFlag bits and usage count, which the writer puts in its TYPE block.
-    std::optional<uint32_t> DoorFlags;
-    int UsageCount = 0;
-};
-
-// A session (SessionWrite at 0042ad70): a level, the player brought into it, and for a session saved during play the level's objects.
+// A session of the original's own format (SessionWrite at 0042ad70): a folder, session\<name>\default or s%03d in the game folder, holding last.txt (FUN_0042b190),
+// the level's objects as <zone>-<level>.3do (Level3doWrite at 004163a0) and, for a numbered one, the same name in .tga, a 224x168 picture of the screen (FUN_0042b360).
 struct FSession
 {
+    std::filesystem::path Folder;
+    // <zone>\<level>, as the level loader takes it.
     std::string LevelPath;
     std::string LevelName;
-    // What SessionDescribeDefault (00427ad0) shows: the game clock and the player's energy and shield.
+    // The game clock in milliseconds.
     uint32_t Clock = 0;
     float Energy = 0.f;
     float Shield = 0.f;
-    // Nullopt for a new game's first level, whose player comes from the level.
-    std::optional<FCarriedPlayer> Player;
-    // Nullopt for a session written as its level starts, which loads the level as it is.
-    std::optional<std::vector<FSessionObject>> Objects;
+    // Session +0x1028: the weapon slot in hand.
+    size_t WeaponSlot = 1;
+    size_t DifficultyLevel = 1;
+    // Session +0x26e0 and +0x26e4, and the player's +0x26c, +0x270 and +0x274.
+    int ShotsHit = 0;
+    int ShotsMissed = 0;
+    int Kills = 0;
+    int Earned = 0;
+    int Money = 0;
 };
 
-// Level3doWrite (004163a0) visits the grid from its last row and column back to the first, each cell's newest object first, so a level loaded from the session activates its objects in that order.
-// Objects carried keys refer to are kept as removed; KeyObjects maps the keys' object indices to the snapshot's.
-std::vector<FSessionObject> CaptureObjects(const FLevel& Level, std::span<const FObjectBody> Bodies, std::span<const FDoor> Doors, std::vector<FCarriedKey>& Keys);
-// Replaces the level's objects with the snapshot's, as loading the session's .3DO would create them.
-void RestoreObjects(FLevel& Level, std::span<const FSessionObject> Objects);
+// What the .3do writes on the player object: where it stands and faces, and its inventory with the objects it carries.
+struct FSessionPlayer
+{
+    size_t ObjectIndex = 0;
+    float X = 0.f;
+    float Y = 0.f;
+    int Direction = 0;
+    const FPlayerInventory* Inventory = nullptr;
+};
 
-std::string FormatSession(const FSession& Session);
-// Session files are untrusted: nullopt for anything malformed.
-std::optional<FSession> ParseSession(std::string_view Text);
+// Level3doWrite (004163a0) with flags 0xb: the header, then every object from the grid's last row and column back to the first, each cell's newest object first, leaving out the No-saving classes.
+// Level3doWriteObject (00416730) writes the class, the position and what differs from a fresh object of the class, then the attribute blocks (FUN_00417210); a carrier's objects come before it, named again by its HAVE lines.
+std::string FormatSessionObjects(const FLevel& Level, std::span<const FObjectBody> Bodies, std::span<const FDoor> Doors, const FSessionPlayer& Player, size_t DifficultyLevel);
 
-// The port's folder for what the original keeps beside it: %APPDATA%\OpenVyruz on Windows, $XDG_DATA_HOME/OpenVyruz (or ~/.local/share) elsewhere.
+// LevelLoad3do (00413d80) takes a HAVE line's object off the level (FUN_004160a0 finds the name from the grid's last cell back) and gives it to the carrier.
+// Returns, for each object, the indices of those it carries; they stay in the level marked removed.
+std::vector<std::vector<size_t>> ResolveCarriedObjects(FLevel& Level);
+
+// The game folder's session\<name>.
+std::filesystem::path PlayerSessionFolder(const std::filesystem::path& GameFolder, std::string_view PlayerName);
+std::filesystem::path DefaultSessionFolder(const std::filesystem::path& PlayerFolder);
+// last.txt read from a session folder; nullopt when it is missing or malformed. Session files are untrusted.
+std::optional<FSession> ReadSession(const std::filesystem::path& Folder);
+std::optional<std::string> ReadSessionObjects(const FSession& Session);
+// The numbered sessions (s%03d), newest first.
+std::vector<FSession> ReadSavedSessions(const std::filesystem::path& PlayerFolder);
+// The session's thumbnail, 224x168 RGB555 pixels from the top row down, if it has one.
+std::optional<std::vector<uint16_t>> ReadSessionThumbnail(const FSession& Session);
+
+inline constexpr uint32_t ThumbnailWidth = 0xe0;
+inline constexpr uint32_t ThumbnailHeight = 0xa8;
+
+// Writes the default session, or a numbered one after the highest, deleting those six or more numbers older, as SessionWrite does; a numbered one also gets the thumbnail.
+bool WriteSession(const std::filesystem::path& PlayerFolder, bool bDefault, const FSession& Session, std::string_view Objects,
+    std::span<const uint16_t> Thumbnail = {});
+
+std::string FormatLastText(const FSession& Session, std::string_view RelativeFolder);
+std::optional<FSession> ParseLastText(std::string_view Text);
+
+// The port's folder for what it keeps for itself: %APPDATA%\OpenVyruz on Windows, $XDG_DATA_HOME/OpenVyruz (or ~/.local/share) elsewhere.
 std::filesystem::path UserDataDirectory();
-// The player's session folder (session\<name> in the original's game folder), kept in the user's data folder.
-std::filesystem::path SessionDirectory(std::string_view PlayerName);
-bool WriteSessionFile(const std::filesystem::path& Path, const FSession& Session);
-std::optional<FSession> ReadSessionFile(const std::filesystem::path& Path);
-// The default session, written as each level starts.
-std::filesystem::path DefaultSessionPath(const std::filesystem::path& Directory);
-// SessionWrite's numbered sessions (s%03d), newest first.
-std::vector<FSession> ReadSavedSessions(const std::filesystem::path& Directory);
-// Writes the next numbered session and deletes those six or more numbers older, as SessionWrite does.
-bool WriteSavedSession(const std::filesystem::path& Directory, const FSession& Session);
 
 class FResourceArchive;
 
-// The --verify-game check: every level's objects survive a session written and read back, with the removed ones gone, an object created during play and changed doors; and a saving plot counts down, refuses without the cash and saves once with it.
+// The --verify-game check: every level written as a session and loaded back keeps its objects, with the removed ones gone, an object created during play, changed doors and a carried key; and a saving plot counts down, refuses without the cash and saves once with it.
 std::expected<std::string, std::string> VerifySessions(FResourceArchive& Archive);

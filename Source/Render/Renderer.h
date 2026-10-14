@@ -80,6 +80,10 @@ public:
     const std::array<int32_t, 3>& GetUserGamma() const;
     // The Vulkan device's name, which the Video menu shows as its device.
     std::string GetDeviceName() const;
+    // Copies the next finished frame's 640x480 view for TakeCapture, which shrinks it to Width by Height.
+    void RequestCapture(uint32_t Width, uint32_t Height);
+    // The requested picture as RGB555 from the top row down once a frame has been drawn; nullopt before then or when the window cannot be read back.
+    std::optional<std::vector<uint16_t>> TakeCapture();
 
 private:
     static constexpr uint32_t FramesInFlight = 2;
@@ -145,4 +149,11 @@ private:
     std::array<int32_t, 3> UserGamma{};
     // A white pixel for the gamma pass, made again after ReleaseSpriteSheets.
     std::optional<FSpriteSheet> GammaSheet;
+
+    // A capture: requested, then copied into a host buffer by EndFrame.
+    bool bCanCapture = false;
+    std::optional<VkExtent2D> CaptureSize;
+    VkBuffer CaptureBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory CaptureMemory = VK_NULL_HANDLE;
+    VkExtent2D CaptureRegion{};
 };

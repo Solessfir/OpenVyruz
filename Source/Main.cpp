@@ -46,6 +46,8 @@ namespace
 {
 // The game's sound, which the menus and the level loop reach as the original reaches its globals; null while it has no output.
 FAudio* GameAudio = nullptr;
+// The game folder, where the original keeps vz.sco, vzconf.txt and the session folders.
+std::filesystem::path GameFolder;
 
 constexpr int64_t SpriteDepthLayerCount = 4;
 constexpr int64_t SpriteDepthLayerMask = SpriteDepthLayerCount - 1;
@@ -1349,9 +1351,10 @@ FMenuSheets CreateMenuSheets(FRenderer& Renderer, const FMenuArt& Art)
 
 // RunMenu at 00421050: steps and draws a menu until an item is chosen, or nullopt when the window closes.
 // A menu shown again keeps the cursor where its last run left it (menu +0x20).
-// OnStep runs after each step, as the menu's own function (menu +0x6c) does.
+// OnStep runs after each step and OnDraw after each frame's menu, as the menu's own function (menu +0x6c) does in both passes of MenuStep.
 std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, const FMenu& Menu, FRandom& Random,
-    std::optional<std::pair<int32_t, int32_t>>& Cursor, const std::function<void(const FMenuState&)>& OnStep = {})
+    std::optional<std::pair<int32_t, int32_t>>& Cursor, const std::function<void(const FMenuState&)>& OnStep = {},
+    const std::function<void(const FMenuState&)>& OnDraw = {})
 {
     // RunMenu gives the gamma ramp the user's gamma back.
     Renderer.ResetGamma();
@@ -1445,6 +1448,11 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
                 DrawHudSprite(Renderer, Sprite.Sheet == EHudSheet::VMenu ? Sheets.VMenu : Sheets.Menu, Sprite);
             }
 
+            if (OnDraw)
+            {
+                OnDraw(State);
+            }
+
             Renderer.EndFrame();
         }
 
@@ -1495,21 +1503,26 @@ std::optional<bool> Confirm(GLFWwindow* const Window, FRenderer& Renderer, const
     return Item ? std::optional(*Item == Gaps) : std::nullopt;
 }
 
+// DifficultyName at 00403310 and the help texts at 0050d3e8.
+constexpr std::array<std::string_view, DifficultyLevelCount> DifficultyNames{ "Easy", "Normal", "Hard", "Insane" };
+constexpr std::array<std::string_view, DifficultyLevelCount> DifficultyHelps{ "For Beginners Only !!!", "A taste of Hell.", "Hurt me !", "Control Alt Del" };
+
 constexpr uint32_t MillisecondsPerHour = 3600000;
 constexpr uint32_t MillisecondsPerMinute = 60000;
 
 // SessionDescribeDefault at 00427ad0: the default session's help text.
-std::string SessionHelp(const FSession& Session, const std::string_view DifficultyText)
+std::string SessionHelp(const FSession& Session)
 {
+    const std::string_view DifficultyText = DifficultyNames[std::min(Session.DifficultyLevel, DifficultyLevelCount - 1)];
     return std::format("{}   ({}:{}:{})\nEnergy : {}\nShield : {}\nDifficulty : {} ...\n", Session.LevelName, Session.Clock / MillisecondsPerHour,
         Session.Clock % MillisecondsPerHour / MillisecondsPerMinute, Session.Clock % MillisecondsPerMinute / MillisecondsPerSecond, int32_t(Session.Energy),
         int32_t(Session.Shield), DifficultyText);
 }
 
 // SessionChoose at 00427c30: up to seven saved sessions with their level and clock, then Back, the default. Returns the chosen session.
-// ponytail: the session's thumbnail (its .tga, drawn at 8, 150 for the item under the cursor) is not written.
+// Its own function draws the thumbnail of the session under the cursor at 8, 150.
 std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random,
-    const std::span<const FSession> Settings, const std::string_view DifficultyText)
+    const std::span<const FSession> Settings)
 {
     constexpr int32_t Left = 0x109;
     constexpr int32_t Top = 0x46;
@@ -1532,7 +1545,8 @@ std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Render
         Menu.Items.push_back({
             .Text = std::format("{}   [{} h {} mn {} sec] ", Session.LevelName, Session.Clock / MillisecondsPerHour, Session.Clock % MillisecondsPerHour / MillisecondsPerMinute,
                 Session.Clock % MillisecondsPerMinute / MillisecondsPerSecond),
-            .Help = std::format("Energy : {}\nShield : {}\nDifficulty : {} ...\n", int32_t(Session.Energy), int32_t(Session.Shield), DifficultyText),
+            .Help = std::format("Energy : {}\nShield : {}\nDifficulty : {} ...\n", int32_t(Session.Energy), int32_t(Session.Shield),
+                DifficultyNames[std::min(Session.DifficultyLevel, DifficultyLevelCount - 1)]),
         });
     }
 
@@ -1543,8 +1557,30 @@ std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Render
 
     Menu.Items.push_back({ .Text = "Back" });
     Menu.DefaultItem = Menu.Items.size() - 1;
+    std::vector<Gaf::FFrame> Thumbnails;
+    std::vector<std::optional<size_t>> ThumbnailOf;
+    for (const FSession& Session : Settings | std::views::take(MaxSessions))
+    {
+        std::optional<std::vector<uint16_t>> Pixels = ReadSessionThumbnail(Session);
+        ThumbnailOf.push_back(Pixels ? std::optional(Thumbnails.size()) : std::nullopt);
+        if (Pixels)
+        {
+            // An unused colour key, as the picture is opaque.
+            Thumbnails.push_back({ .Width = ThumbnailWidth, .Height = ThumbnailHeight, .ColorKey = UINT16_MAX, .Pixels = std::move(*Pixels) });
+        }
+    }
+
+    const FSpriteSheet ThumbnailSheet = Thumbnails.empty() ? FSpriteSheet{} : Renderer.CreateSpriteSheet(Thumbnails);
     std::optional<std::pair<int32_t, int32_t>> Cursor = std::pair(int32_t(ScreenWidth) / 2, int32_t(ScreenHeight) / 2);
-    const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
+    const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor, {}, [&](const FMenuState& State)
+    {
+        constexpr float ThumbnailX = 8.f;
+        constexpr float ThumbnailY = 0x96;
+        if (State.UnderCursor && *State.UnderCursor < ThumbnailOf.size() && ThumbnailOf[*State.UnderCursor])
+        {
+            Renderer.DrawSprite(ThumbnailSheet, *ThumbnailOf[*State.UnderCursor], ThumbnailX, ThumbnailY);
+        }
+    });
     return Item && *Item < std::min(Settings.size(), MaxSessions) ? Item : std::nullopt;
 }
 
@@ -1935,7 +1971,7 @@ int VerifyIntro(const std::filesystem::path& DataFolder)
 // Record, when given, joins vz.sco first (SaveScores at 0043e470 with its second argument set), and its row is brightened.
 void ShowScores(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, const std::optional<FScoreRecord>& Record)
 {
-    const std::filesystem::path Path = UserDataDirectory() / "vz.sco";
+    const std::filesystem::path Path = GameFolder / "vz.sco";
     FScoreTable Table = ReadScores(Path);
     const size_t Rank = Record ? InsertScore(Table, *Record) : 0;
     if (Rank != 0 && !WriteScores(Path, Table))
@@ -2006,10 +2042,6 @@ struct FSettings
     bool bMono = false;
 };
 
-// DifficultyName at 00403310 and the help texts at 0050d3e8.
-constexpr std::array<std::string_view, DifficultyLevelCount> DifficultyNames{ "Easy", "Normal", "Hard", "Insane" };
-constexpr std::array<std::string_view, DifficultyLevelCount> DifficultyHelps{ "For Beginners Only !!!", "A taste of Hell.", "Hurt me !", "Control Alt Del" };
-
 // FUN_00401060: the names vzconf.txt gives the languages and voice types.
 std::string_view LanguageKeyword(const uint32_t Language)
 {
@@ -2019,7 +2051,7 @@ std::string_view LanguageKeyword(const uint32_t Language)
 
 // ConfigLoad (0042f570) reads vzconf.txt from the game folder, else the archive's VZCONF.TXT. A line is a keyword, an optional '=' and a value; a flag is set when its value reads as a non-zero number (atoi).
 // Keyboard-Settings, Mouse-Settings and Joypad-Settings start a device's bindings, each line an action keyword and its code and modifier.
-FSettings LoadSettings(FResourceArchive& Archive, const std::filesystem::path& GameFolder)
+FSettings LoadSettings(FResourceArchive& Archive, const std::filesystem::path& ConfigFolder)
 {
     struct FDetailKey
     {
@@ -2091,14 +2123,14 @@ FSettings LoadSettings(FResourceArchive& Archive, const std::filesystem::path& G
         return Result;
     };
 
-    FSettings Settings{ .ConfigPath = GameFolder / "vzconf.txt", .PlayerName = "Player" };
+    FSettings Settings{ .ConfigPath = ConfigFolder / "vzconf.txt", .PlayerName = "Player" };
     const std::optional<std::vector<uint8_t>> DifficultyFile = Archive.Read("common\\difficulty.3dc");
     Settings.Difficulties = LoadDifficulties(DifficultyFile ? std::string_view(reinterpret_cast<const char*>(DifficultyFile->data()), DifficultyFile->size()) : std::string_view());
     Settings.DifficultyLevel = Settings.Difficulties.DefaultLevel;
     const std::optional<std::vector<uint8_t>> Config = Archive.Read("VZCONF.TXT");
     std::string Text = Config ? std::string(reinterpret_cast<const char*>(Config->data()), Config->size()) : std::string();
     std::error_code Error;
-    for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(GameFolder, Error))
+    for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(ConfigFolder, Error))
     {
         constexpr std::uintmax_t MaxConfigBytes = 65536;
         if (Lower(Entry.path().filename().string()) == "vzconf.txt" && Entry.file_size(Error) <= MaxConfigBytes)
@@ -2259,9 +2291,7 @@ void SaveSettings(const FSettings& Settings)
         }
     }
 
-    std::ofstream File(Settings.ConfigPath, std::ios::binary);
-    File << Text;
-    if (!File)
+    if (!WriteFileText(Settings.ConfigPath, Text))
     {
         std::fprintf(stderr, "Cannot write %s\n", Settings.ConfigPath.string().c_str());
     }
@@ -3330,7 +3360,7 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         .Bottom = int32_t(ScreenHeight),
         .StepY = MenuStepY,
         .Items = {
-            Session ? FMenuItem{ .Text = "Restart Level", .Help = SessionHelp(*Session, DifficultyNames[Settings.DifficultyLevel]) } : FMenuItem{},
+            Session ? FMenuItem{ .Text = "Restart Level", .Help = SessionHelp(*Session) } : FMenuItem{},
             { .Text = "Start New Game" },
             { .Text = "Load Game", .Help = LoadHelp() },
             { .Text = "Options", .Help = "Video, Audio, Control, User settings, Language." },
@@ -3386,7 +3416,7 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         else if (*Item == LoadItem)
         {
             // SessionLoad at 0042ba00 in mode 0 chooses a saved session; back in the menu, the list is read again.
-            if (const std::optional<size_t> Index = RunSessionMenu(Window, Renderer, Art, Sheets, Random, Saved, DifficultyNames[Settings.DifficultyLevel]))
+            if (const std::optional<size_t> Index = RunSessionMenu(Window, Renderer, Art, Sheets, Random, Saved))
             {
                 Chosen = Saved[*Index];
                 return EMenuChoice::Session;
@@ -3398,9 +3428,9 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         else if (*Item == OptionsItem)
         {
             RunOptionsMenu(Window, Renderer, Art, Sheets, Random, Settings, false);
-            Session = ReadSessionFile(DefaultSessionPath(Settings.Folder));
+            Session = ReadSession(DefaultSessionFolder(Settings.Folder));
             Saved = ReadSavedSessions(Settings.Folder);
-            Menu.Items[RestartItem] = Session ? FMenuItem{ .Text = "Restart Level", .Help = SessionHelp(*Session, DifficultyNames[Settings.DifficultyLevel]) } : FMenuItem{};
+            Menu.Items[RestartItem] = Session ? FMenuItem{ .Text = "Restart Level", .Help = SessionHelp(*Session) } : FMenuItem{};
             Menu.Items[LoadItem].Help = LoadHelp();
         }
         else if (*Item == ExtrasItem)
@@ -3504,24 +3534,33 @@ std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Render
 }
 
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a menu ends or restarts the level.
-// A level loaded from a session takes its objects from Restore; any other becomes the default session, in Session and on disk.
+// A level loaded from a session takes its objects and the player's numbers from Restore; any other becomes the default session, in Session and on disk.
 std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
     const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
     FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, FSettings& Settings,
     const std::vector<FDemoRecord>* const Demo)
 {
-    std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
+    // SessionLoad (0042ba00) loads the session's .3do in place of the level's, which also sets the difficulty.
+    const std::optional<std::string> SessionObjects = Restore ? ReadSessionObjects(*Restore) : std::nullopt;
+    if (Restore && !SessionObjects)
+    {
+        return std::unexpected(std::format("Cannot read the session in {}", Restore->Folder.string()));
+    }
+
+    std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath, SessionObjects ? std::optional<std::string_view>(*SessionObjects) : std::nullopt);
     if (!Level)
     {
         return std::unexpected(std::format("Cannot load level: {}", Level.error()));
     }
 
-    if (Restore && Restore->Objects)
+    const std::vector<std::vector<size_t>> CarriedObjects = Restore ? ResolveCarriedObjects(*Level) : std::vector<std::vector<size_t>>{};
+    if (Level->DifficultyLevel && *Level->DifficultyLevel >= 0 && *Level->DifficultyLevel < int(DifficultyLevelCount))
     {
-        RestoreObjects(*Level, *Restore->Objects);
+        Settings.DifficultyLevel = size_t(*Level->DifficultyLevel);
     }
 
-    const auto PlayerObject = std::ranges::find_if(Level->Objects, [](const FLevelObject& Object) { return Object.Behaviour == "Player"; });
+    const std::optional<size_t> PlayerFound = FindPlayerObject(*Level);
+    const auto PlayerObject = PlayerFound ? Level->Objects.begin() + std::ptrdiff_t(*PlayerFound) : Level->Objects.end();
     // LoopLevels puts the carried player object where the new level's player starts; a session's player keeps the level's object.
     if (Carried && !Carried->Object.ClassName.empty() && PlayerObject != Level->Objects.end())
     {
@@ -3634,6 +3673,35 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
                 }
 
+                // A session's last.txt: the game clock, the slot in hand, the score counts and the cash; the objects the player carries become its keys and surprise.
+                if (Restore)
+                {
+                    Combat->Clock = Restore->Clock;
+                    Inventory.Money = float(Restore->Money);
+                    Inventory.Earned = float(Restore->Earned);
+                    Inventory.Kills = Restore->Kills;
+                    Inventory.ShotsHit = Restore->ShotsHit;
+                    Inventory.ShotsMissed = Restore->ShotsMissed;
+                    FMessages Unused;
+                    if (Restore->WeaponSlot >= 1 && Restore->WeaponSlot <= Combat->PlayerSlotStates.size())
+                    {
+                        SelectPlayerWeapon(*Combat, Restore->WeaponSlot, Inventory, Unused);
+                    }
+
+                    for (const size_t Index : std::views::reverse(CarriedObjects[size_t(PlayerObject - Level->Objects.begin())]))
+                    {
+                        const std::optional<FPickup> Pickup = CreatePickup(*Level, Index);
+                        if (Pickup && Pickup->Key)
+                        {
+                            Inventory.Keys.push_back(*Pickup->Key);
+                        }
+                        else if (Pickup && Pickup->Surprise != ESurprise::None)
+                        {
+                            CarrySurprise(*Combat, Inventory, Pickup->Surprise, Level->Objects[Index], Unused);
+                        }
+                    }
+                }
+
                 // DemoStartPlayback at 00429110 starts the game clock at the first record's time.
                 if (Demo)
                 {
@@ -3689,22 +3757,51 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
     }
 
-    // EngineRunLevel writes the default session as the level starts, unless the level came from a session.
-    if (!Restore && !Demo)
+    // SessionWrite (0042ad70): last.txt from the player's numbers and the level's objects as a .3do, the player's position and facing taken from its state.
+    const auto CurrentSession = [&]
     {
-        Session = FSession{
+        const FSession Written{
             .LevelPath = LevelPath,
             .LevelName = Level->Name,
             .Clock = Combat ? Combat->Clock : 0,
             .Energy = Inventory.Energy,
             .Shield = Inventory.Shield,
-            .Player = Carried,
+            .WeaponSlot = Combat ? Combat->PlayerSlot : 1,
+            .DifficultyLevel = Settings.DifficultyLevel,
+            .ShotsHit = Inventory.ShotsHit,
+            .ShotsMissed = Inventory.ShotsMissed,
+            .Kills = Inventory.Kills,
+            .Earned = int(Inventory.Earned),
+            .Money = int(Inventory.Money),
         };
-        if (!WriteSessionFile(DefaultSessionPath(Settings.Folder), *Session))
+        const FSessionPlayer Writer{
+            .ObjectIndex = Player ? PlayerIndex : SIZE_MAX,
+            .X = Player ? Player->Position.X : 0.f,
+            .Y = Player ? Player->Position.Y : 0.f,
+            .Direction = Player ? Player->Direction : 0,
+            .Inventory = &Inventory,
+        };
+        return std::pair(Written, FormatSessionObjects(*Level, Bodies, *Doors, Writer, Settings.DifficultyLevel));
+    };
+    const auto WriteCurrentSession = [&](const bool bDefault, const std::pair<FSession, std::string>& Current, const std::span<const uint16_t> Thumbnail)
+    {
+        if (!WriteSession(Settings.Folder, bDefault, Current.first, Current.second, Thumbnail))
         {
-            std::fprintf(stderr, "Cannot write the default session in %s\n", Settings.Folder.string().c_str());
+            std::fprintf(stderr, "Cannot write a session in %s\n", Settings.Folder.string().c_str());
         }
+    };
+
+    // EngineRunLevel writes the default session as the level starts, unless the level came from a session.
+    if (!Restore && !Demo)
+    {
+        const std::pair<FSession, std::string> Current = CurrentSession();
+        WriteCurrentSession(true, Current, {});
+        Session = Current.first;
+        Session->Folder = DefaultSessionFolder(Settings.Folder);
     }
+
+    // A saving plot's session waits for the frame after it, whose picture (FUN_0042b360) becomes the thumbnail.
+    std::optional<std::pair<FSession, std::string>> PendingSave;
 
     // Session +0x1ff0: the map (action-map), whose picture is made once per level.
     bool bMapShown = false;
@@ -3790,7 +3887,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     const std::vector<FSavingPlot> SavingPlots = FindSavingPlots(*Level);
     // SessionLoad (0042ba00) in mode 0 leaves a count running, so the plot a saved session starts on does not save again until the player leaves it.
     // The original keeps the done bit from its last save; the port sets it, as after the save that wrote the session.
-    FSavingState Saving{ .bCounting = Restore && Restore->Objects, .bDone = Restore && Restore->Objects };
+    // SessionLoad in mode 0, Load Game, starts the count on the plot the session was saved on.
+    const bool bFromSavedSession = Restore && Restore->Folder.filename() != DefaultSessionFolder({}).filename();
+    FSavingState Saving{ .bCounting = bFromSavedSession, .bDone = bFromSavedSession };
     // The level objects follow their bodies and the player after the steps; a session written during the steps needs them too.
     const auto SyncObjects = [&]
     {
@@ -4674,20 +4773,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
 
                     SyncObjects();
-                    FSession Saved{
-                        .LevelPath = LevelPath,
-                        .LevelName = Level->Name,
-                        .Clock = Combat ? Combat->Clock : 0,
-                        .Energy = Inventory.Energy,
-                        .Shield = Inventory.Shield,
-                        .Player = CarriedNow(),
-                    };
-                    Saved.Player->Object = {};
-                    Saved.Objects = CaptureObjects(*Level, Bodies, *Doors, Saved.Player->Inventory.Keys);
-                    if (!WriteSavedSession(Settings.Folder, Saved))
-                    {
-                        std::fprintf(stderr, "Cannot write a session in %s\n", Settings.Folder.string().c_str());
-                    }
+                    PendingSave = CurrentSession();
+                    Renderer.RequestCapture(ThumbnailWidth, ThumbnailHeight);
                 }
 
                 // The update pass of MessagesUpdate (004315f0) follows the game update.
@@ -5488,6 +5575,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         Renderer.EndFrame();
+        if (PendingSave)
+        {
+            const std::optional<std::vector<uint16_t>> Thumbnail = Renderer.TakeCapture();
+            WriteCurrentSession(false, *PendingSave, Thumbnail ? std::span<const uint16_t>(*Thumbnail) : std::span<const uint16_t>());
+            PendingSave.reset();
+        }
+
         ++FpsFrames;
         constexpr uint32_t FpsWindowMilliseconds = MillisecondsPerSecond;
         if (const uint32_t Now = ClockMilliseconds(); Now - FpsWindowStart >= FpsWindowMilliseconds)
@@ -5774,9 +5868,10 @@ int main(const int ArgCount, char** const Args)
         Audio.Apply(Settings.Audio);
     }
 
-    Settings.Folder = SessionDirectory(Settings.PlayerName);
+    GameFolder = DataPath->parent_path();
+    Settings.Folder = PlayerSessionFolder(GameFolder, Settings.PlayerName);
     std::optional<FCarriedPlayer> Carried;
-    std::optional<FSession> Session = ReadSessionFile(DefaultSessionPath(Settings.Folder));
+    std::optional<FSession> Session = ReadSession(DefaultSessionFolder(Settings.Folder));
     std::optional<FSession> Restore;
     std::optional<std::vector<FDemoRecord>> Demo;
     // Every level in the archive by file name, so each tower's floors follow each other, for the debug next-level key.
@@ -5860,7 +5955,7 @@ int main(const int ArgCount, char** const Args)
             else
             {
                 Path = Choice == EMenuChoice::NewGame ? LevelPath : Chosen.LevelPath;
-                Carried = Choice == EMenuChoice::NewGame ? std::nullopt : Chosen.Player;
+                Carried.reset();
                 Restore = Choice == EMenuChoice::NewGame ? std::nullopt : std::optional(std::move(Chosen));
                 bMenu = false;
             }
@@ -5913,7 +6008,7 @@ int main(const int ArgCount, char** const Args)
         {
             // SessionLoad mode 2 loads the default session.
             Path = Session->LevelPath;
-            Carried = Session->Player;
+            Carried.reset();
             Restore = Session;
         }
         else

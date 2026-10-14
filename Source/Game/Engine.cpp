@@ -1835,6 +1835,9 @@ std::optional<FPickup> CreatePickup(const FLevel& Level, const size_t Index)
                              .WarnX = WarnAt ? int32_t(WarnAt->X) : 0,
                              .WarnY = WarnAt ? int32_t(WarnAt->Y) : 0,
                              .ReactivateAfter = int32_t(Number("Reactivate-after")),
+                             .ClassName = Object.ClassName,
+                             .X = Object.X,
+                             .Y = Object.Y,
                          })
                        : std::nullopt,
             .Surprise = SurpriseFromName(Item->Find("Surprise-type")),
@@ -1997,6 +2000,15 @@ void CollectSurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Typ
 }
 }
 
+void CarrySurprise(FCombat& Combat, FPlayerInventory& Inventory, const ESurprise Type, const FLevelObject& Item, FMessages& Messages)
+{
+    CollectSurprise(Combat, Inventory, Type, Messages);
+    FCarriedSurprise& Carried = Inventory.Surprises.Carried.front();
+    Carried.ClassName = Item.ClassName;
+    Carried.X = Item.X;
+    Carried.Y = Item.Y;
+}
+
 size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level,
     FMessages& Messages, FCombat* const Combat)
 {
@@ -2090,7 +2102,7 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
 
         if (Pickup.Surprise != ESurprise::None)
         {
-            CollectSurprise(*Combat, Inventory, Pickup.Surprise, Messages);
+            CarrySurprise(*Combat, Inventory, Pickup.Surprise, Object, Messages);
             bUsed = true;
         }
 
@@ -2107,6 +2119,29 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
 FWorldCell CellOf(const FCollisionPoint World)
 {
     return { .X = int(uint32_t(int64_t(World.X)) / BlockWidth), .Y = int(uint32_t(int64_t(World.Y)) / BlockHeight) };
+}
+
+std::optional<size_t> FindPlayerObject(const FLevel& Level)
+{
+    std::optional<size_t> Found;
+    std::tuple<int, int, size_t> Best{};
+    for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
+    {
+        const FLevelObject& Object = Level.Objects[Index];
+        if (Object.Behaviour != "Player" || Object.bRemoved)
+        {
+            continue;
+        }
+
+        const FWorldCell Cell = CellOf({ .X = Object.X, .Y = Object.Y });
+        if (const std::tuple Rank(Cell.Y, Cell.X, Index); !Found || Rank < Best)
+        {
+            Found = Index;
+            Best = Rank;
+        }
+    }
+
+    return Found;
 }
 
 namespace
@@ -6291,7 +6326,9 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         }
 
         FPlayerState Player = SpawnPlayer(*PlayerObject, *Class);
-        FPlayerInventory Inventory = CreateInventory(*PlayerObject);
+        // The class's own stocks, as a player arriving by lift brings them: some levels' player objects start empty (t2u2 has no Gatling ammo).
+        const auto Template = Level->ClassObjects.find(ToLowerName(PlayerObject->ClassName));
+        FPlayerInventory Inventory = CreateInventory(Template != Level->ClassObjects.end() ? Template->second : *PlayerObject);
         const size_t BodyCount = Bodies.size();
         size_t LevelShots = 0;
         const FPlayerCommand Spin{ .Turn = EPlayerTurn::Left };

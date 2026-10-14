@@ -1,5 +1,7 @@
 #include "Pg/File.h"
 
+#include <fstream>
+
 #ifdef _WIN32
 #include <Windows.h>
 #include <shobjidl.h>
@@ -117,4 +119,24 @@ std::optional<std::filesystem::path> PickFolder(const char* const Title)
 
     return std::nullopt;
 #endif
+}
+
+void BackUpFile(const std::filesystem::path& Path)
+{
+    std::error_code Error;
+    if (std::filesystem::is_regular_file(Path, Error))
+    {
+        std::filesystem::path Backup = Path;
+        Backup += ".bak";
+        std::filesystem::remove(Backup, Error);
+        std::filesystem::rename(Path, Backup, Error);
+    }
+}
+
+bool WriteFileText(const std::filesystem::path& Path, const std::string_view Text)
+{
+    BackUpFile(Path);
+    std::ofstream File(Path, std::ios::binary | std::ios::trunc);
+    File.write(Text.data(), std::streamsize(Text.size()));
+    return bool(File);
 }

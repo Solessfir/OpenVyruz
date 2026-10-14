@@ -84,6 +84,8 @@ struct FLevelObject
     size_t FileIndex = SIZE_MAX;
     std::string SubType;
     FLevelPropertyBlock Properties;
+    // A session's HAVE lines in the object's block ("HAVE <name>" or "HAVE <name> <timeout>"), which name objects written before it that it carries.
+    std::vector<std::string> CarriedNames;
 };
 
 // A .3DP CREATE-PATH: patrol waypoints in world pixels, kept as the integers the path table stores.
@@ -123,6 +125,9 @@ struct FLevel
 
     // .3DO
     std::vector<FLevelObject> Objects;
+    // Its 3DG-FILENAME, else <name>.3dg, as a session writes it; and a session's DIFFICULTY-LEVEL.
+    std::string GraphicsName;
+    std::optional<int> DifficultyLevel;
 
     // .3DP, in file order.
     std::vector<FPatrolPath> PatrolPaths;
@@ -140,7 +145,8 @@ std::optional<size_t> CreateLevelObject(FLevel& Level, std::string_view ClassNam
 
 // Loads <Zone>\<Name>.3DX/.3DI/.3DO/.3DP/.3DG plus the COMMON and zone .3DC class libraries, e.g. "UNDERGROUND\T1U1".
 // Mirrors VzLoadLevel (0041f7c0) -> LevelLoadFiles (00429710) and LevelLoad3dg (0041eae0).
-std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, std::string_view LevelPath);
+// A session (SessionLoad) gives its own .3do text in place of the level's, whose OBJECT-COUNT leaves out the carried objects.
+std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, std::string_view LevelPath, std::optional<std::string_view> SessionObjects = std::nullopt);
 
 // Parses one numeric property value the way the class loader stores it (a finite float).
 std::optional<float> ParseLevelFloat(std::string_view Text);

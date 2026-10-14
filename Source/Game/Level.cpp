@@ -307,8 +307,13 @@ void MergeProperties(FBlock& Target, const FBlock& Source, const bool bInstance 
             for (size_t Index = InheritedCount; Index > 0; --Index)
             {
                 const size_t Candidate = Index - 1;
+                // An ADD Ammo stock overrides the stock of the same ammo (the loader looks the ammo up among the object's stocks), and a session's TYPE Generator the one of the same product.
+                const std::string_view KeyField = ToLower(Child.Kind) == "add" && ToLower(Child.Name) == "ammo"       ? "Name"
+                                                  : ToLower(Child.Kind) == "type" && ToLower(Child.Name) == "generator" ? "Product"
+                                                                                                                         : "";
                 if (!Used[Candidate] && ToLower(Target.Children[Candidate].Kind) == ToLower(Child.Kind) &&
-                    ToLower(Target.Children[Candidate].Name) == ToLower(Child.Name))
+                    ToLower(Target.Children[Candidate].Name) == ToLower(Child.Name) &&
+                    (KeyField.empty() || ToLower(Target.Children[Candidate].Find(KeyField)) == ToLower(Child.Find(KeyField))))
                 {
                     Match = Candidate;
                     break;
@@ -823,7 +828,7 @@ std::optional<size_t> CreateLevelObject(FLevel& Level, const std::string_view Cl
     return Level.Objects.size() - 1;
 }
 
-std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const std::string_view LevelPath)
+std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const std::string_view LevelPath, const std::optional<std::string_view> SessionObjects)
 {
     static const bool bClassesChecked = CheckLevelProperties();
     assert(bClassesChecked);
@@ -850,7 +855,7 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
         return std::unexpected(Result.error());
     }
 
-    const std::expected<std::string, std::string> ObjectText = ReadText(Archive, Base + ".3do");
+    const std::expected<std::string, std::string> ObjectText = SessionObjects ? std::expected<std::string, std::string>(std::string(*SessionObjects)) : ReadText(Archive, Base + ".3do");
     if (!ObjectText)
     {
         return std::unexpected(ObjectText.error());
@@ -862,6 +867,11 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
     }
     Level.Name = Objects->Find("LEVEL-NAME");
     Level.Id = Objects->Find("LEVEL-ID");
+    if (SessionObjects)
+    {
+        Level.DifficultyLevel = ParseInt(Objects->Find("DIFFICULTY-LEVEL"));
+    }
+
     FClassLibrary Classes;
     const std::vector<std::string> ArchiveNames = Archive.GetNames();
     const std::string CommonPrefix = "common\\";
@@ -924,8 +934,21 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
             return std::unexpected(std::format("{}.3do: unknown class '{}'", Base, ClassName));
         }
 
+        // In a .3do an instance's HAVE names an object it carries, not contents as a class's does.
+        FBlock Instance = Block;
+        std::vector<std::string> CarriedNames;
+        std::erase_if(Instance.Fields, [&](const auto& Field)
+        {
+            const bool bHave = Field.second.empty() && ToLower(Field.first.substr(0, Field.first.find_first_of(" \t"))) == "have";
+            if (bHave)
+            {
+                CarriedNames.emplace_back(Trim(std::string_view(Field.first).substr(Field.first.find_first_of(" \t") + 1)));
+            }
+
+            return bHave;
+        });
         FBlock Properties = Class->second.Resolved;
-        MergeProperties(Properties, Block, true);
+        MergeProperties(Properties, Instance, true);
         const std::optional<std::pair<float, float>> Position = ParsePosition(Properties.Find("Position"));
         std::expected<FLevelObject, std::string> Object = BuildObject(ArchiveNames, Zone, ClassName, std::move(Properties));
         if (!Position || !Object)
@@ -936,6 +959,7 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
         Object->X = Position->first;
         Object->Y = Position->second;
         Object->FileIndex = Level.Objects.size();
+        Object->CarriedNames = std::move(CarriedNames);
         Level.Objects.push_back(std::move(*Object));
     }
 
@@ -955,7 +979,7 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
         Level.Classes.emplace(ClassName, std::move(Class.Resolved));
     }
 
-    if (ParseInt(Objects->Find("OBJECT-COUNT")) != int(Level.Objects.size()))
+    if (!SessionObjects && ParseInt(Objects->Find("OBJECT-COUNT")) != int(Level.Objects.size()))
     {
         return std::unexpected(std::format("{}.3do: OBJECT-COUNT does not match {} objects", Base, Level.Objects.size()));
     }
@@ -1002,6 +1026,7 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, const st
     // LevelGet3dgPath at 0041ebe0 prefers the .3DO 3DG-FILENAME, relative to the zone folder.
     const std::string_view GraphicsName = Objects->Find("3DG-FILENAME");
     const std::string GraphicsPath = GraphicsName.empty() ? Base + ".3dg" : std::format("{}\\{}", Zone, GraphicsName);
+    Level.GraphicsName = GraphicsName.empty() ? Base.substr(Separator + 1) + ".3dg" : std::string(GraphicsName);
     if (std::expected<void, std::string> Result = Load3dg(Archive, GraphicsPath, Level); !Result)
     {
         return std::unexpected(Result.error());
