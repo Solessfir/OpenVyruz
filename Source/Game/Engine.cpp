@@ -6839,12 +6839,15 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
         if (!bFirstOfTwo && HuntsPlayer(Body) && --Hunters == 0)
         {
-            // The player's name at session +0x2754 starts as Jack. ponytail: the 100000 bonus is only printed here.
+            // The player's name at session +0x2754 starts as Jack.
             constexpr int32_t LastKillX = 0x46;
             constexpr int32_t LastKillY = (MessageViewHeight >> 1) - 0x66;
             constexpr uint32_t LastKillLifeMilliseconds = 10000;
             constexpr int RealKillerBonus = 100000;
             constexpr uint32_t Font = 6;
+            // A deliberate fix: EngineUpdateObjects (004408ab) only prints the bonus and never pays it; the port pays it as the Fast Kill Bonus is paid.
+            Player.Inventory.Money += float(RealKillerBonus);
+            Player.Inventory.Earned += float(RealKillerBonus);
             Messages.Add({
                 .Text = Format("You are so professional %s !\nNo more enemy in this level !\n  Real Killer Bonus : +%d $", "Jack", RealKillerBonus),
                 .X = float(LastKillX),

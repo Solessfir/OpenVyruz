@@ -87,7 +87,7 @@ The texts and where they come from:
 | `Wait, lift will come.`; `Lift needs key #%d !` or `Lift needs full code !` 50 further left | lift - 150, lift - 32; world | 2 s | bonus 6 | white |
 | `Gate needs key #%d !`, `Gate needs full code #%d !` | gate - 200, gate - 32; world | 2 s | bonus 6 | white |
 | `%d $` (reward), then the object's name at -32, -32 | wreck; world, typed | 0, -1.5 and 0, -1; 2 s | bonus 2, then 6 | `0xf0ff10`, white |
-| `You are so professional %s !` and two more lines, when the last hunter dies | 70, height / 2 - 102 | 10 s | bonus 6 | white |
+| `You are so professional %s !` and two more lines, when the last hunter dies; the original never pays the "Real Killer Bonus : +100000 $" it prints, the port does | 70, height / 2 - 102 | 10 s | bonus 6 | white |
 | `DANGER : SHIELD IS LOW` (draw pass of the panel, option flag 8) | 100, 100; typed, its life renewed to 500 ms while shown | 500 ms | panel 3 | white |
 
 Every one replaces a message at its position. The lift and gate texts come from the player's contact with the closed door in `EngineUpdateObjects`; "Cannot take lift while invisible !" and "Cannot open gates while invisible !" replace them while the player is invisible.
