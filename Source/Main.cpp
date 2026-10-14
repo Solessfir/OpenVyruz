@@ -3788,7 +3788,7 @@ struct FObjectHandle
 std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
     const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
     FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, FSettings& Settings,
-    const std::vector<FDemoRecord>* const Demo)
+    const std::vector<FDemoRecord>* const Demo, const bool bShowPage)
 {
     // SessionLoad (0042ba00) loads the session's .3do in place of the level's, which also sets the difficulty.
     const std::optional<std::string> SessionObjects = Restore ? ReadSessionObjects(*Restore) : std::nullopt;
@@ -4277,8 +4277,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     bool bPaused = false;
     // FUN_00445580 at each level start: the level's <level>-<language>.txt, typed over the frozen level until fire or a key, then the level's name rising from the bottom.
     // Only the first level of each tower and the last level have one; a demo shows none.
+    // The original shows it at every start of the level; the port only for a new game or a lift's arrival, not for a retry, a restart, a loaded game or a direct start.
     std::string PageText;
-    if (!Demo)
+    if (!Demo && bShowPage)
     {
         if (const std::optional<std::vector<uint8_t>> File = Archive.Read(std::format("{}-{}.txt", LevelPath, TextSuffix())))
         {
@@ -6799,6 +6800,8 @@ int main(const int ArgCount, char** const Args)
         GameAudio->StartMusic();
     }
 
+    // Whether the next level starts a new game, which shows its level page.
+    bool bNewGame = false;
     for (std::string Path = LevelPath;;)
     {
         if (bMenu)
@@ -6830,6 +6833,7 @@ int main(const int ArgCount, char** const Args)
             else
             {
                 Path = Choice == EMenuChoice::NewGame ? LevelPath : Chosen.LevelPath;
+                bNewGame = Choice == EMenuChoice::NewGame;
                 Carried.reset();
                 Restore = Choice == EMenuChoice::NewGame ? std::nullopt : std::optional(std::move(Chosen));
                 bMenu = false;
@@ -6837,7 +6841,8 @@ int main(const int ArgCount, char** const Args)
         }
 
         const std::expected<FLevelEnd, std::string> End = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Carried, DebugLevels, Panel ? &*Panel : nullptr,
-            MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Settings, Demo ? &*Demo : nullptr);
+            MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Settings, Demo ? &*Demo : nullptr, bNewGame || Carried.has_value());
+        bNewGame = false;
         Restore.reset();
         Renderer.ReleaseSpriteSheets();
         // EngineRunLevel stops the player's weapon and motor, and LoopLevels brings the first tune back.
