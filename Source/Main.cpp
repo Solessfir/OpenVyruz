@@ -2,6 +2,7 @@
 #include "Game/Collision.h"
 #include "Game/Engine.h"
 #include "Game/Input.h"
+#include "Game/Language.h"
 #include "Game/Level.h"
 #include "Game/Menu.h"
 #include "Game/Score.h"
@@ -1264,7 +1265,7 @@ void ShowNetworkFailure(GLFWwindow* const Window, FRenderer& Renderer, const FPa
         {
             LineTimer = LinePeriodMilliseconds;
             Messages.Add({
-                .Text = std::string(Lines[Line]),
+                .Text = std::string(Localize(Lines[Line])),
                 .X = float(LineX),
                 .Y = float(FirstLineY + LineStep * int32_t(Line)),
                 .LifeMilliseconds = LineLifeMilliseconds,
@@ -1513,8 +1514,8 @@ constexpr uint32_t MillisecondsPerMinute = 60000;
 // SessionDescribeDefault at 00427ad0: the default session's help text.
 std::string SessionHelp(const FSession& Session)
 {
-    const std::string_view DifficultyText = DifficultyNames[std::min(Session.DifficultyLevel, DifficultyLevelCount - 1)];
-    return std::format("{}   ({}:{}:{})\nEnergy : {}\nShield : {}\nDifficulty : {} ...\n", Session.LevelName, Session.Clock / MillisecondsPerHour,
+    const std::string_view DifficultyText = Localize(DifficultyNames[std::min(Session.DifficultyLevel, DifficultyLevelCount - 1)]);
+    return Format("%s   (%d:%d:%d)\nEnergy : %d\nShield : %d\nDifficulty : %s ...\n", Session.LevelName, Session.Clock / MillisecondsPerHour,
         Session.Clock % MillisecondsPerHour / MillisecondsPerMinute, Session.Clock % MillisecondsPerMinute / MillisecondsPerSecond, int32_t(Session.Energy),
         int32_t(Session.Shield), DifficultyText);
 }
@@ -1545,8 +1546,8 @@ std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Render
         Menu.Items.push_back({
             .Text = std::format("{}   [{} h {} mn {} sec] ", Session.LevelName, Session.Clock / MillisecondsPerHour, Session.Clock % MillisecondsPerHour / MillisecondsPerMinute,
                 Session.Clock % MillisecondsPerMinute / MillisecondsPerSecond),
-            .Help = std::format("Energy : {}\nShield : {}\nDifficulty : {} ...\n", int32_t(Session.Energy), int32_t(Session.Shield),
-                DifficultyNames[std::min(Session.DifficultyLevel, DifficultyLevelCount - 1)]),
+            .Help = Format("Energy : %d\nShield : %d\nDifficulty : %s ...\n", int32_t(Session.Energy), int32_t(Session.Shield),
+                Localize(DifficultyNames[std::min(Session.DifficultyLevel, DifficultyLevelCount - 1)])),
         });
     }
 
@@ -1584,7 +1585,7 @@ std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Render
     return Item && *Item < std::min(Settings.size(), MaxSessions) ? Item : std::nullopt;
 }
 
-// The credits (ShowCredits at 00402990 with the scroller at 00402400): credits.gaf, and credits-en.txt in v-menu.gaf font 4 rising from the bottom of the clip 380, 0 to 639, 479 by half a pixel per step, until it has passed the top or a key or mouse button goes down.
+// The credits (ShowCredits at 00402990 with the scroller at 00402400): credits.gaf, and credits-en.txt (credits-fr.txt in Russian) in v-menu.gaf font 4 rising from the bottom of the clip 380, 0 to 639, 479 by half a pixel per step, until it has passed the top or a key or mouse button goes down.
 void ShowCredits(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art)
 {
     constexpr int32_t ClipLeft = 380;
@@ -1594,7 +1595,7 @@ void ShowCredits(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive
     // The scroller's speed argument, 500, times 0.001.
     constexpr float RisePerStep = 0.5f;
     const std::optional<FObjectGaf> Picture = LoadObjectGaf(Archive, "common\\data\\extra\\credits.gaf");
-    const std::optional<std::vector<uint8_t>> TextFile = Archive.Read("common\\data\\extra\\credits-en.txt");
+    const std::optional<std::vector<uint8_t>> TextFile = Archive.Read(std::format("common\\data\\extra\\credits-{}.txt", TextSuffix()));
     if (!Picture || Picture->Animations.empty() || Picture->Animations.front().Frames.empty() || !TextFile)
     {
         return;
@@ -2344,7 +2345,7 @@ bool IsBack(const std::optional<size_t> Item, const FMenu& Menu)
 // FUN_00423b20: a Video Details Custom item.
 std::string OnOffText(const std::string_view Name, const bool bOn)
 {
-    return std::format("{} : {}", Name, bOn ? "ON" : "OFF");
+    return std::format("{} : {}", Localize(Name), Localize(bOn ? "ON" : "OFF"));
 }
 
 // Steps and draws a menu without taking its input until Done says so, as the key settings' wait (FUN_00425860) and the text editor (FUN_00425f60) run MenuStep. False when the window closes.
@@ -2433,7 +2434,7 @@ std::optional<std::string> EditText(GLFWwindow* const Window, FRenderer& Rendere
         const size_t CaretAt = Prefix.size() + Caret;
         Scroll = CaretAt >= Scroll + VisibleCharacters ? CaretAt + 1 - VisibleCharacters : std::min(Scroll, CaretAt);
         Menu.Items[Item].Text = Shown.substr(Scroll, VisibleCharacters);
-        Menu.Items[Item].Help = bTyped ? "Press ENTER to validate : " + Text : "Edit your string.";
+        Menu.Items[Item].Help = bTyped ? std::string(Localize("Press ENTER to validate : ")) + Text : "Edit your string.";
     };
     Refresh();
     const bool bOpen = ShowMenuUntil(Window, Renderer, Art, Sheets, Menu, Random, [&](const uint32_t Elapsed)
@@ -2579,7 +2580,7 @@ void RunDetailsCustomMenu(GLFWwindow* const Window, FRenderer& Renderer, const F
 // FUN_00423500: the Details help.
 std::string DetailsHelp(const FSettings& Settings)
 {
-    return std::format("Current Graphic Details : {}", Settings.Details.bLowDetails ? "Low." : "High.");
+    return std::string(Localize("Current Graphic Details : ")) + std::string(Localize(Settings.Details.bLowDetails ? "Low." : "High."));
 }
 
 // MenuVideoDetails at 004235a0: High sets flags 0xbe and clears 0x40, Low clears 0xae and sets 0x40 (Translucent Panel stays), and either closes the menu; Custom opens the flags.
@@ -2645,7 +2646,7 @@ void RunVideoMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt&
             constexpr int32_t GammaOffset = 0xff;
             constexpr int32_t Percent = 100;
             const int32_t Value = (Settings.Gamma[0] + GammaOffset) * Percent / GammaSpan;
-            RunSlider(Window, Renderer, Art, Sheets, Random, "/Video", "/Gamma", "Gamma value : ", Value, [&](const int32_t Slider)
+            RunSlider(Window, Renderer, Art, Sheets, Random, "/Video", "/Gamma", std::string(Localize("Gamma value : ")), Value, [&](const int32_t Slider)
             {
                 const std::array<int32_t, 3>& Ramp = Renderer.GetGamma();
                 if (const int32_t Change = Slider * GammaSpan / Percent - Ramp[0] - GammaOffset; Change != 0)
@@ -2717,7 +2718,7 @@ void RunMusicMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt&
 void RunVoiceTypeMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
 {
     constexpr uint32_t SecondLanguage = 2;
-    const std::string Help = std::format("Current voice type is {}.", Settings.Audio.VoiceType == SecondLanguage ? "Russian" : "English");
+    const std::string Help = Format("Current voice type is %s.", Localize(Settings.Audio.VoiceType == SecondLanguage ? "Russian" : "English"));
     FMenu Menu = OptionsMenu("/Audio/Voices", "/Type");
     Menu.Items = { { .Text = "English", .Help = Help }, { .Text = "Russian", .Help = Help }, {}, {}, {} };
     AddBack(Menu);
@@ -2813,8 +2814,8 @@ void RunAudioMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt&
     FMenu Menu = OptionsMenu({}, "/Audio");
     const auto Update = [&]
     {
-        Menu.Items[QualityItem].Text = std::format("Quality : {} bits", Settings.bEightBits ? EightBits : SixteenBits);
-        Menu.Items[FrequencyItem].Text = std::format("Frequency : {} Hz", Settings.bLowFrequency ? LowFrequency : HighFrequency);
+        Menu.Items[QualityItem].Text = Format("Quality : %d bits", Settings.bEightBits ? EightBits : SixteenBits);
+        Menu.Items[FrequencyItem].Text = Format("Frequency : %d Hz", Settings.bLowFrequency ? LowFrequency : HighFrequency);
         Menu.Items[ChannelsItem].Text = Settings.bMono ? "Channels : Mono" : "Channels : Stereo";
     };
     Menu.Items = { { .Text = "Music" }, { .Text = "Sound FX, Voices" }, {}, {}, {} };
@@ -2919,7 +2920,7 @@ void RunKeySettingsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMe
         else
         {
             const FActionSetting& Setting = ActionSettings()[Shown[*Item]];
-            Menu.Items[*Item] = { .Text = std::format("{} : ", Setting.Name), .Help = "Waiting key or button event ..." };
+            Menu.Items[*Item] = { .Text = std::format("{} : ", Localize(Setting.Name)), .Help = "Waiting key or button event ..." };
             // FUN_00425860 waits for every key and button to be up, then for one to go down.
             bool bReleased = false;
             std::optional<uint32_t> Code;
@@ -3044,7 +3045,7 @@ void RunNameListMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuA
 {
     constexpr size_t MaxNames = 7;
     FMenu Menu = OptionsList("/Session/Name", "/Select");
-    const std::string Help = std::format("Current name : {}", Settings.PlayerName);
+    const std::string Help = Format("Current name : %s", Settings.PlayerName);
     for (const std::string& Name : Names | std::views::take(MaxNames))
     {
         Menu.Items.push_back({ .Text = Name, .Help = Help });
@@ -3071,7 +3072,7 @@ void RunNameListMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuA
         }
 
         constexpr size_t No = 1;
-        const std::optional<bool> Delete = Confirm(Window, Renderer, Art, Sheets, Random, std::format("Delete '{}' saved sessions ?", Names[*Item]), "Yes", "No", No);
+        const std::optional<bool> Delete = Confirm(Window, Renderer, Art, Sheets, Random, Format("Delete '%s' saved sessions ?", Names[*Item]), "Yes", "No", No);
         if (Delete && *Delete)
         {
             std::error_code Error;
@@ -3100,7 +3101,7 @@ void RunNameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& 
     FMenu Menu = OptionsMenu("/Session", "/Name");
     const auto Update = [&]
     {
-        const std::string Help = std::format("Current name : {}", Settings.PlayerName);
+        const std::string Help = Format("Current name : %s", Settings.PlayerName);
         Menu.Items = { { .Text = "Select player name", .Help = Help }, { .Text = "Add new name", .Help = Help }, { .Text = "Delete name", .Help = Help }, {}, {} };
         AddBack(Menu);
     };
@@ -3119,7 +3120,7 @@ void RunNameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& 
         }
         else if (*Item == AddItem)
         {
-            const std::optional<std::string> Name = EditText(Window, Renderer, Art, Sheets, Menu, Random, AddItem, "New name : ", "", MaxNameLength);
+            const std::optional<std::string> Name = EditText(Window, Renderer, Art, Sheets, Menu, Random, AddItem, Localize("New name : "), "", MaxNameLength);
             if (Name && !std::ranges::contains(Names, *Name))
             {
                 Names.push_back(*Name);
@@ -3165,8 +3166,8 @@ void RunUserMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& 
     const auto Update = [&]
     {
         Menu.Items = {
-            { .Text = std::format("Name : {}", Settings.PlayerName), .Help = bInGame ? std::string(InGameHelp) : "Add, delete or select player name." },
-            { .Text = std::format("Difficulty : {}", DifficultyNames[Settings.DifficultyLevel]), .Help = bInGame ? std::string(InGameHelp) : "Select to change difficulty level." },
+            { .Text = Format("Name : %s", Settings.PlayerName), .Help = bInGame ? std::string(InGameHelp) : "Add, delete or select player name." },
+            { .Text = Format("Difficulty : %s", Localize(DifficultyNames[Settings.DifficultyLevel])), .Help = bInGame ? std::string(InGameHelp) : "Select to change difficulty level." },
             { .Text = "Registration key", .Help = "No key." },
             {},
             {},
@@ -3190,10 +3191,10 @@ void RunUserMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& 
     }
 }
 
-// FUN_004259f0, Language: English or Russian. The port prints English whichever is chosen.
+// FUN_004259f0, Language: English or Russian, switched at once by LanguageSet (00401000). The texts are the archive's, so Russian needs the Russian data's Cyrillic fonts.
 void RunLanguageMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
 {
-    const std::string Help = std::format("Current language is {}.", LanguageKeyword(Settings.Language));
+    const std::string Help = Format("Current language is %s.", GetLanguage() == ELanguage::Russian ? Localize("Russian") : "English");
     FMenu Menu = OptionsMenu({}, "/Language");
     Menu.Items = { { .Text = "English", .Help = Help }, { .Text = "Russian", .Help = Help } };
     AddBack(Menu);
@@ -3201,6 +3202,7 @@ void RunLanguageMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuA
     if (const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor); !IsBack(Item, Menu))
     {
         Settings.Language = uint32_t(*Item) + 1;
+        SetLanguage(ELanguage(Settings.Language));
     }
 }
 
@@ -3253,7 +3255,7 @@ void RunOptionsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuAr
 }
 
 // MenuExtras at 00427820, the extras: Scores, Credits, Intro, Slide Show while vz-slide.rsc is there, and Demo, then Back, the default.
-// The original's Russian build prints this menu's title and its Scores and Intro items in Russian even in English. The demo is played by the main menu's caller.
+// The original's Russian build prints this menu's title and its Scores and Intro items in Russian even in English; the port keeps English there, which the English data can draw. The demo is played by the main menu's caller.
 bool RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random,
     const std::filesystem::path& DataFolder)
 {
@@ -3352,7 +3354,14 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         IdleDemo = 10,
     };
     std::vector<FSession> Saved = ReadSavedSessions(Settings.Folder);
-    const auto LoadHelp = [&] { return Saved.empty() ? std::string("No saved session.") : std::format("{} saved session{} available.", Saved.size(), Saved.size() > 1 ? "s" : ""); };
+    // The count stops at the 7 sessions the list shows; the Russian text takes a second plural ending.
+    const auto LoadHelp = [&]
+    {
+        constexpr size_t ListedSessions = 7;
+        const std::string_view Plural = Saved.size() > 1 ? "s" : "";
+        return Saved.empty() ? std::string("No saved session.")
+                             : Format("%d saved session%s available.", std::min(Saved.size(), ListedSessions), Plural, GetLanguage() == ELanguage::Russian ? Plural : "");
+    };
     FMenu Menu{
         .Left = MenuLeft,
         .Top = MenuTop,
@@ -3872,7 +3881,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         constexpr uint32_t LifeMilliseconds = 2000;
         constexpr uint32_t Font = 6;
         Messages.Add({
-            .Text = std::format("{},\n   you need MORE Cash\n     to see the Map !", Settings.PlayerName),
+            .Text = Format("%s,\n   you need MORE Cash\n     to see the Map !", Settings.PlayerName),
             .X = float((int32_t(ScreenWidth) >> 1) + TextX),
             .Y = float(int32_t(ScreenHeight) >> 1),
             .LifeMilliseconds = LifeMilliseconds,
@@ -4064,7 +4073,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     std::string PageText;
     if (!Demo)
     {
-        if (const std::optional<std::vector<uint8_t>> File = Archive.Read(LevelPath + "-en.txt"))
+        if (const std::optional<std::vector<uint8_t>> File = Archive.Read(std::format("{}-{}.txt", LevelPath, TextSuffix())))
         {
             PageText.assign(File->begin(), File->end());
         }
@@ -4690,7 +4699,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             Inventory.Money += float(Bonus);
                             Inventory.Earned += float(Bonus);
                             Messages.Add({
-                                .Text = std::format("Well done {} !!!\nFast Kill Bonus +{} $", Settings.PlayerName, Bonus),
+                                .Text = Format("Well done %s !!!\nFast Kill Bonus +%d $", Settings.PlayerName, Bonus),
                                 .X = float(BonusX),
                                 .Y = float(int32_t(ScreenHeight) / 2 - BonusRise),
                                 .LifeMilliseconds = BonusLifeMilliseconds,
@@ -4958,7 +4967,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 else if (Settings.Details.bGreenInfo)
                 {
                     Messages.Add({
-                        .Text = "DANGER : SHIELD IS LOW",
+                        .Text = std::string(Localize("DANGER : SHIELD IS LOW")),
                         .X = float(ShieldNoteX),
                         .Y = float(ShieldNoteY),
                         .LifeMilliseconds = ShieldNoteLifeMilliseconds,
@@ -5695,8 +5704,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             constexpr int32_t SecondPageLeft = 0x8c;
             if (Panel)
             {
-                ShowTextPage(Window, Renderer, Archive, *Panel, "common\\data\\extra\\theend.tga", "common\\data\\extra\\theend-en.txt", FirstPageLeft);
-                ShowTextPage(Window, Renderer, Archive, *Panel, "common\\data\\extra\\theend.tga", "common\\data\\extra\\theend-en-2.txt", SecondPageLeft);
+                ShowTextPage(Window, Renderer, Archive, *Panel, "common\\data\\extra\\theend.tga", std::format("common\\data\\extra\\theend-{}.txt", TextSuffix()), FirstPageLeft);
+                ShowTextPage(Window, Renderer, Archive, *Panel, "common\\data\\extra\\theend.tga", std::format("common\\data\\extra\\theend-{}-2.txt", TextSuffix()), SecondPageLeft);
             }
 
             ShowFinalScore();
@@ -5940,6 +5949,7 @@ int main(const int ArgCount, char** const Args)
     }
 
     FSettings Settings = LoadSettings(Archive, DataPath->parent_path());
+    SetLanguage(ELanguage(Settings.Language));
     Renderer.SetUserGamma(Settings.Gamma);
     if (Panel)
     {
@@ -5990,7 +6000,7 @@ int main(const int ArgCount, char** const Args)
             GameAudio->PlayStoryVoice();
         }
 
-        ShowTextPage(Window, Renderer, Archive, *Panel, "common\\data\\extra\\story.tga", "common\\data\\extra\\story-en.txt", StoryLeft, StoryMilliseconds);
+        ShowTextPage(Window, Renderer, Archive, *Panel, "common\\data\\extra\\story.tga", std::format("common\\data\\extra\\story-{}.txt", TextSuffix()), StoryLeft, StoryMilliseconds);
         if (GameAudio)
         {
             GameAudio->StopStoryVoice();

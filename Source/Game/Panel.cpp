@@ -1,5 +1,6 @@
 #include "Game/Panel.h"
 
+#include "Game/Language.h"
 #include "Game/Level.h"
 #include "Pg/ResourceArchive.h"
 
@@ -483,12 +484,12 @@ void FPanel::PostWarnings(const FPanelValues& Values, FMessages& Messages) const
     };
     if (Mode >= TextMode && Values.bLocked)
     {
-        Warn(LockWarningY, "WARNING : YOU ARE LOCKED");
+        Warn(LockWarningY, Localize("WARNING : YOU ARE LOCKED"));
     }
 
     if (Mode >= BarsMode && ShieldLow(Values))
     {
-        Warn(ShieldWarningY, "DANGER : SHIELD IS LOW");
+        Warn(ShieldWarningY, Localize("DANGER : SHIELD IS LOW"));
     }
 }
 
@@ -632,8 +633,8 @@ std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span
             const int32_t ScreenY = int32_t(Bottom);
             DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + PositionY, std::format("{:04}", int32_t(Values.Position.X)));
             DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextSecondX, ScreenY + PositionY, std::format("{:04}", int32_t(Values.Position.Y)));
-            DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + KilledY, std::format("KILLED {}", Values.Kills));
-            DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + EnemyY, std::format("ENEMY {}", Values.Enemies));
+            DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + KilledY, Format("KILLED %d", Values.Kills));
+            DrawText(Out, EHudSheet::Panel, ScreenFont, ScreenX + ScreenTextX, ScreenY + EnemyY, Format("ENEMY %d", Values.Enemies));
             const uint32_t Hours = Values.TimeMilliseconds / MillisecondsPerHour;
             const uint32_t Minutes = (Values.TimeMilliseconds - Hours * MillisecondsPerHour) / MillisecondsPerMinute;
             const uint32_t Seconds = (Values.TimeMilliseconds - Hours * MillisecondsPerHour - Minutes * MillisecondsPerMinute) / MillisecondsPerSecond;
@@ -657,7 +658,7 @@ std::vector<FHudSprite> FPanel::Draw(const FPanelValues& Values, const std::span
         constexpr int32_t Percent = 100;
         const auto Ratio = [](const float Value, const float Max) { return int32_t(Max) == 0 ? 0 : int32_t(Value) * Percent / int32_t(Max); };
         DrawText(Out, EHudSheet::Panel, ScreenFont, TextX, TextY,
-            std::format("SHIELD : {} / 100      ENERGY : {} / 100      AMMO : {}      CASH : {} $", Ratio(Values.Shield, Values.ShieldMax),
+            Format("SHIELD : %d / 100      ENERGY : %d / 100      AMMO : %d      CASH : %d $", Ratio(Values.Shield, Values.ShieldMax),
                 Ratio(Values.Energy, Values.EnergyMax), int32_t(Values.Ammo), int32_t(Values.Money)));
     }
 

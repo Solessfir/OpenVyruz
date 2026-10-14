@@ -1,5 +1,6 @@
 #include "Game/Score.h"
 
+#include "Game/Language.h"
 #include "Game/Menu.h"
 
 #include <algorithm>
@@ -79,25 +80,25 @@ constexpr uint32_t BlendColor(const uint32_t A, const uint32_t WeightA, const ui
 static_assert(BlendColor(0xffffff, 0x100, 0x80a0ff, 0) == 0xffffff);
 
 // The printf specifiers the columns use: %u, %d and %02d.
-std::string FormatValue(const std::string_view Format, const uint32_t Value)
+std::string FormatValue(const std::string_view Pattern, const uint32_t Value)
 {
-    const size_t Percent = Format.find('%');
+    const size_t Percent = Pattern.find('%');
     if (Percent == std::string_view::npos)
     {
-        return std::string(Format);
+        return std::string(Pattern);
     }
 
-    const size_t End = Format.find_first_of("ud", Percent);
+    const size_t End = Pattern.find_first_of("ud", Percent);
     if (End == std::string_view::npos)
     {
-        return std::string(Format);
+        return std::string(Pattern);
     }
 
-    const std::string_view Spec = Format.substr(Percent + 1, End - Percent - 1);
-    const bool bSigned = Format[End] == 'd';
+    const std::string_view Spec = Pattern.substr(Percent + 1, End - Percent - 1);
+    const bool bSigned = Pattern[End] == 'd';
     const std::string Number = Spec == "02" ? (bSigned ? std::format("{:02}", int32_t(Value)) : std::format("{:02}", Value))
                                             : (bSigned ? std::format("{}", int32_t(Value)) : std::format("{}", Value));
-    return std::string(Format.substr(0, Percent)) + Number + std::string(Format.substr(End + 1));
+    return std::string(Pattern.substr(0, Percent)) + Number + std::string(Pattern.substr(End + 1));
 }
 }
 
@@ -228,7 +229,7 @@ std::vector<FHudSprite> DrawScores(const FMenuArt& Art, const FScoreTable& Table
     };
     for (size_t Column = 0; Column < Columns.size(); ++Column)
     {
-        Cell(Column, HeaderY + Columns[Column].HeaderOffsetY, Columns[Column].Title, { .Diffuse = HeaderDiffuse, .Specular = Columns[Column].HeaderSpecular });
+        Cell(Column, HeaderY + Columns[Column].HeaderOffsetY, Localize(Columns[Column].Title), { .Diffuse = HeaderDiffuse, .Specular = Columns[Column].HeaderSpecular });
     }
 
     constexpr uint32_t FullWeight = 0x100;

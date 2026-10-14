@@ -1,6 +1,7 @@
 #include "Game/Engine.h"
 
 #include "Game/Audio.h"
+#include "Game/Language.h"
 #include "Game/Level.h"
 #include "Game/Loop.h"
 #include "Pg/Binary.h"
@@ -1668,21 +1669,20 @@ int32_t SurpriseTimeout(const ESurprise Type)
     }
 }
 
-// FUN_0041bd20: the text that announces a surprise.
-std::string_view SurpriseText(const ESurprise Type)
+std::string_view SurpriseEnglishText(const ESurprise Type)
 {
     switch (Type)
     {
     case ESurprise::ReverseCommands: return "Reversed Commands !";
-    case ESurprise::Trap: return "Trap !!!!";
+    case ESurprise::Trap: return "Trap !!!";
     case ESurprise::WeaponJam: return "Weapon Jam !";
-    case ESurprise::Darken: return "No Light !!!!";
-    case ESurprise::Extasy: return "XTC !!!!";
-    case ESurprise::LowSpeed: return "Thrust loss !!!!";
+    case ESurprise::Darken: return "No Light !!!";
+    case ESurprise::Extasy: return "XTC !!!";
+    case ESurprise::LowSpeed: return "Thrust loss !!!";
     case ESurprise::Pinball: return "Pinball Effect !";
     case ESurprise::Banana: return "No Inertia Control !";
-    case ESurprise::BlockedMotor: return "Blocked Motor !!!!";
-    case ESurprise::DestroyAround: return "Destroy Around !!!!";
+    case ESurprise::BlockedMotor: return "Blocked Motor !!!";
+    case ESurprise::DestroyAround: return "Destroy Around !!!";
     case ESurprise::TouchAndDestroy: return "Touch & Destroy !";
     case ESurprise::AutoShieldUp: return "Auto Shield Up";
     case ESurprise::Invisible: return "Invisible Drone !";
@@ -1693,6 +1693,12 @@ std::string_view SurpriseText(const ESurprise Type)
     case ESurprise::TripleFire: return "Triple Fire !!!";
     default: return "";
     }
+}
+
+// FUN_0041bd20: the text that announces a surprise.
+std::string_view SurpriseText(const ESurprise Type)
+{
+    return Localize(SurpriseEnglishText(Type));
 }
 
 // FUN_0041d180: the 1-based animation of surprise.gaf that shows the surprise, or 0 for none.
@@ -2035,7 +2041,7 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
         if (Pickup.AddEnergy != 0.f && Inventory.Energy < Inventory.EnergyMax * EnergyRefillLimit)
         {
             Inventory.Energy = std::min(Inventory.EnergyMax, Inventory.Energy + Pickup.AddEnergy);
-            AddPickupMessage(Messages, Object, OffsetY, std::format("Energy +{}", int32_t(Pickup.AddEnergy)), EnergyColor);
+            AddPickupMessage(Messages, Object, OffsetY, Format("Energy +%d", int32_t(Pickup.AddEnergy)), EnergyColor);
             bUsed = true;
         }
 
@@ -2043,7 +2049,7 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
         {
             Inventory.Money += Pickup.AddMoney;
             Inventory.Earned += Pickup.AddMoney;
-            AddPickupMessage(Messages, Object, OffsetY, std::format("Money +{}", int32_t(Pickup.AddMoney)), MoneyColor);
+            AddPickupMessage(Messages, Object, OffsetY, Format("Money +%d", int32_t(Pickup.AddMoney)), MoneyColor);
             bUsed = true;
             // EngineUpdateObjects cheers six times in sixteen by the game clock.
             constexpr std::array MoneyVoices = { EVoice::Laugh, EVoice::Yeepee, EVoice::Yeah, EVoice::Hey, EVoice::Yo, EVoice::GiveMe };
@@ -2059,7 +2065,7 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
         {
             OffsetY = bUsed ? LineStep : OffsetY;
             Inventory.Shield = std::min(Inventory.ShieldMax, Inventory.Shield + Pickup.AddShield);
-            AddPickupMessage(Messages, Object, OffsetY, std::format("Shield +{}", int32_t(Pickup.AddShield)), ShieldColor);
+            AddPickupMessage(Messages, Object, OffsetY, Format("Shield +%d", int32_t(Pickup.AddShield)), ShieldColor);
             bUsed = true;
         }
 
@@ -2083,9 +2089,9 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
             Inventory.Keys.push_back(Key);
             if (Key.Id != 0)
             {
-                const std::string Text = !Key.bCode                ? std::format("Key #{} !", Key.Id)
-                                         : CarriesKey(Inventory.Keys, Key.Id) ? std::format("Code #{} complete !", Key.Id)
-                                                                              : std::format("Code #{} : part {} !", Key.Id, Key.PartId);
+                const std::string Text = !Key.bCode                ? Format("Key #%d !", Key.Id)
+                                         : CarriesKey(Inventory.Keys, Key.Id) ? Format("Code #%d complete !", Key.Id)
+                                                                              : Format("Code #%d : part %d !", Key.Id, Key.PartId);
                 AddCentreMessage(Messages, Text, KeyColor);
                 constexpr uint32_t KeyVoiceDuration = 1000;
                 QueueVoice(Key.bCode ? EVoice::Code : EVoice::Key, 0, KeyVoiceDuration, 0);
@@ -2390,7 +2396,7 @@ void UseKey(FDoor& Door, FPlayerInventory& Inventory, const EHolder Holder, FMes
     constexpr uint32_t PlainColor = 0xffffff;
     if ((Door.Flags & DoorDestroyKey) != 0 && Holder == EHolder::Player && std::erase_if(Inventory.Keys, [&](const FCarriedKey& Key) { return Key.Id == Door.Id; }) != 0)
     {
-        AddCentreMessage(Messages, std::format("{} #{} !", (Door.Flags & DoorNeedsCode) != 0 ? "Using Code" : "Using Key", Door.Id), PlainColor);
+        AddCentreMessage(Messages, Format((Door.Flags & DoorNeedsCode) != 0 ? "Using Code #%d !" : "Using Key #%d !", Door.Id), PlainColor);
     }
 
     if ((Door.Flags & DoorKeyAlwaysNeeded) == 0)
@@ -3439,7 +3445,7 @@ void ReportDoorContact(const std::span<const FDoor> Doors, const FObjectBody& Bo
     if (Player.bInvisible)
     {
         Messages.Add({
-            .Text = Door->bLift ? "Cannot take lift while invisible !" : "Cannot open gates while invisible !",
+            .Text = std::string(Localize(Door->bLift ? "Cannot take lift while invisible !" : "Cannot open gates while invisible !")),
             .X = float(TruncateLow(Body.State.Position.X) + InvisibleTextX),
             .Y = float(TruncateLow(Body.State.Position.Y) + TextY),
             .LifeMilliseconds = LifeMilliseconds,
@@ -3451,12 +3457,12 @@ void ReportDoorContact(const std::span<const FDoor> Doors, const FObjectBody& Bo
 
     if (Door->bLift)
     {
-        Text = !bNeedsKey ? "Wait, lift will come." : bCode ? "Lift needs full code !" : std::format("Lift needs key #{} !", Door->Id);
+        Text = Format(!bNeedsKey ? "Wait, lift will come." : bCode ? "Lift needs full code !" : "Lift needs key #%d !", Door->Id);
     }
     else if (bNeedsKey)
     {
         // The gate also says what it needs, held for 5 seconds.
-        Text = std::format("Gate needs {} #{} !", bCode ? "full code" : "key", Door->Id);
+        Text = Format(bCode ? "Gate needs full code #%d !" : "Gate needs key #%d !", Door->Id);
         constexpr uint32_t NeedDuration = 1000;
         constexpr uint32_t NeedHold = 5000;
         QueueVoice(bCode ? EVoice::NeedCode : EVoice::NeedKey, 0, NeedDuration, NeedHold);
@@ -3704,7 +3710,7 @@ bool StepSavingPlots(FSavingState& State, const std::span<const FSavingPlot> Plo
         if (Elapsed < SaveDelay)
         {
             const int32_t Seconds = (CountFrom - Elapsed) / MillisecondsPerSecondSigned;
-            Say(Plot, std::format("Saving in {} second{}", Seconds, Seconds > 1 ? "s" : ""), CountLife);
+            Say(Plot, Format("Saving in %d second%s", Seconds, Seconds > 1 ? "s" : ""), CountLife);
             continue;
         }
 
@@ -3718,7 +3724,7 @@ bool StepSavingPlots(FSavingState& State, const std::span<const FSavingPlot> Plo
         const int32_t Reward = int32_t(ParseLevelFloat(Plot.Properties.Find("Reward")).value_or(0.f));
         if (Reward < 0 && Inventory.Money < float(-Reward))
         {
-            Say(Plot, std::format("Not enough Cash {} !\n You need {} $\n  to save this game ...", PlayerName, -Reward), RefusedLife);
+            Say(Plot, Format("Not enough Cash %s !\n You need %d $\n  to save this game ...", PlayerName, -Reward), RefusedLife);
             constexpr uint32_t RefusedVoiceDuration = 1000;
             constexpr uint32_t RefusedVoiceHold = 5000;
             QueueVoice(EVoice::NeedCash, 0, RefusedVoiceDuration, RefusedVoiceHold);
@@ -3730,7 +3736,7 @@ bool StepSavingPlots(FSavingState& State, const std::span<const FSavingPlot> Plo
             Inventory.Money += float(Reward);
         }
 
-        Say(Plot, "Saving Completed.", SavedLife);
+        Say(Plot, std::string(Localize("Saving Completed.")), SavedLife);
         constexpr uint32_t SavedVoiceDelay = 500;
         constexpr uint32_t SavedVoiceDuration = 1000;
         constexpr uint32_t SavedVoiceHold = 3000;
@@ -3744,7 +3750,7 @@ bool StepSavingPlots(FSavingState& State, const std::span<const FSavingPlot> Plo
         {
             const FLevelObject& Plot = Level.Objects[*State.Plot];
             Messages.RemoveAt(TruncateLow(Plot.X) + TextX, TruncateLow(Plot.Y));
-            Say(Plot, "No Saving.", LeftLife);
+            Say(Plot, std::string(Localize("No Saving.")), LeftLife);
         }
 
         State.bCounting = false;
@@ -3795,7 +3801,7 @@ void StepCodeTimeouts(FPlayerInventory& Inventory, FLevel& Level, FMessages& Mes
             else if (Key.bHasTimeout)
             {
                 Returned.push_back(Key.Id);
-                Messages.Add({ .Text = std::format("Code #{} regenerated !", Key.Id), .X = float(Key.WarnX), .Y = float(Key.WarnY),
+                Messages.Add({ .Text = Format("Code #%d regenerated !", Key.Id), .X = float(Key.WarnX), .Y = float(Key.WarnY),
                     .LifeMilliseconds = LifeMilliseconds, .Font = Font }, EMessagePlacement::Replace);
             }
         }
@@ -4398,18 +4404,18 @@ void SelectPlayerWeapon(FCombat& Combat, const size_t Slot, const FPlayerInvento
     }
 
     const FWeaponClass& Weapon = Combat.Weapons[Combat.PlayerWeapon.Weapon];
-    List(WeaponLines[0], std::format("WEAPON {}", Upper(Weapon.Name)));
-    List(WeaponLines[1], std::format("FIRE RANGE {}", int32_t(Weapon.FireRange)));
-    List(WeaponLines[2], std::format("FIRE DELAY {}", Weapon.Delay));
+    List(WeaponLines[0], Format("WEAPON      %s", Upper(Weapon.Name)));
+    List(WeaponLines[1], Format("FIRE-RANGE  %d", int32_t(Weapon.FireRange)));
+    List(WeaponLines[2], Format("FIRE-DELAY  %d", Weapon.Delay));
 
     // FUN_00437540 binds only a stock that is not empty.
     const FAmmoStock* const Stock = SlotAmmo(Combat, Slot, Inventory);
     const auto Ammo = std::ranges::find(Combat.AmmoClasses, Stock ? ToLowerName(Stock->Name) : Weapon.Ammo, &FAmmoClass::Name);
     if (Stock && Stock->Count != 0.f && Ammo != Combat.AmmoClasses.end())
     {
-        List(AmmoLines[0], std::format("AMMO {}", Upper(Ammo->Name)));
-        List(AmmoLines[1], std::format("DAMAGE {}", Ammo->ListedDamage));
-        List(AmmoLines[2], std::format("DAMAGE AREA {}", Ammo->ListedArea));
+        List(AmmoLines[0], Format("AMMO        %s", Upper(Ammo->Name)));
+        List(AmmoLines[1], Format("DAMAGE      %d", Ammo->ListedDamage));
+        List(AmmoLines[2], Format("DAMAGE-AREA %d", Ammo->ListedArea));
     }
 }
 
@@ -4461,7 +4467,7 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
         }
 
         Messages.Add({
-            .Text = "NOTE : ONLY MINES CAN BE USED WHILE INVISIBLE",
+            .Text = std::string(Localize("NOTE : ONLY MINES CAN BE USED WHILE INVISIBLE")),
             .X = float(NoteX),
             .Y = float(NoteY),
             .LifeMilliseconds = NoteLifeMilliseconds,
@@ -5948,7 +5954,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             constexpr int RealKillerBonus = 100000;
             constexpr uint32_t Font = 6;
             Messages.Add({
-                .Text = std::format("You are so professional Jack !\nNo more enemy in this level !\n  Real Killer Bonus : +{} $", RealKillerBonus),
+                .Text = Format("You are so professional %s !\nNo more enemy in this level !\n  Real Killer Bonus : +%d $", "Jack", RealKillerBonus),
                 .X = float(LastKillX),
                 .Y = float(LastKillY),
                 .LifeMilliseconds = LastKillLifeMilliseconds,

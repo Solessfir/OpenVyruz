@@ -291,7 +291,9 @@ void FAudio::PlayMovieSound(std::shared_ptr<const Sound::FSample> Sample)
 void FAudio::PlayStoryVoice()
 {
     Mixer.Stop(ChannelBit(VoiceChannel));
-    Mixer.Play(Load("v-intro-uk.wav"), false, MenuPriority, ChannelBit(VoiceChannel), Settings.VoicesVolume);
+    // ShowStoryPage (00447c80) reads the story in the voice type's language.
+    constexpr uint32_t SecondLanguage = 2;
+    Mixer.Play(Load(Settings.VoiceType == SecondLanguage ? "v-intro-fr.wav" : "v-intro-uk.wav"), false, MenuPriority, ChannelBit(VoiceChannel), Settings.VoicesVolume);
 }
 
 void FAudio::StopStoryVoice()

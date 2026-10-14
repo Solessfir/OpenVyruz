@@ -232,7 +232,7 @@ constexpr std::array Settings{
     FActionSetting{ EAction::Right, "Right", KeyboardSetting },
     FActionSetting{ EAction::StrafeLeft, "Strafe Left", AllDevices },
     FActionSetting{ EAction::StrafeRight, "Strafe Right", AllDevices },
-    FActionSetting{ EAction::CyclePanels, "Panel Config", AllDevices },
+    FActionSetting{ EAction::CyclePanels, "Panel Config.", AllDevices },
 };
 
 constexpr std::array<std::string_view, ActionCount> ActionKeywords{

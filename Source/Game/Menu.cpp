@@ -1,5 +1,7 @@
 #include "Game/Menu.h"
 
+#include "Game/Language.h"
+
 #include "Pg/Random.h"
 #include "Pg/ResourceArchive.h"
 
@@ -260,12 +262,12 @@ std::vector<FHudSprite> FMenuArt::Draw(const FMenu& Menu, FMenuState& State) con
         DrawFrame(EHudSheet::VMenu, *Flash, 1, 0, 0);
     }
 
-    // The path continues from where the title ends.
+    // The path continues from where the title ends. Each text prints in the language in use, as MenuSetLanguageStrings (004227c0) and the menus' LanguageGet branches choose them.
     constexpr size_t PathFont = 3;
     constexpr size_t SubPathFont = 4;
-    int32_t TitleEnd = DrawText(Out, Menu.TitleFont, TitleX, TitleY, Menu.Title);
-    TitleEnd = DrawText(Out, PathFont, TitleEnd, TitleY, Menu.Path);
-    DrawText(Out, SubPathFont, TitleEnd, TitleY, Menu.SubPath);
+    int32_t TitleEnd = DrawText(Out, Menu.TitleFont, TitleX, TitleY, Localize(Menu.Title));
+    TitleEnd = DrawText(Out, PathFont, TitleEnd, TitleY, Localize(Menu.Path));
+    DrawText(Out, SubPathFont, TitleEnd, TitleY, Localize(Menu.SubPath));
     if (Menu.bSlider)
     {
         DrawSlider(Out, Menu, State);
@@ -274,13 +276,13 @@ std::vector<FHudSprite> FMenuArt::Draw(const FMenu& Menu, FMenuState& State) con
     for (size_t Item = 0; Item < Menu.Items.size(); ++Item)
     {
         DrawText(Out, State.UnderCursor == Item ? Menu.HighlightFont : Menu.ItemFont, Menu.Left + int32_t(Item) * Menu.StepX, Menu.Top + int32_t(Item) * Menu.StepY,
-            Menu.Items[Item].Text);
+            Localize(Menu.Items[Item].Text));
     }
 
     if (State.Selected && !Menu.Items[*State.Selected].Help.empty())
     {
         const Font::FFont& Help = Fonts[HelpFont - 1];
-        DrawText(Out, HelpFont, HelpLeft, HelpTop + Help.LineHeight - Help.LineGap, Menu.Items[*State.Selected].Help, HelpRight);
+        DrawText(Out, HelpFont, HelpLeft, HelpTop + Help.LineHeight - Help.LineGap, Localize(Menu.Items[*State.Selected].Help), HelpRight);
     }
 
     DrawText(Out, DateFont, DateX, DateY, BuildDate);
@@ -374,7 +376,7 @@ void FMenuArt::DrawSlider(std::vector<FHudSprite>& Out, const FMenu& Menu, FMenu
 {
     constexpr size_t LabelFont = 1;
     const int32_t Value = std::clamp(State.SliderValue, 0, SliderMax);
-    DrawText(Out, LabelFont, Menu.Left, TitleY, Menu.SliderLabel.empty() ? std::format("Value : {} %", Value) : std::format("{} {} %", Menu.SliderLabel, Value));
+    DrawText(Out, LabelFont, Menu.Left, TitleY, Menu.SliderLabel.empty() ? Format("Value : %d %%", Value) : std::format("{} {} %", Menu.SliderLabel, Value));
     if (Menu.HighlightFont < 1 || Menu.HighlightFont > Fonts.size() || Menu.ItemFont < 1 || Menu.ItemFont > Fonts.size())
     {
         return;
