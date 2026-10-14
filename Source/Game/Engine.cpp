@@ -1052,10 +1052,16 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
 
     // A pushed mine (ammo with neither On-hit nor On-object-hit) goes off on the terrain. Against an object AmmoHit moves it and pushes the object without destroying it,
     // then the object's shield and energy wear the mine's shield and its energy, both by the whole amount once the shield holds it; a mine with energy left goes on through.
-    // ponytail: pushed objects never meet the player in the port (StepObjectBodies passes no player circle), so a pushed mine passes it.
+    // Against the player it pushes the player too; the player's shield and energy outlast any mine's, so it goes off.
     if (Self && Self->Mine && !Self->Mine->bStruck)
     {
         Self->State.Position = WorldFromCollision(*Contact);
+        if (!HitBody && PlayerHit && PlayerHit->bHit)
+        {
+            const FCollisionPoint Facing = FacingVector(Self->State.Direction);
+            PlayerHit->Push = { .X = float(double(Facing.X) * ImpactPush), .Y = float(double(Facing.Y) * ImpactPush) };
+        }
+
         if (!HitBody)
         {
             Self->Mine->bStruck = true;
@@ -1350,16 +1356,41 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
     return Bodies;
 }
 
-void StepObjectBodies(const std::span<FObjectBody> Bodies, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level)
+FCollisionPoint StepObjectBodies(const std::span<FObjectBody> Bodies, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
+    const FPlayerTarget* const Player)
 {
+    FCollisionPoint Push;
     for (FObjectBody& Body : Bodies)
     {
         // Actors move every step in StepActors.
-        if (!Body.Actor && (Body.State.bPushed || !IsZero(Body.State.Velocity)))
+        if (Body.Actor || (!Body.State.bPushed && IsZero(Body.State.Velocity)))
         {
-            StepPlayer(Body.State, Body.Class, {}, StepMilliseconds, Terrain, Level, Bodies, &Body);
+            continue;
         }
+
+        std::optional<FPlayerKnock> Knock;
+        if (Player)
+        {
+            Knock = FPlayerKnock{ .Circle = { .Center = Player->State.Center, .Radius = Player->Radius }, .bTouchAndDestroy = Player->State.bTouchAndDestroy };
+        }
+
+        StepPlayer(Body.State, Body.Class, {}, StepMilliseconds, Terrain, Level, Bodies, &Body, Knock ? &*Knock : nullptr);
+        if (!Knock)
+        {
+            continue;
+        }
+
+        // ApplyDamage spares an invisible player and an invulnerable one, as for shots.
+        if (Knock->Damage != 0.f && !Player->State.bInvisible && !Player->Inventory.Surprises.bInvulnerable)
+        {
+            ApplyDamage(Player->Inventory, Knock->Damage);
+        }
+
+        Push.X = float(double(Knock->Push.X) / double(Player->Inventory.Weight) + double(Push.X));
+        Push.Y = float(double(Knock->Push.Y) / double(Player->Inventory.Weight) + double(Push.Y));
     }
+
+    return Push;
 }
 
 std::expected<void, std::string> VerifyPlayerMovement()
@@ -7031,6 +7062,35 @@ std::expected<std::string, std::string> VerifyMines(FResourceArchive& Archive)
 
     const std::string_view ShovedOutcome = std::ranges::find(Bodies, ShovedIndex, &FObjectBody::ObjectIndex)->Mine->bStruck ? "went off on the terrain" : "was worn by an object";
 
+    // The same mine shoved at the player standing just ahead goes off against it and pushes it along the mine's facing.
+    bool bPlayerPushed = false;
+    for (int Direction = 0; Direction < DirectionCount && !bPlayerPushed; ++Direction)
+    {
+        FObjectBody& Mine = *std::ranges::find(Bodies, ShovedIndex, &FObjectBody::ObjectIndex);
+        Mine = Resting;
+        const FCollisionPoint Unscaled = FacingVector(Direction);
+        const float Length = std::sqrt(Unscaled.X * Unscaled.X + Unscaled.Y * Unscaled.Y);
+        const FCollisionPoint Facing{ .X = Unscaled.X / Length, .Y = Unscaled.Y / Length };
+        Mine.State.Direction = Direction;
+        Mine.State.bPushed = true;
+        Mine.State.Velocity = { .X = Facing.X * ShoveSpeed, .Y = Facing.Y * ShoveSpeed };
+        constexpr float AheadGap = 30.f;
+        FPlayerState Blocker = SpawnPlayer(Level->Objects[*PlayerIndex], *Class);
+        const float Ahead = Class->Radius + Mine.Class.Radius + AheadGap;
+        Blocker.Center = { .X = Mine.State.Center.X + Facing.X * Ahead, .Y = Mine.State.Center.Y + Facing.Y * Ahead };
+        const FPlayerTarget Struck{ .State = Blocker, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = *PlayerIndex };
+        for (int Step = 0; Step < ShoveSteps && Mine.State.bPushed && !Mine.Mine->bStruck; ++Step)
+        {
+            const FCollisionPoint Push = StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level, &Struck);
+            bPlayerPushed = Mine.Mine->bStruck && Push.X * Facing.X + Push.Y * Facing.Y > 0.f;
+        }
+    }
+
+    if (!bPlayerPushed)
+    {
+        return std::unexpected("a mine shoved at the player did not go off against it");
+    }
+
     // A dropped mine away from the player.
     const auto Ammo = std::ranges::find(Combat->AmmoClasses, std::string("mine-ammo"), &FAmmoClass::Name);
     if (Ammo == Combat->AmmoClasses.end() || !Ammo->bDropped)
@@ -7070,7 +7130,7 @@ std::expected<std::string, std::string> VerifyMines(FResourceArchive& Archive)
         return std::unexpected(std::format("the dropped mine armed at {} ms, hid at {} ms and went at {} ms", ArmedAt, HiddenAt, GoneAt));
     }
 
-    return std::format("a placed mine set off by the player, a shoved one {}, a dropped one armed at {} ms, hidden at {} ms, gone at {} ms", ShovedOutcome, ArmedAt, HiddenAt, GoneAt);
+    return std::format("a placed mine set off by the player, a shoved one {} and another went off against the player, a dropped one armed at {} ms, hidden at {} ms, gone at {} ms", ShovedOutcome, ArmedAt, HiddenAt, GoneAt);
 }
 }
 

@@ -1029,18 +1029,22 @@ struct FPlayerKnock
     bool bHit = false;
     float Damage = 0.f;
     bool bTouchAndDestroy = false;
+    // A mine that went off against the player pushes it (AmmoImpact at 0043d350), before the player's Weight divides it.
+    FCollisionPoint Push;
 };
 
 // Bodies are the other collidable objects; Self is the body moving, if any, which knocks hurt.
 // Returns the body the move ran into, if any.
 const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
     const FLevel& Level, std::span<FObjectBody> Bodies = {}, FObjectBody* Self = nullptr, FPlayerKnock* PlayerHit = nullptr);
-// Moves pushed bodies for one step, in object order.
+// Moves pushed bodies for one step, in object order. They run into the player like into any object, hurt it by their knocks, and a pushed mine goes off against it;
+// returns how far those mines push the player.
 // Actors look for the player, patrol, chase and shoot, then move like the player with the resulting command. Without combat they only patrol.
 // Actors that run into the player hurt it by their knocks.
 void StepActors(FCombat* Combat, std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
     const FPlayerTarget* Player);
-void StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level);
+FCollisionPoint StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
+    const FPlayerTarget* Player = nullptr);
 // Every gate and lift of the level, in their activation state (AnimInitializeGraphics at 00417b30): open ones are passable and show the last frame of their first animation.
 std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, FResourceArchive& Archive, std::span<FObjectBody> Bodies);
 // One step of every gate (GateUpdate at 00443620) and lift (ObjectUpdateLevelExit at 00442bf0) after its animation advances.

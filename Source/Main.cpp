@@ -5172,7 +5172,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 if (bFullUpdate)
                 {
                     Warp.WarpCounter = Warp.WarpDivisor;
-                    StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
+                    const FPlayerTarget Pushed{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
+                    const FCollisionPoint Push = StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level, &Pushed);
+                    Player->Velocity.X = float(double(Push.X) + double(Player->Velocity.X));
+                    Player->Velocity.Y = float(double(Push.Y) + double(Player->Velocity.Y));
+                    Player->bPushed = Player->bPushed || Push.X != 0.f || Push.Y != 0.f;
                 }
 
                 if (!DeathTimer)
