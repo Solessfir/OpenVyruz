@@ -1,6 +1,7 @@
 #include "Render/Renderer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -27,13 +28,15 @@ void Check(const VkResult Result, const char* const What)
 
 struct FSpritePush
 {
-    float Rect[4];
-    float UvRect[4];
-    float ScreenSize[2];
-    float Padding[2];
+    float Rect[4] = {};
+    float UvRect[4] = {};
+    float ScreenSize[2] = {};
+    float Padding[2] = {};
     // D3D's default texture stage modulates by the diffuse colour; a specular colour is added when present.
-    float Diffuse[4];
-    float Specular[4];
+    float Diffuse[4] = {};
+    float Specular[4] = {};
+    // cos, sin, pivot x, pivot y.
+    float Rotation[4] = { 1.f, 0.f, 0.f, 0.f };
 };
 
 // Unpacks a D3DCOLOR's red, green and blue bytes; the fourth channel carries the sprite's alpha.
@@ -804,7 +807,7 @@ bool FRenderer::BeginFrame()
 
 void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInSheet, const float X, const float Y, const bool bMirrorX, const bool bMirrorY,
     const ESpriteBlend Blend, const float ScaleX, const float ScaleY, const uint32_t VisibleColumns, const uint32_t Diffuse, const uint32_t Specular,
-    const float Alpha)
+    const float Alpha, const float RotationDegrees, const float PivotX, const float PivotY)
 {
     if (Sheet.Texture >= Textures.size() || FrameIndexInSheet >= Sheet.Frames.size())
     {
@@ -825,7 +828,10 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
     const float Height = float(Frame.Height) * ScaleY;
     const float Left = X + (bMirrorX ? -float(Frame.TrimX) * ScaleX - Width : float(Frame.TrimX) * ScaleX);
     const float Top = Y + (bMirrorY ? -float(Frame.TrimY) * ScaleY - Height : float(Frame.TrimY) * ScaleY);
-    if (Left >= ScreenWidth || Top >= ScreenHeight || Left + Width <= 0.f || Top + Height <= 0.f)
+    // A turned frame may reach anywhere within its farthest corner's distance of the pivot.
+    const float Reach = RotationDegrees != 0.f ? std::max(std::hypot(Left - PivotX, Top - PivotY), std::hypot(Left + Width - PivotX, Top + Height - PivotY)) : 0.f;
+    if (RotationDegrees != 0.f ? PivotX - Reach >= ScreenWidth || PivotY - Reach >= ScreenHeight || PivotX + Reach <= 0.f || PivotY + Reach <= 0.f
+                               : Left >= ScreenWidth || Top >= ScreenHeight || Left + Width <= 0.f || Top + Height <= 0.f)
     {
         return;
     }
@@ -837,6 +843,15 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
     };
     UnpackColor(Diffuse, Push.Diffuse, Alpha);
     UnpackColor(Specular, Push.Specular);
+    if (RotationDegrees != 0.f)
+    {
+        constexpr double RadiansPerDegree = 3.14159265358979323846 / 180.;
+        const double Radians = double(RotationDegrees) * RadiansPerDegree;
+        Push.Rotation[0] = float(std::cos(Radians));
+        Push.Rotation[1] = float(std::sin(Radians));
+        Push.Rotation[2] = PivotX;
+        Push.Rotation[3] = PivotY;
+    }
     vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, SpritePipelines[static_cast<size_t>(Blend)]);
     vkCmdBindDescriptorSets(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, PipelineLayout, 0, 1, &Textures[Sheet.Texture].DescriptorSet, 0, nullptr);
     vkCmdPushConstants(Cmd, PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &Push);

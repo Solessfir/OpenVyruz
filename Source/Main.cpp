@@ -420,6 +420,8 @@ struct FObjectSprite
     uint32_t Diffuse = 0xffffff;
     // Below one, drawn blended by this alpha.
     float Alpha = 1.f;
+    // Degrees clockwise about the sprite's position (DrawAnimationFrame's turn).
+    float Rotation = 0.f;
 };
 
 struct FObjectSprites
@@ -3892,6 +3894,15 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
                 }
 
+                // And the trails of orbiting FX.
+                for (const FEffectClass& Effect : Combat->EffectClasses)
+                {
+                    for (const FCreateBlock& Create : Effect.Creates)
+                    {
+                        DrawnClasses.push_back(Create.Name);
+                    }
+                }
+
                 for (const std::string& ClassName : DrawnClasses)
                 {
                     if (const auto Template = Level->ClassObjects.find(ClassName); Template != Level->ClassObjects.end())
@@ -4267,6 +4278,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // Object +0x170, which 3do::CreateObject starts at 50; ObjectDraw counts it up to 49 for a visible object and draws it opaque from there.
     constexpr int FullFade = 49;
     int PlayerFade = FullFade + 1;
+    // Session +0x2270: Time Warp's animation from Data\Object\FX\time-warp.gaf (FUN_0041b830), which ObjectDraw plays on with each drawing of the player.
+    uint32_t TimeWarpAge = 0;
     // Is-light objects (class +0x1c bit 0x80000000) stay lit through Darken.
     std::vector<bool> LightObjects(Level->Objects.size());
     for (size_t Index = 0; Index < Level->Objects.size(); ++Index)
@@ -4571,6 +4584,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
             return RemainingMilliseconds != 0 ? std::optional(NextGameStep(RemainingMilliseconds, FramePeriod, Demo != nullptr)) : std::nullopt;
         };
+        // VoiceQueueUpdate (004132e0) runs at the start of the full EngineUpdateObjects, so a frame of Time Warp's player-only steps leaves the queue alone.
+        size_t FrameSteps = 0;
+        size_t FrameFullUpdates = 0;
         while (const std::optional<uint32_t> NextStepMilliseconds = NextStep())
         {
             const uint32_t StepMilliseconds = *NextStepMilliseconds;
@@ -4748,6 +4764,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 // the steps between update the player alone, so the rest of the level moves at a quarter of its speed.
                 FSurpriseState& Warp = Inventory.Surprises;
                 const bool bFullUpdate = Warp.WarpCounter-- == 0;
+                ++FrameSteps;
+                FrameFullUpdates += bFullUpdate ? 1 : 0;
                 if (bFullUpdate)
                 {
                     Warp.WarpCounter = Warp.WarpDivisor;
@@ -5228,6 +5246,31 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 });
             }
 
+            // The orbiting FX, drawn like any FX object unless hidden (object flag 8).
+            for (const FOrbiter& Orbiter : Combat->Orbiters)
+            {
+                const FEffect& Effect = Orbiter.Effect;
+                const FEffectClass& Class = Combat->EffectClasses[Effect.ClassIndex];
+                const auto Sheet = Objects->SheetIndices.find(Class.GafPath);
+                if (Orbiter.bHidden || Effect.Frame == 0 || Sheet == Objects->SheetIndices.end())
+                {
+                    continue;
+                }
+
+                const Gaf::FAnimationFrame& Frame = Objects->Animations[Sheet->second][size_t(Class.GafIndex - 1)].Frames[Effect.Frame - 1];
+                const int64_t GroundY = SpriteCoordinate(Effect.Position.Y);
+                Sprites.push_back({
+                    .SheetIndex = Sheet->second,
+                    .ObjectIndex = NoObjectIndex,
+                    .Frame = Frame,
+                    .X = float(SpriteCoordinate(Effect.Position.X)),
+                    .Y = float(GroundY) - Effect.Altitude,
+                    .Depth = SpriteDepth(GroundY, false, false, false),
+                    .Blend = FrameBlend(Frame),
+                    .Stretch = Class.Stretch,
+                });
+            }
+
             // The trails, things of one pose that play their animation over their life; Is-detail ones go with low details.
             for (const FTrail& Trail : Combat->Trails)
             {
@@ -5449,6 +5492,43 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             Sprites.insert(First, Ghosts.begin(), Ghosts.end());
         }
 
+        // ObjectDraw for the player under Time Warp (session +0x21f4) draws time-warp.gaf's animation over it at twice the size, turned clock * 360 * 0.001 degrees, once a second.
+        if (Player && !DeathTimer && Combat && Inventory.Surprises.WarpDivisor != 0)
+        {
+            const auto Last = std::ranges::find(Sprites | std::views::reverse, PlayerIndex, &FObjectSprite::ObjectIndex);
+            const std::optional<size_t> Sheet = FindOrLoadSheet(*Objects, Archive, Renderer, "common\\data\\object\\fx\\time-warp.gaf");
+            if (Last != Sprites.rend() && Sheet && !Objects->Animations[*Sheet].empty())
+            {
+                TimeWarpAge += LastStepMilliseconds;
+                const Gaf::FAnimation& Played = Objects->Animations[*Sheet].front();
+                const uint32_t FrameNumber = AnimationFrameAt(Played, TimeWarpAge);
+                constexpr double DegreesPerTurn = double(360.f);
+                constexpr double TurnsPerMillisecond = double(0.001f);
+                constexpr int64_t FullTurnDegrees = 360;
+                constexpr float WarpStretch = 2.f;
+                const int64_t Degrees = int64_t(double(Combat->Clock) * DegreesPerTurn * TurnsPerMillisecond) % FullTurnDegrees;
+                if (FrameNumber != 0)
+                {
+                    const Gaf::FAnimationFrame& Frame = Played.Frames[FrameNumber - 1];
+                    FObjectSprite Warp = *Last;
+                    Warp.SheetIndex = *Sheet;
+                    Warp.Frame = Frame;
+                    Warp.bShadow = false;
+                    Warp.Blend = FrameBlend(Frame);
+                    Warp.Stretch = WarpStretch;
+                    Warp.Diffuse = 0xffffff;
+                    Warp.Specular = 0;
+                    Warp.Alpha = 1.f;
+                    Warp.Rotation = float(Degrees);
+                    Sprites.insert(Last.base(), Warp);
+                }
+            }
+        }
+        else
+        {
+            TimeWarpAge = 0;
+        }
+
         const auto DrawObject = [&](const FObjectSprite& Sprite)
         {
             const Gaf::FAnimationFrame& Frame = Sprite.Frame;
@@ -5483,7 +5563,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             const uint32_t Diffuse = (Frame.EventFlags & DiffuseEventFlag) != 0 ? ModulateColor(uint32_t(Frame.EventValue) & ColorMask, Sprite.Diffuse) : Sprite.Diffuse;
             Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + OffsetX - OriginX, Sprite.Y + OffsetY - OriginY,
                 Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer || bFadingObject || Sprite.Alpha < 1.f ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, Diffuse,
-                Sprite.Specular, bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : Sprite.Alpha);
+                Sprite.Specular, bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : Sprite.Alpha, Sprite.Rotation, Sprite.X - OriginX, Sprite.Y - OriginY);
         };
         const auto DrawMapRow = [&](const int64_t Row, const std::optional<int32_t> Depth)
         {
@@ -5626,7 +5706,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
-        if (GameAudio)
+        if (GameAudio && (FrameSteps == 0 || FrameFullUpdates != 0))
         {
             GameAudio->UpdateVoices();
         }

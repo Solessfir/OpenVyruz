@@ -104,6 +104,18 @@ FX classes (`fx.3dc`) play one animation from their GAF. `UpdateAnimation` (`004
 
 A destroyed object with a `TYPE Explosion` block hands it to a new `Boom-fx` object at its position (`ObjectDestroy`, `00437d40`). Before half of the effect's animation has played, the blast waits up to 500 ms; then `AreaDamage` goes off once around the effect with the block's `damage` and `damage-zone`. Blasts destroy neighbouring objects, so explosions chain.
 
+## Orbiting FX
+
+An FX class's `TYPE FX` (attribute kind `0xf`) can circle a host: `count`, `circular`, `angular-speed`, `ray`, `phase`, `vertical-amplitude`, `vertical-pulsation`, `vertical-phase`, `check-event`, and `on-timeout` and `off-timeout` (attribute `+0x34`, `+0x38`). `FUN_0041c180` attaches them: for each class named, from the last, it makes `count` FX objects at the host, the copies `2π / count` of phase apart from the last back, at the class's altitude plus the host's, tied to the host (`+0x44`) and its serial (`+0x48`). `CreateObject` (`00413800`) does it for each `ADD FX` of a class: `Final-PC` carries `Final-PC-FX-1` to 5, and many tower-three enemies `Circular-blue-stars`. Touch-and-destroy, Invulnerability and Banana attach theirs to the player (`FUN_0041c340`, see [Surprises.md](Surprises.md)).
+
+The FX part of `ObjectUpdateWeapon` (`00444ca0`, which updates every attribute of an object) runs in the full object update:
+
+- **Timers**: while the on timer runs, `FUN_004452c0` switches the check-event on the host (Invulnerability sets object flag `0x800000`); when it runs out the off timer starts and switches it off; when that runs out the on timer starts again and the object shows.
+- **Host check** (`FUN_0041c0b0`): `bonus-invulnerability` (`0xc9`) holds while the host has flag `0x800000`, `bonus-touch-and-destroy` (`0xcd`) while it has `0x400000`, `malus-banana` (`0xcf`) while Banana is its surprise, and `do-fx` (`0x10d`) always. When the host is gone or the event no longer holds, the object is destroyed, or, when its class has an on-timeout, hidden until its next on time.
+- **Orbit**: a circular one stands at `ray` from the host at the angle `clock * angular-speed + phase` (the clock as a float), its offset (sin - cos, cos + sin) through the collision-to-world scales, and with a vertical amplitude its altitude is `sin(clock * vertical-pulsation + vertical-phase) * amplitude` plus the host's. A place outside the level keeps the last one. Its `CREATE` blocks leave trails like a shot's.
+
+So the Final-PC's fifteen orbiters keep it invulnerable (`ApplyDamage` takes nothing) for 10 seconds, then hide and leave it open for 2, over and over. `--verify-game` checks that cycle in `CPU\T3P2` and that Touch-and-destroy puts fifteen stars round the player and takes them away. The port keeps orbiters apart from the objects, in `FCombat::Orbiters`, and draws them like FX. Not ported: `only-when-visible` (FX flag 4), for which no reader was found.
+
 ## Drops
 
 `ObjectDestroy` (`00437d40`) calls `ObjectDropContents` (`00437f80`), which creates the destroyed object's contents with `3do::CreateObject` (`00413800`):

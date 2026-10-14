@@ -7,6 +7,7 @@ struct PushConstants
     float2 Padding;
     float4 Diffuse;
     float4 Specular;
+    float4 Rotation; // cos, sin, pivot x, pivot y: DrawAnimationFrame turns the frame about the object's position
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> Push;
@@ -22,7 +23,8 @@ struct VertexOutput
 VertexOutput vertexMain(uint VertexIndex : SV_VertexID)
 {
     const float2 Corner = float2(VertexIndex & 1, VertexIndex >> 1);
-    const float2 Pixel = Push.Rect.xy + Corner * Push.Rect.zw;
+    const float2 Unturned = Push.Rect.xy + Corner * Push.Rect.zw - Push.Rotation.zw;
+    const float2 Pixel = Push.Rotation.zw + float2(Unturned.x * Push.Rotation.x - Unturned.y * Push.Rotation.y, Unturned.x * Push.Rotation.y + Unturned.y * Push.Rotation.x);
 
     VertexOutput Output;
     Output.Position = float4(Pixel / Push.ScreenSize * 2.0 - 1.0, 0.0, 1.0);

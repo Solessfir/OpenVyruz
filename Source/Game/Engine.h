@@ -454,6 +454,8 @@ struct FObjectBody
     bool bVisibleWhenFiring = false;
     // Final-object (class +0x20 bit 0x20, only Final-PC): its death ends the game (FUN_0043db70).
     bool bFinalObject = false;
+    // Object flag 0x800000: ApplyDamage takes nothing, as the Final-PC's orbiting FX switch it.
+    bool bInvulnerable = false;
     // The class's Shield.Max and Shield-up-step (object +0xe4): EngineUpdateObjects adds the step to the shield on each update, up to the maximum.
     float ShieldMax = 0.f;
     float ShieldUpStep = 0.f;
@@ -683,6 +685,20 @@ struct FAmmoClass
     int32_t ActiveAfter = 0;
 };
 
+// A TYPE FX check-event: what keeps an orbiting FX on its host (FUN_0041c0b0), and what its on and off timers switch on the host (FUN_004452c0).
+enum class EFxEvent : uint8_t
+{
+    None,
+    // bonus-invulnerability (0xc9): the host's object flag 0x800000.
+    Invulnerability,
+    // bonus-touch-and-destroy (0xcd): object flag 0x400000.
+    TouchAndDestroy,
+    // malus-banana (0xcf): Banana in effect on the host.
+    Banana,
+    // do-fx (0x10d): always, as on the scouts' stars.
+    Always,
+};
+
 // An FX class (fx.3dc) and the animation it plays.
 struct FEffectClass
 {
@@ -697,6 +713,21 @@ struct FEffectClass
     bool bLoop = false;
     // FX stretch-ratio; ObjectDraw at 00431ae0 treats zero as no stretch.
     float Stretch = 1.f;
+    // The orbit of TYPE FX (attribute kind 0xf): Count copies, Phase apart, circle the host Ray away (circular) at Angular-speed radians a millisecond of game clock,
+    // and bob Vertical-amplitude at Vertical-pulsation; on-timeout and off-timeout switch the check-event on the host and off again.
+    int Count = 0;
+    bool bCircular = false;
+    float AngularSpeed = 0.f;
+    float Ray = 0.f;
+    float Phase = 0.f;
+    float VerticalAmplitude = 0.f;
+    float VerticalPulsation = 0.f;
+    float VerticalPhase = 0.f;
+    EFxEvent Event = EFxEvent::None;
+    int32_t OnTimeout = 0;
+    int32_t OffTimeout = 0;
+    int Altitude = 0;
+    std::vector<FCreateBlock> Creates;
 };
 
 // A map animation: FUN_00433930, at the end of LevelStartMapAnimations (0041f0b0), makes a decor object (category 4) for each slot of each .3DI cell whose descriptor is a loaded Anim one, column by column, and adds it to the cell's object list.
@@ -729,6 +760,22 @@ struct FEffect
     float Damage = 0.f;
     float Zone = 0.f;
     int32_t BlastTimer = 0;
+};
+
+// An FX object circling its host (FUN_0041c180 creates it, the FX part of ObjectUpdateWeapon at 00444ca0 moves it): a class's ADD FX, as on the Final-PC,
+// or what Touch-and-destroy, Invulnerability and Banana attach to the player.
+struct FOrbiter
+{
+    FEffect Effect;
+    // The host's object index; none for the player.
+    std::optional<size_t> Host;
+    float Phase = 0.f;
+    int32_t OnTimer = 0;
+    int32_t OffTimer = 0;
+    // Object flag 8: the host check failed while its class has an on-timeout, so it waits hidden for its next on time.
+    bool bHidden = false;
+    uint32_t Age = 0;
+    std::vector<std::optional<uint32_t>> NextCreates;
 };
 
 
@@ -806,6 +853,7 @@ struct FCombat
     std::vector<FTrail> Trails;
     std::vector<FEffectClass> EffectClasses;
     std::vector<FEffect> Effects;
+    std::vector<FOrbiter> Orbiters;
     std::vector<FDecorAnimation> DecorAnimations;
     FRandom Random;
     // Session +0x259c, the Misc stream of EngineCreateRandomStreams (0043c7a0), which EngineRunLevel seeds like the shared generator; the panel's weapon lights draw from it (RandomPushStream at 00428e20, RandomPopStream at 00428eb0).

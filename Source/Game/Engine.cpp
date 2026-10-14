@@ -853,7 +853,7 @@ void ApplyDamage(float& Energy, float& Shield, float Amount)
 
 void ApplyDamage(FObjectBody& Body, const float Amount)
 {
-    if (Body.bIndestructible)
+    if (Body.bIndestructible || Body.bInvulnerable)
     {
         return;
     }
@@ -2852,7 +2852,7 @@ constexpr std::string_view GroundImpactEffect = "bullet-ground-impact";
 constexpr int32_t BlastDelayMilliseconds = 500;
 
 // UpdateAnimation at 0045e7e0: each frame is held for its duration; a one-shot animation ends after its last frame.
-void AdvanceEffect(FEffect& Effect, const FEffectClass& Class, const uint32_t StepMilliseconds)
+void AdvanceEffect(FEffect& Effect, const FEffectClass& Class, const uint32_t StepMilliseconds, const bool bAlwaysLoop = false)
 {
     if (Effect.bFinished)
     {
@@ -2874,7 +2874,7 @@ void AdvanceEffect(FEffect& Effect, const FEffectClass& Class, const uint32_t St
         ++Effect.Frame;
         if (Effect.Frame > FrameCount)
         {
-            Effect.Frame = Class.bLoop ? Class.LoopStart : 0;
+            Effect.Frame = Class.bLoop || bAlwaysLoop ? std::max(Class.LoopStart, 1u) : 0;
         }
 
         if (Effect.Frame == 0 || Effect.Frame > FrameCount)
@@ -2911,6 +2911,44 @@ void SpawnEffect(FCombat& Combat, const std::string_view ClassName, const FColli
     // ObjectInitialize shows the first frame straight away.
     AdvanceEffect(Effect, *Class, 0);
     Combat.Effects.push_back(Effect);
+}
+
+// FUN_0041c180: each class in turn, from the last named, makes Count FX objects at the host, Phase spread over a full turn from the last copy back,
+// at the class's altitude plus the host's.
+void AttachOrbiters(FCombat& Combat, const std::optional<size_t> Host, const FCollisionPoint HostPosition, const float HostAltitude, const std::span<const std::string_view> ClassNames)
+{
+    constexpr float FullTurn = 6.2831855f;
+    for (const std::string_view Name : std::views::reverse(ClassNames))
+    {
+        const auto Class = std::ranges::find(Combat.EffectClasses, Name, &FEffectClass::Name);
+        if (Class == Combat.EffectClasses.end() || Class->Count <= 0)
+        {
+            continue;
+        }
+
+        const float Spacing = float(double(FullTurn) / double(float(Class->Count)));
+        for (int Copy = Class->Count - 1; Copy >= 0; --Copy)
+        {
+            FOrbiter Orbiter{
+                .Effect = {
+                    .ClassIndex = size_t(Class - Combat.EffectClasses.begin()),
+                    .Position = HostPosition,
+                    .Altitude = float(Class->Altitude + int(HostAltitude)),
+                },
+                .Host = Host,
+                .Phase = float(double(Copy) * double(Spacing) + double(Class->Phase)),
+                .OnTimer = Class->OnTimeout,
+                .OffTimer = Class->OffTimeout,
+            };
+            for (const FCreateBlock& Create : Class->Creates)
+            {
+                Orbiter.NextCreates.push_back(Create.Delay);
+            }
+
+            AdvanceEffect(Orbiter.Effect, *Class, 0, true);
+            Combat.Orbiters.push_back(std::move(Orbiter));
+        }
+    }
 }
 
 // Kinds whose destruction pays the class Reward (mask 0x1ffc0 in EngineUpdateObjects at 004406e0).
@@ -3133,6 +3171,39 @@ std::expected<void, std::string> LoadEffect(FCombat& Combat, const FLevel& Level
     if (const float Stretch = ClassNumber(*Effect, "Stretch-ratio"); Stretch != 0.f)
     {
         EffectClass.Stretch = Stretch;
+    }
+
+    constexpr std::array<std::pair<std::string_view, EFxEvent>, 4> Events = { {
+        { "bonus-invulnerability", EFxEvent::Invulnerability },
+        { "bonus-touch-and-destroy", EFxEvent::TouchAndDestroy },
+        { "malus-banana", EFxEvent::Banana },
+        { "do-fx", EFxEvent::Always },
+    } };
+    const std::string EventName = ToLowerName(Effect->Find("Check-event"));
+    const auto Event = std::ranges::find(Events, EventName, &std::pair<std::string_view, EFxEvent>::first);
+    EffectClass.Count = int(ClassNumber(*Effect, "Count"));
+    EffectClass.bCircular = ClassNumber(*Effect, "Circular") != 0.f;
+    EffectClass.AngularSpeed = ClassNumber(*Effect, "Angular-speed");
+    EffectClass.Ray = ClassNumber(*Effect, "Ray");
+    EffectClass.Phase = ClassNumber(*Effect, "Phase");
+    EffectClass.VerticalAmplitude = ClassNumber(*Effect, "Vertical-amplitude");
+    EffectClass.VerticalPulsation = ClassNumber(*Effect, "Vertical-pulsation");
+    EffectClass.VerticalPhase = ClassNumber(*Effect, "Vertical-phase");
+    EffectClass.Event = Event != Events.end() ? Event->second : EFxEvent::None;
+    EffectClass.OnTimeout = int32_t(ClassNumber(*Effect, "On-timeout"));
+    EffectClass.OffTimeout = int32_t(ClassNumber(*Effect, "Off-timeout"));
+    EffectClass.Altitude = int(ClassNumber(*Class, "Altitude"));
+    for (const FLevelPropertyBlock& Child : Class->Children)
+    {
+        if (Child.Kind == "CREATE")
+        {
+            EffectClass.Creates.push_back({
+                .Name = ToLowerName(Child.Find("Name")),
+                .Offset = ParsePair(Child.Find("Offset")).value_or(FCollisionPoint{}),
+                .Delay = uint32_t(ClassNumber(Child, "Delay")),
+                .Repeat = uint32_t(ClassNumber(Child, "Repeat-timeout")),
+            });
+        }
     }
 
     Combat.EffectClasses.push_back(std::move(EffectClass));
@@ -3709,7 +3780,7 @@ std::expected<void, std::string> ArmSeeker(FCombat& Combat, const FLevel& Level,
 
 namespace
 {
-// surprise::FUN_0041c390: what a surprise does when it starts, unless another is in effect. ponytail: the orbiting FX that Touch-and-destroy, Invulnerability and Banana attach and Time Warp's trails are not ported.
+// surprise::FUN_0041c390: what a surprise does when it starts, unless another is in effect.
 void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
     const ESurprise Type)
 {
@@ -3719,6 +3790,15 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
         return;
     }
 
+    // FUN_0041c340 attaches the orbiting FX of the tables at 0050d628, 0050d62c and 0050d638 to the player.
+    const std::optional<size_t> PlayerFound = FindPlayerObject(Level);
+    const float PlayerAltitude = PlayerFound ? Level.Objects[*PlayerFound].Altitude : 0.f;
+    const auto Attach = [&](const std::span<const std::string_view> Names) { AttachOrbiters(Combat, std::nullopt, Player.Position, PlayerAltitude, Names); };
+    constexpr std::array<std::string_view, 1> BananaFx = { "no-inertia-control-fx-1" };
+    constexpr std::array<std::string_view, 3> TouchAndDestroyFx = { "touch-and-destroy-fx-1", "touch-and-destroy-fx-2", "touch-and-destroy-fx-3" };
+    constexpr std::array<std::string_view, 5> InvulnerabilityFx = {
+        "invulnerability-fx-1", "invulnerability-fx-2", "invulnerability-fx-3", "invulnerability-fx-4", "invulnerability-fx-5",
+    };
     switch (Type)
     {
     case ESurprise::ReverseCommands:
@@ -3780,6 +3860,7 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
     }
     case ESurprise::Banana:
     {
+        Attach(BananaFx);
         // Friction 0.999 (0x3f7fbe77) and grip 1; the end gives the friction back but not the grip.
         constexpr float BananaFriction = 0.999f;
         State.Friction = Class.Friction;
@@ -3833,13 +3914,19 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
 
         break;
     case ESurprise::Invulnerability:
-        State.bInvulnerable = true;
+        if (!State.bInvulnerable)
+        {
+            State.bInvulnerable = true;
+            Attach(InvulnerabilityFx);
+        }
+
         break;
     case ESurprise::TripleFire:
         State.bTripleFire = true;
         break;
     case ESurprise::TouchAndDestroy:
         Player.bTouchAndDestroy = true;
+        Attach(TouchAndDestroyFx);
         break;
     case ESurprise::TimeWarp:
     {
@@ -4486,6 +4573,32 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
     }
 
     EffectNames.insert(EffectNames.end(), ProductEffects.begin(), ProductEffects.end());
+    // The orbiting FX: the surprises' (FUN_0041c340's tables) and each object's ADD FX.
+    for (const std::string_view Name : { "no-inertia-control-fx-1", "touch-and-destroy-fx-1", "touch-and-destroy-fx-2", "touch-and-destroy-fx-3", "invulnerability-fx-1",
+             "invulnerability-fx-2", "invulnerability-fx-3", "invulnerability-fx-4", "invulnerability-fx-5" })
+    {
+        EffectNames.emplace_back(Name);
+    }
+
+    std::vector<std::pair<const FObjectBody*, std::vector<std::string>>> AddedFx;
+    for (const FObjectBody& Body : Bodies)
+    {
+        std::vector<std::string> Names;
+        for (const FLevelPropertyBlock& Child : Level.Objects[Body.ObjectIndex].Properties.Children)
+        {
+            if (Child.Kind == "ADD" && Child.Name == "FX")
+            {
+                Names.push_back(ToLowerName(Child.Find("Name")));
+                EffectNames.push_back(Names.back());
+            }
+        }
+
+        if (!Names.empty())
+        {
+            AddedFx.emplace_back(&Body, std::move(Names));
+        }
+    }
+
     // A trap surprise sets off an Explosion FX.
     EffectNames.push_back("explosion");
     if (const std::optional<std::vector<uint8_t>> File = Archive.Read("common\\data\\object\\item\\surprise.gaf"))
@@ -4501,6 +4614,13 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
         {
             return std::unexpected(Result.error());
         }
+    }
+
+    // CreateObject (00413800) attaches each ADD FX of the class as the object is made.
+    for (const auto& [Body, Names] : AddedFx)
+    {
+        const std::vector<std::string_view> Views(Names.begin(), Names.end());
+        AttachOrbiters(Combat, Body->ObjectIndex, Body->State.Position, Body->Altitude, Views);
     }
 
     return Combat;
@@ -5909,9 +6029,145 @@ bool HuntsPlayer(const FObjectBody& Body)
 }
 }
 
+namespace
+{
+// The FX part of ObjectUpdateWeapon (00444ca0) for each orbiter. Its on and off timers switch the check-event on the host (FUN_004452c0) and take turns;
+// it goes once its host is gone or the check-event no longer holds (FUN_0041c0b0), or waits hidden for its next on time when its class has one.
+// A circular one stands Ray away from the host at clock * Angular-speed + Phase, through the collision-to-world scales, and bobs with the host's altitude.
+// ponytail: Only-when-visible (FX flag 4) is not traced; no reader of it was found.
+void StepOrbiters(FCombat& Combat, const FLevel& Level, const std::span<FObjectBody> Bodies, const FPlayerTarget& Player, const uint32_t StepMilliseconds)
+{
+    const int32_t Step = int32_t(StepMilliseconds);
+    std::erase_if(Combat.Orbiters, [&](FOrbiter& Orbiter)
+    {
+        const FEffectClass& Class = Combat.EffectClasses[Orbiter.Effect.ClassIndex];
+        FObjectBody* const HostBody = Orbiter.Host ? [&]() -> FObjectBody*
+        {
+            const auto Found = std::ranges::find(Bodies, *Orbiter.Host, &FObjectBody::ObjectIndex);
+            return Found != Bodies.end() && !Level.Objects[*Orbiter.Host].bRemoved ? &*Found : nullptr;
+        }()
+                                                   : nullptr;
+        if (Orbiter.Host && !HostBody)
+        {
+            return true;
+        }
+
+        const auto Switch = [&](const bool bOn)
+        {
+            if (HostBody && Class.Event == EFxEvent::Invulnerability)
+            {
+                HostBody->bInvulnerable = bOn;
+            }
+        };
+        if (0 < Orbiter.OnTimer)
+        {
+            Switch(true);
+            if ((Orbiter.OnTimer -= Step) <= 0)
+            {
+                Orbiter.OffTimer = Class.OffTimeout;
+                Switch(false);
+            }
+        }
+        else if (0 < Orbiter.OffTimer)
+        {
+            Switch(false);
+            if ((Orbiter.OffTimer -= Step) <= 0)
+            {
+                Orbiter.OnTimer = Class.OnTimeout;
+                Orbiter.bHidden = false;
+                Switch(true);
+            }
+        }
+
+        const FSurpriseState& Surprises = Player.Inventory.Surprises;
+        bool bHolds = false;
+        switch (Class.Event)
+        {
+        case EFxEvent::Invulnerability:
+            bHolds = HostBody ? HostBody->bInvulnerable : Surprises.bInvulnerable;
+            break;
+        case EFxEvent::TouchAndDestroy:
+            bHolds = !HostBody && Player.State.bTouchAndDestroy;
+            break;
+        case EFxEvent::Banana:
+            bHolds = !HostBody && Surprises.Active == ESurprise::Banana;
+            break;
+        case EFxEvent::Always:
+            bHolds = true;
+            break;
+        default:
+            break;
+        }
+
+        if (!bHolds)
+        {
+            if (Class.OnTimeout == 0)
+            {
+                return true;
+            }
+
+            Orbiter.bHidden = true;
+            return false;
+        }
+
+        AdvanceEffect(Orbiter.Effect, Class, StepMilliseconds, true);
+        Orbiter.Age += StepMilliseconds;
+        for (size_t Index = 0; Index < Class.Creates.size() && Index < Orbiter.NextCreates.size(); ++Index)
+        {
+            std::optional<uint32_t>& Next = Orbiter.NextCreates[Index];
+            const FCreateBlock& Create = Class.Creates[Index];
+            if (!Next || Orbiter.Age < *Next)
+            {
+                continue;
+            }
+
+            const FLevelPropertyBlock* const TrailClass = FindClass(Level, Create.Name);
+            Combat.Trails.push_back({
+                .ClassName = Create.Name,
+                .Position = { .X = Orbiter.Effect.Position.X + Create.Offset.X, .Y = Orbiter.Effect.Position.Y + Create.Offset.Y },
+                .Altitude = Orbiter.Effect.Altitude,
+                .LifeTime = TrailClass ? uint32_t(ClassNumber(*TrailClass, "Life-Time")) : 0,
+            });
+            Next = Create.Repeat != 0 ? std::optional(*Next + Create.Repeat) : std::nullopt;
+        }
+
+        if (!Class.bCircular)
+        {
+            return false;
+        }
+
+        const FCollisionPoint HostPosition = HostBody ? HostBody->State.Position : Player.State.Position;
+        const int HostAltitude = int(HostBody ? HostBody->Altitude : Level.Objects[Player.ObjectIndex].Altitude);
+        const double Clock = double(Combat.Clock);
+        const double Angle = Clock * double(Class.AngularSpeed) + double(Orbiter.Phase);
+        const float Sine = float(std::sin(Angle) * double(Class.Ray));
+        const double Cosine = std::cos(Angle) * double(Class.Ray);
+        constexpr double WorldXScale = double(0.8944272f);
+        constexpr double WorldYScale = double(0.4472136f);
+        const float OffsetX = float((double(Sine) - Cosine) * WorldXScale);
+        const double OffsetY = (Cosine + double(Sine)) * WorldYScale;
+        if (Class.VerticalAmplitude != 0.f)
+        {
+            const double Bob = std::sin(double(float(Clock)) * double(Class.VerticalPulsation) + double(Class.VerticalPhase)) * double(Class.VerticalAmplitude);
+            Orbiter.Effect.Altitude = float(int(Bob + double(HostAltitude)));
+        }
+
+        // An orbit that would leave the level keeps its last place.
+        const FCollisionPoint Next{ .X = float(double(OffsetX) + double(HostPosition.X)), .Y = float(OffsetY + double(HostPosition.Y)) };
+        if (0.f <= Next.X && Next.X < float(Level.WorldExtentX) && 0.f <= Next.Y && Next.Y < float(Level.WorldExtentY))
+        {
+            Orbiter.Effect.Position = Next;
+        }
+
+        return false;
+    });
+}
+}
+
 void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
     const FPlayerTarget& Player, FMessages& Messages)
 {
+    StepOrbiters(Combat, Level, Bodies, Player, StepMilliseconds);
     const float TimeScale = float(ReferenceStepMilliseconds / double(StepMilliseconds));
     constexpr FPlayerCommand Straight{ .Thrust = EPlayerThrust::Forward };
     // The trails age first, so the ones made this step start at zero.
@@ -6880,8 +7136,97 @@ std::expected<std::string, std::string> VerifyFireSurprises(FResourceArchive& Ar
         return std::unexpected(std::format("Touch-and-destroy left {} with {} energy", Level->Objects[Target->ObjectIndex].ClassName, Target->Energy));
     }
 
-    return std::format("Triple Fire put out {} shots for a round, Circular Fire turned the player through {} volleys, Touch-and-destroy emptied a {}", TripleShots, CircularVolleys,
-        Level->Objects[Target->ObjectIndex].ClassName);
+    // Started as a surprise it puts fifteen stars round the player, which go with it.
+    FMovementClass PlayerClass = *Class;
+    Player.bTouchAndDestroy = false;
+    const size_t OrbitersBefore = Combat->Orbiters.size();
+    StartSurprise(*Combat, *Level, Bodies, Player, PlayerClass, Inventory, ESurprise::TouchAndDestroy);
+    const size_t Stars = Combat->Orbiters.size() - OrbitersBefore;
+    const FPlayerTarget Target2{ .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = *PlayerIndex };
+    StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Target2, Messages);
+    const size_t StarsHeld = size_t(std::ranges::count_if(Combat->Orbiters, [](const FOrbiter& Orbiter) { return !Orbiter.Host; }));
+    EndSurprise(Inventory.Surprises, ESurprise::TouchAndDestroy, Player, PlayerClass, Inventory);
+    StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Target2, Messages);
+    const size_t StarsLeft = size_t(std::ranges::count_if(Combat->Orbiters, [](const FOrbiter& Orbiter) { return !Orbiter.Host; }));
+    if (Stars != 15 || StarsHeld != Stars || StarsLeft != 0)
+    {
+        return std::unexpected(std::format("Touch-and-destroy put {} stars round the player, kept {} and left {}", Stars, StarsHeld, StarsLeft));
+    }
+
+    return std::format("Triple Fire put out {} shots for a round, Circular Fire turned the player through {} volleys, Touch-and-destroy emptied a {} and circled the player with {} stars",
+        TripleShots, CircularVolleys, Level->Objects[Target->ObjectIndex].ClassName, Stars);
+}
+}
+
+namespace
+{
+// CPU\T3P2's Final-PC carries five ADD FX of three orbiters each, whose timers keep it invulnerable for 10 seconds and then open it for 2, hiding them.
+std::expected<std::string, std::string> VerifyOrbiters(FResourceArchive& Archive)
+{
+    constexpr uint32_t StepMilliseconds = 14;
+    FMessages Messages;
+    std::expected<FLevel, std::string> Level = LoadLevel(Archive, "cpu\\t3p2");
+    const std::optional<size_t> PlayerIndex = Level ? FindPlayerObject(*Level) : std::nullopt;
+    if (!PlayerIndex)
+    {
+        return std::unexpected(Level ? std::string("no player") : Level.error());
+    }
+
+    std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+    const std::expected<FTerrainCollision, std::string> Terrain = BuildTerrainCollision(*Level);
+    std::expected<FCombat, std::string> Combat = CreateCombat(*Level, Level->Objects[*PlayerIndex], Archive, Bodies);
+    const std::expected<FMovementClass, std::string> Class = ReadMovementClass(Level->Objects[*PlayerIndex]);
+    if (!Terrain || !Combat || !Class)
+    {
+        return std::unexpected(!Terrain ? Terrain.error() : !Combat ? Combat.error() : Class.error());
+    }
+
+    const auto Final = std::ranges::find_if(Bodies, [](const FObjectBody& Body) { return Body.bFinalObject; });
+    const size_t FinalIndex = Final != Bodies.end() ? Final->ObjectIndex : SIZE_MAX;
+    const auto OnFinal = [&](const FOrbiter& Orbiter) { return Orbiter.Host == FinalIndex; };
+    const size_t Orbiters = size_t(std::ranges::count_if(Combat->Orbiters, OnFinal));
+    if (Final == Bodies.end() || Orbiters != 15)
+    {
+        return std::unexpected(std::format("the Final-PC has {} orbiters", Orbiters));
+    }
+
+    FPlayerInventory Inventory = CreateInventory(Level->Objects[*PlayerIndex]);
+    // The player waits far away, out of every fight.
+    FPlayerState Player = SpawnPlayer(Level->Objects[*PlayerIndex], *Class);
+    uint32_t OpenedAt = 0;
+    uint32_t ClosedAt = 0;
+    bool bHiddenWhileOpen = false;
+    constexpr uint32_t Duration = 13000;
+    for (uint32_t Time = StepMilliseconds; Time <= Duration; Time += StepMilliseconds)
+    {
+        Combat->Clock += StepMilliseconds;
+        StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = *PlayerIndex },
+            Messages);
+        const auto Host = std::ranges::find(Bodies, FinalIndex, &FObjectBody::ObjectIndex);
+        if (Host == Bodies.end())
+        {
+            return std::unexpected("the Final-PC was destroyed");
+        }
+
+        if (OpenedAt == 0 && !Host->bInvulnerable)
+        {
+            OpenedAt = Time;
+            bHiddenWhileOpen = std::ranges::all_of(Combat->Orbiters | std::views::filter(OnFinal), &FOrbiter::bHidden);
+        }
+        else if (OpenedAt != 0 && ClosedAt == 0 && Host->bInvulnerable)
+        {
+            ClosedAt = Time;
+        }
+    }
+
+    constexpr uint32_t OnTime = 10000;
+    constexpr uint32_t OffTime = 2000;
+    if (OpenedAt < OnTime || OpenedAt > OnTime + StepMilliseconds || ClosedAt < OpenedAt + OffTime || ClosedAt > OpenedAt + OffTime + StepMilliseconds || !bHiddenWhileOpen)
+    {
+        return std::unexpected(std::format("the Final-PC opened at {} ms, hid its orbiters {}, and closed at {} ms", OpenedAt, bHiddenWhileOpen, ClosedAt));
+    }
+
+    return std::format("the Final-PC's {} orbiters open it at {} ms and close it at {} ms, {} orbiters in all", Orbiters, OpenedAt, ClosedAt, Combat->Orbiters.size());
 }
 }
 
@@ -7285,10 +7630,16 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         return std::unexpected(std::format("Surprises: {}", FireSurprises.error()));
     }
 
+    const std::expected<std::string, std::string> OrbitCheck = VerifyOrbiters(Archive);
+    if (!OrbitCheck)
+    {
+        return std::unexpected(std::format("Orbiters: {}", OrbitCheck.error()));
+    }
+
     return std::format("{} levels, {} player shots, {} turret shots while spinning, {} grenades bounced, {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; "
-        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth; {}; {}",
+        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth; {}; {}; {}",
         Levels, Shots, TurretShots, GrenadeBounces, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators,
-        *Mines, *FireSurprises);
+        *Mines, *FireSurprises, *OrbitCheck);
 }
 
 FDifficultyTable LoadDifficulties(const std::string_view Text)
