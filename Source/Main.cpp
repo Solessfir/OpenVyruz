@@ -5133,15 +5133,15 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     bool bBackwardKey = ActionDown(EAction::Backward);
                     // Moving the mouse hands the steering to the sight and a turn key hands it back; a demo steers by its records.
                     const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window);
-                    if (LastMouse && Mouse != *LastMouse && !Demo)
+                    // With the absolute direction the keys alone steer, so the mouse neither turns the ship nor shows the sight.
+                    if (LastMouse && Mouse != *LastMouse && !Demo && !Settings.bAbsolute)
                     {
                         bMouseSteers = true;
                         MouseMovedAt = ClockMilliseconds();
                     }
 
                     LastMouse = Mouse;
-                    // With the absolute command every movement key gives a direction, so each of them takes the steering back.
-                    if ((ActionDown(EAction::Left) && !bSideLeft) || (ActionDown(EAction::Right) && !bSideRight) || (Settings.bAbsolute && (bForwardKey || bBackwardKey)) || Demo)
+                    if ((ActionDown(EAction::Left) && !bSideLeft) || (ActionDown(EAction::Right) && !bSideRight) || Settings.bAbsolute || Demo)
                     {
                         bMouseSteers = false;
                     }
