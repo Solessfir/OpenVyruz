@@ -737,6 +737,49 @@ uint32_t AbsoluteKeyInput(const FPlayerState& Player, const FCollisionPoint Scre
     return (Ahead < HalfTurn ? PlayerInputTurnLeft : PlayerInputTurnRight) | Thrust;
 }
 
+uint32_t StickMoveInput(const FPlayerState& Player, const FCollisionPoint ScreenVector)
+{
+    const int Target = FindDirection(CollisionFromWorld(ScreenVector));
+    const int Current = Player.Direction;
+    if (Target == NoDirection || Current == NoDirection)
+    {
+        return 0;
+    }
+
+    // A stick held between two directions would make the ship twitch between them, so the facing's neighbours count as on course.
+    constexpr int OnCourse = 1;
+    const int Ahead = Wrap(Target - Current);
+    const int Off = std::min(Ahead, DirectionCount - Ahead);
+    if (Off <= OnCourse)
+    {
+        return PlayerInputForward;
+    }
+
+    // The ship turns the short way round, straight back included, and thrusts only while the target lies within a quarter turn, so it never backs off facing away.
+    constexpr int HalfTurn = DirectionCount / 2;
+    constexpr int QuarterTurn = DirectionCount / 4;
+    return (Ahead <= HalfTurn ? PlayerInputTurnLeft : PlayerInputTurnRight) | (Off < QuarterTurn ? PlayerInputForward : 0);
+}
+
+uint32_t FacingMoveInput(const FPlayerState& Player, const FCollisionPoint ScreenVector)
+{
+    const FCollisionPoint Facing = WorldFacingVector(Player.Direction);
+    const float FacingLength = std::hypot(Facing.X, Facing.Y);
+    const float Length = std::hypot(ScreenVector.X, ScreenVector.Y);
+    if (FacingLength == 0.f || Length == 0.f)
+    {
+        return 0;
+    }
+
+    // Along the facing and to its right on screen (y down), each as a share of the stick's push; within an eighth of a turn of an axis counts for it.
+    constexpr float AxisShare = 0.383f;
+    const float Ahead = (ScreenVector.X * Facing.X + ScreenVector.Y * Facing.Y) / (Length * FacingLength);
+    const float Right = (ScreenVector.Y * Facing.X - ScreenVector.X * Facing.Y) / (Length * FacingLength);
+    uint32_t Input = Ahead > AxisShare ? PlayerInputForward : Ahead < -AxisShare ? PlayerInputBackward : 0;
+    Input |= Right > AxisShare ? PlayerInputStrafeRight : Right < -AxisShare ? PlayerInputStrafeLeft : 0;
+    return Input;
+}
+
 FPlayerCommand PlayerCommandFromInput(const uint32_t InputBits)
 {
     const auto Has = [InputBits](const uint32_t Bit) { return (InputBits & Bit) != 0; };
@@ -4978,6 +5021,26 @@ size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inven
     return Current;
 }
 
+size_t PreviousPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inventory)
+{
+    const size_t Current = Combat.PlayerSlot;
+    if (Current == 0 || Current > WeaponSlotCount)
+    {
+        return Current;
+    }
+
+    for (size_t Slot = (Current + WeaponSlotCount - 2) % WeaponSlotCount + 1; Slot != Current; Slot = (Slot + WeaponSlotCount - 2) % WeaponSlotCount + 1)
+    {
+        const FAmmoStock* const Stock = SlotAmmo(Combat, Slot, Inventory);
+        if (Stock && Stock->Count >= 1.f)
+        {
+            return Slot;
+        }
+    }
+
+    return Current;
+}
+
 const FAmmoStock* PlayerSlotAmmo(const FCombat& Combat, const FPlayerInventory& Inventory)
 {
     return SlotAmmo(Combat, Combat.PlayerSlot, Inventory);
@@ -6316,6 +6379,11 @@ bool HuntsPlayer(const FObjectBody& Body)
 {
     return Body.Turret || (Body.Actor && Body.Actor->Seeker) || (Body.Generator && Body.Generator->bProductHunts);
 }
+}
+
+bool IsAutoAimTarget(const FObjectBody& Body, const FLevel& Level)
+{
+    return HuntsPlayer(Body) && 0.f < Body.Energy && !Body.bInvisible && !Level.Objects[Body.ObjectIndex].bRemoved && !Level.Objects[Body.ObjectIndex].bWrecked;
 }
 
 namespace

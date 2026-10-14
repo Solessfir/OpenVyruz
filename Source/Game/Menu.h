@@ -123,6 +123,8 @@ public:
     const std::vector<Gaf::FFrame>& GetBitmaps(EHudSheet Sheet) const;
     // The Russian data's v-menu.gaf draws Windows-1251 Cyrillic; the English data's fonts have no glyphs there, so its Russian texts would print blank.
     bool HasCyrillic() const;
+    // The pad's start in a menu: the start item under the hidden pointer, as the arrow keys leave it, so it shows highlighted at once.
+    static void FocusStartItem(const FMenu& Menu, FMenuState& State);
 
 private:
     // Returns the cursor's X after the text.

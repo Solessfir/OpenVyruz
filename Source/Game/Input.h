@@ -6,6 +6,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 struct GLFWwindow;
 
@@ -108,6 +109,38 @@ std::string_view DeviceKeyword(EInputDevice Device);
 // WatchMouseWheel counts its notches; StepMouseWheel, once per event poll, reads one notch as down for that poll.
 void WatchMouseWheel(GLFWwindow* Window);
 void StepMouseWheel();
+// An Xbox-style pad through GLFW's gamepad mappings: the first joystick GLFW knows as a gamepad. The original's joypad device is not ported; the pad has a fixed modern layout instead.
+// StepGamepad reads it once per event poll; Back and Start act on a tap when released and on a hold once held long enough.
+void StepGamepad(uint32_t NowMilliseconds);
+// Whether the pad was touched since the last call, which hands the steering to it.
+bool TakeGamepadActivity();
+// Whether the pad, rather than the mouse, was used last, so a menu starts on its first item; moving the mouse clears it.
+bool IsGamepadLastUsed();
+void NoteMouseUsed();
+// The pad's part of an action: A or the right trigger fire, RB the next weapon, Y the inventory, B the map, Back taps the panels and holds their help,
+// Start taps the game menu and holds the help. The movement actions are not buttons on the pad.
+bool IsGamepadActionDown(EAction Action);
+// LB, the previous weapon, which the original's actions lack.
+bool IsGamepadPreviousWeaponDown();
+// The D-pad's strafe: -1 left, 1 right, 0 neither.
+int GamepadStrafe();
+// The left stick past its dead zone, x right and y down, each from -1 to 1.
+std::optional<std::pair<float, float>> GamepadMoveStick();
+// The right stick's direction for the one poll in which it is flicked out past most of its travel, to switch the aim's target.
+std::optional<std::pair<float, float>> GamepadAimFlick();
+// The menus' reading of the pad: the D-pad or the left stick, up and down for the poll they are pressed in and left and right while held (the sliders), A to choose and B to go back.
+struct FGamepadMenuInput
+{
+    bool bUp = false;
+    bool bDown = false;
+    bool bLeftHeld = false;
+    bool bRightHeld = false;
+    bool bAccept = false;
+    bool bBack = false;
+};
+FGamepadMenuInput GamepadMenuInput();
+// Whether A, B or Start is down, which the screens that wait for any key take as one.
+bool IsGamepadConfirmDown();
 // Whether a code is down now; joypad codes never are.
 bool IsCodeDown(GLFWwindow* Window, uint32_t Code);
 // InputActionDown at 0041d650: the action's modifier, if any, and its code are down.

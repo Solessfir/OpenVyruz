@@ -43,6 +43,24 @@ The mouse's default bindings (`DAT_00509368`) fire with the left button (0x103),
 
 With the keyboard and the absolute command (Control's `Direction : ABSOLUTE`), `InputReadDirection` makes a screen vector of the movement keys (Left and Right for x, Forward and Backward for y), turns it into a direction the same way, and `DirectionTurnCommand` (with its backward flag) gives the command: the player's own direction (or none) thrusts forward, twelve nodes away backs off, and otherwise the player only turns toward it, so a new direction first stops it. The port (`AbsoluteKeyInput`) deliberately thrusts while it turns: forward while the target lies within a quarter turn of the facing, backward beyond, and neither at exactly a quarter turn, so the ship keeps moving the target's way; the target straight behind still backs off without turning. Without the absolute command the actions drive as they are, Left and Right turning.
 
+## Gamepad
+
+The original's joypad device is not ported. The port reads an Xbox-style pad through GLFW's gamepad mappings (`StepGamepad` in `Source/Game/Input`) with a fixed layout of its own, a deliberate addition:
+
+| Input | Action |
+|---|---|
+| Left stick | Heads the ship that way (`StickMoveInput`) |
+| A or right trigger | Fire |
+| LB / RB | Previous / next weapon |
+| Y | Inventory |
+| B | Map |
+| Back, tap / hold | Panel cycle / panel help |
+| Start, tap / hold | Game menu / help |
+| D-pad left / right | Strafe |
+| Right stick flick | Switches the aim's target |
+
+A hold acts once Back or Start has been down half a second; a tap acts as it comes up. The left stick's dead zone is half its travel. It heads the ship its own way rather than the absolute keys' way: the facing's neighbouring directions count as on course, so a stick held between two does not twitch; otherwise the ship turns the short way round, straight back included, and thrusts only while the target lies within a quarter turn, so it never backs off facing away. While the pad fires, the ship turns toward the nearest object that hunts the player (`IsAutoAimTarget`: alive, visible, not a wreck) in the view and in clear sight of the terrain, and keeps that target while it stays so; a right stick flick switches to the target closest to the flick's way. The left stick still moves by screen direction: facing a target its way is split into thrust and strafe along the ship (`FacingMoveInput`, each within an eighth of a turn of its axis), and the aim keeps turning while the ship strafes. With no target the stick heads the ship as when not firing (`StickMoveInput`), at twice the turn time, to sweep the fire across crates and barrels. The D-pad strafes, firing or not. Firing also drops the ship to the low speed's Speed-max, a third of the class's, without the low speed's slower turning. Touching the pad hands it the steering and hides the sight; a movement key or the mouse hands it back. In the menus the D-pad or the left stick moves, A chooses and B goes back; after the pad a menu opens with its start item highlighted, as the arrow keys leave it, until the mouse moves; and the screens that wait for any key take A, B or Start.
+
 ## Verification against DEMO.3DR
 
 `--verify-game` replays `CAVE\DEMO.3DR`. The recording came from a development build: its records are taken with the 10 ms demo step cap, its timestamps are clock readings at each step start, and its `Friction-threshold` was 0.001 (the line commented out in the shipped `OBJECT.3DC`). Rebuilding each step's state from the recording, 26454 of 32282 steps match within 0.001 px and 30156 within 0.5 px. The remainder come from object collisions, which are not modelled yet, and from step lengths that the 1 ms timestamps can only place to within a millisecond.

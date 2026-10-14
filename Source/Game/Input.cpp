@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <ranges>
+#include <utility>
 
 namespace
 {
@@ -402,6 +404,189 @@ std::string_view ActionKeyword(const size_t Action)
 std::string_view DeviceKeyword(const EInputDevice Device)
 {
     return Device == EInputDevice::Mouse ? "Mouse-Settings" : Device == EInputDevice::Joypad ? "Joypad-Settings" : "Keyboard-Settings";
+}
+
+namespace
+{
+// The pad as the last two polls read it, with the taps and holds of Back and Start, and the right stick's flick.
+struct FGamepad
+{
+    GLFWgamepadstate Now{};
+    GLFWgamepadstate Before{};
+    bool bConnected = false;
+    bool bActivity = false;
+    bool bLastUsed = false;
+    uint32_t BackDownAt = 0;
+    uint32_t StartDownAt = 0;
+    bool bBackHeldOut = false;
+    bool bStartHeldOut = false;
+    bool bBackTap = false;
+    bool bBackHold = false;
+    bool bStartTap = false;
+    bool bStartHold = false;
+    bool bFlickArmed = true;
+    std::optional<std::pair<float, float>> Flick;
+};
+
+FGamepad Pad;
+
+constexpr float StickDeadZone = 0.5f;
+constexpr float TriggerPressed = 0.5f;
+constexpr float FlickOut = 0.8f;
+constexpr float MenuStickOut = 0.6f;
+constexpr uint32_t HoldMilliseconds = 500;
+
+bool PadDown(const int Button)
+{
+    return Pad.Now.buttons[Button] == GLFW_PRESS;
+}
+
+bool PadPressed(const int Button)
+{
+    return Pad.Now.buttons[Button] == GLFW_PRESS && Pad.Before.buttons[Button] != GLFW_PRESS;
+}
+
+float StickLength(const float X, const float Y)
+{
+    return std::sqrt(X * X + Y * Y);
+}
+}
+
+void StepGamepad(const uint32_t NowMilliseconds)
+{
+    Pad.Before = Pad.Now;
+    Pad.bConnected = false;
+    for (int Joystick = GLFW_JOYSTICK_1; Joystick <= GLFW_JOYSTICK_LAST && !Pad.bConnected; ++Joystick)
+    {
+        Pad.bConnected = glfwJoystickIsGamepad(Joystick) == GLFW_TRUE && glfwGetGamepadState(Joystick, &Pad.Now) == GLFW_TRUE;
+    }
+
+    if (!Pad.bConnected)
+    {
+        Pad.Now = {};
+    }
+
+    // A tap acts as the button comes up; a hold acts once, as it passes the hold time.
+    const auto TapOrHold = [&](const int Button, uint32_t& DownAt, bool& bHeldOut, bool& bTap, bool& bHold)
+    {
+        bTap = false;
+        bHold = false;
+        const bool bWasDown = Pad.Before.buttons[Button] == GLFW_PRESS;
+        if (PadPressed(Button))
+        {
+            DownAt = NowMilliseconds;
+            bHeldOut = false;
+        }
+
+        if (PadDown(Button) && !bHeldOut && NowMilliseconds - DownAt >= HoldMilliseconds)
+        {
+            bHold = true;
+            bHeldOut = true;
+        }
+
+        bTap = !PadDown(Button) && bWasDown && !bHeldOut;
+    };
+    TapOrHold(GLFW_GAMEPAD_BUTTON_BACK, Pad.BackDownAt, Pad.bBackHeldOut, Pad.bBackTap, Pad.bBackHold);
+    TapOrHold(GLFW_GAMEPAD_BUTTON_START, Pad.StartDownAt, Pad.bStartHeldOut, Pad.bStartTap, Pad.bStartHold);
+
+    const float RightX = Pad.Now.axes[GLFW_GAMEPAD_AXIS_RIGHT_X];
+    const float RightY = Pad.Now.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y];
+    const float Right = StickLength(RightX, RightY);
+    Pad.Flick.reset();
+    if (Pad.bFlickArmed && Right >= FlickOut)
+    {
+        Pad.Flick = std::pair(RightX / Right, RightY / Right);
+        Pad.bFlickArmed = false;
+    }
+
+    Pad.bFlickArmed = Pad.bFlickArmed || Right < StickDeadZone;
+
+    bool bTouched = std::ranges::any_of(std::views::iota(0, GLFW_GAMEPAD_BUTTON_LAST + 1), [](const int Button) { return PadDown(Button); });
+    bTouched = bTouched || StickLength(Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_X], Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_Y]) >= StickDeadZone || Right >= StickDeadZone;
+    bTouched = bTouched || Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER] >= TriggerPressed || Pad.Now.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] >= TriggerPressed;
+    Pad.bActivity = Pad.bActivity || bTouched;
+    Pad.bLastUsed = Pad.bLastUsed || bTouched;
+}
+
+bool TakeGamepadActivity()
+{
+    return std::exchange(Pad.bActivity, false);
+}
+
+bool IsGamepadLastUsed()
+{
+    return Pad.bLastUsed;
+}
+
+void NoteMouseUsed()
+{
+    Pad.bLastUsed = false;
+}
+
+bool IsGamepadActionDown(const EAction Action)
+{
+    switch (Action)
+    {
+    case EAction::Fire:
+        return PadDown(GLFW_GAMEPAD_BUTTON_A) || Pad.Now.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] >= TriggerPressed;
+    case EAction::NextWeapon:
+        return PadDown(GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    case EAction::Inventory:
+        return PadDown(GLFW_GAMEPAD_BUTTON_Y);
+    case EAction::Map:
+        return PadDown(GLFW_GAMEPAD_BUTTON_B);
+    case EAction::CyclePanels:
+        return Pad.bBackTap;
+    case EAction::PanelHelp:
+        return Pad.bBackHold;
+    case EAction::Menu:
+        return Pad.bStartTap;
+    case EAction::Help:
+        return Pad.bStartHold;
+    default:
+        return false;
+    }
+}
+
+bool IsGamepadPreviousWeaponDown()
+{
+    return PadDown(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+}
+
+int GamepadStrafe()
+{
+    return int(PadDown(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT)) - int(PadDown(GLFW_GAMEPAD_BUTTON_DPAD_LEFT));
+}
+
+std::optional<std::pair<float, float>> GamepadMoveStick()
+{
+    const float X = Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
+    const float Y = Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
+    return StickLength(X, Y) >= StickDeadZone ? std::optional(std::pair(X, Y)) : std::nullopt;
+}
+
+std::optional<std::pair<float, float>> GamepadAimFlick()
+{
+    return Pad.Flick;
+}
+
+FGamepadMenuInput GamepadMenuInput()
+{
+    const auto StickCrossed = [](const int Axis, const float Sign)
+    { return Pad.Now.axes[Axis] * Sign >= MenuStickOut && Pad.Before.axes[Axis] * Sign < MenuStickOut; };
+    return {
+        .bUp = PadPressed(GLFW_GAMEPAD_BUTTON_DPAD_UP) || StickCrossed(GLFW_GAMEPAD_AXIS_LEFT_Y, -1.f),
+        .bDown = PadPressed(GLFW_GAMEPAD_BUTTON_DPAD_DOWN) || StickCrossed(GLFW_GAMEPAD_AXIS_LEFT_Y, 1.f),
+        .bLeftHeld = PadDown(GLFW_GAMEPAD_BUTTON_DPAD_LEFT) || Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_X] <= -MenuStickOut,
+        .bRightHeld = PadDown(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT) || Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_X] >= MenuStickOut,
+        .bAccept = PadPressed(GLFW_GAMEPAD_BUTTON_A),
+        .bBack = PadPressed(GLFW_GAMEPAD_BUTTON_B),
+    };
+}
+
+bool IsGamepadConfirmDown()
+{
+    return PadDown(GLFW_GAMEPAD_BUTTON_A) || PadDown(GLFW_GAMEPAD_BUTTON_B) || PadDown(GLFW_GAMEPAD_BUTTON_START);
 }
 
 void WatchMouseWheel(GLFWwindow* const Window)

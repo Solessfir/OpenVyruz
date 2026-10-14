@@ -154,6 +154,14 @@ bool FMenuArt::HasCyrillic() const
     return !Fonts.empty() && Fonts.front().Glyphs.size() >= CyrillicA && Fonts.front().Glyphs[CyrillicA - 1].Base.BitmapIndex != 0;
 }
 
+void FMenuArt::FocusStartItem(const FMenu& Menu, FMenuState& State)
+{
+    State.CursorX = (Menu.Right - Menu.Left) / 2 + Menu.Left;
+    State.CursorY = Menu.StepY * int32_t(Menu.StartItem) - Menu.StepY / 2 + Menu.Top;
+    State.KeyItem = Menu.StartItem;
+    bCursorShown = false;
+}
+
 FMenuState FMenuArt::Start(const FMenu& Menu) const
 {
     FMenuState State{

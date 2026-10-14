@@ -971,6 +971,10 @@ EPlayerTurn TurnTowardSight(const FPlayerState& Player, FCollisionPoint ScreenVe
 // InputReadDirection with the keyboard and the absolute command: the movement keys give a screen direction; facing it the player thrusts, facing straight away it backs off, otherwise it only turns toward it.
 // Returns PlayerInput bits.
 uint32_t AbsoluteKeyInput(const FPlayerState& Player, FCollisionPoint ScreenVector);
+// The pad's left stick heading the ship: the facing's neighbours count as on course, the ship turns the short way round and thrusts only within a quarter turn of the target.
+uint32_t StickMoveInput(const FPlayerState& Player, FCollisionPoint ScreenVector);
+// The pad's move while its aim holds the facing: the screen direction split into thrust and strafe along the ship, as PlayerInput bits.
+uint32_t FacingMoveInput(const FPlayerState& Player, FCollisionPoint ScreenVector);
 
 std::expected<FMovementClass, std::string> ReadMovementClass(const FLevelObject& Object);
 FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class);
@@ -985,6 +989,10 @@ void ActivateGenerators(const FLevel& Level, std::vector<FObjectBody>& Bodies, c
 std::vector<FPickup> CreatePickups(const FLevel& Level);
 // The 1-based slot "next weapon" moves to (FUN_004376a0): the first after the one in hand, wrapping after slot 9, whose ammo stock is not empty, or the one in hand when none is.
 size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inventory);
+// The pad's previous weapon, which the original lacks: the same search the other way round.
+size_t PreviousPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inventory);
+// What the pad's aim may lock onto: a live, visible object that hunts the player (ObjectHuntsPlayer at 004371b0), not yet a wreck.
+bool IsAutoAimTarget(const FObjectBody& Body, const FLevel& Level);
 // The player's death branch of EngineUpdateObjects (004406e0): ObjectDestroy keeps the player object but sets off its explosions.
 void ExplodePlayer(FCombat& Combat, FCollisionPoint Position, float Altitude);
 // FUN_00437740: takes the slot's weapon in hand and, with option flag 8, lists its weapon and ammo for 4 seconds.
