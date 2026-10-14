@@ -25,7 +25,7 @@ PgPoll's key codes index the key name table at `0x517a94`: 1 Escape, 14 Backspac
 
 - The item the mouse is over becomes the selected one (state `+0x0`), which stays when the mouse leaves; over a gap it becomes none. Only the item under the mouse prints in the highlighted font.
 - Escape and Backspace choose the default item (menu `+0x5c`); Space, Return and the left button the selected one.
-- Up and Down find the row under the cursor and take the one above or below; when that is the row the arrow keys last chose, or a gap, they search on in that direction for an item with text, wrapping around. The cursor then jumps to `(Right - Left + StepY) / 4 + Left`, a row's middle, and hides until the mouse moves.
+- Up and Down find the row under the cursor and take the one above or below; when that is the row the arrow keys last chose, or a gap, they search on in that direction for an item with text, wrapping around. The cursor then jumps to `(Right - Left + StepY) / 4 + Left`, a row's middle, and hides until the mouse moves. Whether it shows is one global (`DAT_005237a0`), not part of a menu's state, so a menu opened by a click shows the cursor at once. `RunMenu` moves the mouse to the starting item; the port never does, so a menu starts with whatever is under the pointer, and only the arrow keys move it to an item.
 - The idle timeout (menu `+0x54`, 30 seconds for the main menu) returns menu `+0x58`; the main menu's 10 plays `demo.3dr`.
 
 ## Main menu

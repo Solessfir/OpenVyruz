@@ -1356,7 +1356,7 @@ FMenuSheets CreateMenuSheets(FRenderer& Renderer, const FMenuArt& Art)
 }
 
 // RunMenu at 00421050: steps and draws a menu until an item is chosen, or nullopt when the window closes.
-// A menu shown again keeps the cursor where its last run left it (menu +0x20).
+// The original keeps where a menu's last run left the cursor (menu +0x20) to start it there again; the port starts at the pointer.
 // OnStep runs after each step and OnDraw after each frame's menu, as the menu's own function (menu +0x6c) does in both passes of MenuStep.
 std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, const FMenu& Menu, FRandom& Random,
     std::optional<std::pair<int32_t, int32_t>>& Cursor, const std::function<void(const FMenuState&)>& OnStep = {},
@@ -1365,13 +1365,10 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
     // RunMenu gives the gamma ramp the user's gamma back.
     Renderer.ResetGamma();
     FMenuState State = Art.Start(Menu);
-    if (Cursor)
-    {
-        State.CursorX = Cursor->first;
-        State.CursorY = Cursor->second;
-    }
-
-    SetScreenCursor(Window, State.CursorX, State.CursorY);
+    // RunMenu moves the mouse to the starting item; the port leaves the pointer where it is, and only the arrow keys move it to an item.
+    const std::pair<int32_t, int32_t> Pointer = ScreenCursor(Window);
+    State.CursorX = Pointer.first;
+    State.CursorY = Pointer.second;
     // PgPoll reports presses, so a key held from before the menu does nothing.
     // Escape and Backspace choose the default item, Space and Return the selected one, and the left button the one under the cursor.
     static constexpr std::array<int, 7> Keys = { GLFW_KEY_ESCAPE, GLFW_KEY_BACKSPACE, GLFW_KEY_SPACE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_UP, GLFW_KEY_DOWN };

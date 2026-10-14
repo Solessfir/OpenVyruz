@@ -141,6 +141,12 @@ std::expected<FMenuArt, std::string> FMenuArt::Load(FResourceArchive& Archive)
     return Result;
 }
 
+namespace
+{
+// DAT_005237a0: the cursor shows once the mouse moves and hides again on an arrow key. It is one global, so a menu opened by a click keeps the cursor showing.
+bool bCursorShown = false;
+}
+
 FMenuState FMenuArt::Start(const FMenu& Menu) const
 {
     FMenuState State{
@@ -200,7 +206,7 @@ std::optional<std::pair<int32_t, int32_t>> FMenuArt::Step(const FMenu& Menu, FMe
         }
     }
 
-    if (State.bCursorShown && Cursor)
+    if (bCursorShown && Cursor)
     {
         UpdateAnimation(State.CursorPlayback, *Cursor, StepMilliseconds);
     }
@@ -228,14 +234,14 @@ std::optional<std::pair<int32_t, int32_t>> FMenuArt::Step(const FMenu& Menu, FMe
         if (const std::optional<size_t> Item = ArrowItem(Menu, State, Input.bDown))
         {
             State.KeyItem = Item;
-            State.bCursorShown = false;
+            bCursorShown = false;
             return std::pair((Menu.Right - Menu.Left + Menu.StepY) / 4 + Menu.Left, (int32_t(*Item) - 1) * Menu.StepY + Menu.StepY / 2 + Menu.Top);
         }
     }
 
-    if (!State.bCursorShown && Input.bMouseMoved)
+    if (!bCursorShown && Input.bMouseMoved)
     {
-        State.bCursorShown = true;
+        bCursorShown = true;
     }
 
     return std::nullopt;
@@ -295,7 +301,7 @@ std::vector<FHudSprite> FMenuArt::Draw(const FMenu& Menu, FMenuState& State) con
         }
     }
 
-    if (State.bCursorShown && Cursor)
+    if (bCursorShown && Cursor)
     {
         DrawFrame(EHudSheet::Menu, *Cursor, State.CursorPlayback.bEnded ? 0 : State.CursorPlayback.Frame, State.CursorX, State.CursorY);
     }

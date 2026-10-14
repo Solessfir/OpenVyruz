@@ -68,8 +68,6 @@ struct FMenuState
     std::optional<size_t> UnderCursor;
     // State +0x14: the item the arrow keys last moved to.
     std::optional<size_t> KeyItem;
-    // DAT_005237a0: the cursor shows once the mouse moves and hides again on an arrow key.
-    bool bCursorShown = false;
     // State +0x20 bit 0: the VZ fire flash, drawn for one frame.
     bool bFlash = false;
     // Each step that draws the flash counts here, and MenuStep plays electric.wav with it.
