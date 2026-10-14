@@ -140,12 +140,20 @@ constexpr std::array<std::string_view, 7> MouseNames{
 };
 constexpr uint32_t FirstMouseButton = 3;
 constexpr std::array MouseButtons{ GLFW_MOUSE_BUTTON_LEFT, GLFW_MOUSE_BUTTON_RIGHT, GLFW_MOUSE_BUTTON_MIDDLE, GLFW_MOUSE_BUTTON_4 };
-// The wheel is the mouse's Z axis, which the original names and saves like the other mouse inputs.
-constexpr uint32_t MouseWheelCode = MouseCodeBase + 2;
+// The Z axis is the wheel turning either way, as the original reads it.
+constexpr uint32_t MouseZAxisCode = MouseCodeBase + 2;
 
-// The wheel turns that wait to be read, and whether the current poll reads one.
-double WheelTurns = 0.;
-bool bWheelDown = false;
+// The port's own inputs from 0x400, which the original reads as never down (PgInputState at 004695d0) and names with nothing (FUN_00469580), so a shared vzconf.txt stays harmless to it.
+constexpr uint32_t PortCodeBase = 0x400;
+constexpr uint32_t WheelUpCode = PortCodeBase;
+constexpr uint32_t WheelDownCode = PortCodeBase + 1;
+constexpr uint32_t FifthMouseButtonCode = PortCodeBase + 2;
+constexpr std::array<std::string_view, 3> PortNames{ "MOUSE WHEEL UP", "MOUSE WHEEL DOWN", "MOUSE EXTRA BUTTON 2" };
+
+// The notches each way that wait to be read, and the one the current poll reads, if any.
+double WheelUpTurns = 0.;
+double WheelDownTurns = 0.;
+std::optional<uint32_t> WheelNotch;
 
 constexpr FBinding Fixed(const uint32_t Code)
 {
@@ -370,6 +378,11 @@ std::string CodeName(const uint32_t Code)
         return Code - MouseCodeBase < MouseNames.size() ? std::string(Localize(MouseNames[Code - MouseCodeBase])) : std::string();
     }
 
+    if (Code >= PortCodeBase)
+    {
+        return Code - PortCodeBase < PortNames.size() ? std::string(PortNames[Code - PortCodeBase]) : std::string();
+    }
+
     // ponytail: the joypad's names come from DirectInput's device; the port has no joypad yet.
     return std::format("JOYPAD {}", Code - JoypadCodeBase);
 }
@@ -393,28 +406,41 @@ std::string_view DeviceKeyword(const EInputDevice Device)
 
 void WatchMouseWheel(GLFWwindow* const Window)
 {
-    glfwSetScrollCallback(Window, [](GLFWwindow*, double, const double Turn) { WheelTurns += std::abs(Turn); });
+    glfwSetScrollCallback(Window, [](GLFWwindow*, double, const double Turn) { (Turn > 0. ? WheelUpTurns : WheelDownTurns) += std::abs(Turn); });
 }
 
 void StepMouseWheel()
 {
     // A notch reads as down for one poll and up for the next, so every notch is a fresh press; a touchpad's fractions add up to notches.
     constexpr double Notch = 1.;
-    if (bWheelDown)
+    if (WheelNotch)
     {
-        bWheelDown = false;
+        WheelNotch.reset();
         return;
     }
 
-    bWheelDown = WheelTurns >= Notch;
-    WheelTurns = bWheelDown ? WheelTurns - Notch : WheelTurns;
+    if (WheelUpTurns >= Notch)
+    {
+        WheelUpTurns -= Notch;
+        WheelNotch = WheelUpCode;
+    }
+    else if (WheelDownTurns >= Notch)
+    {
+        WheelDownTurns -= Notch;
+        WheelNotch = WheelDownCode;
+    }
 }
 
 bool IsCodeDown(GLFWwindow* const Window, const uint32_t Code)
 {
-    if (Code == MouseWheelCode)
+    if (Code == MouseZAxisCode || Code == WheelUpCode || Code == WheelDownCode)
     {
-        return bWheelDown;
+        return WheelNotch && (Code == MouseZAxisCode || Code == *WheelNotch);
+    }
+
+    if (Code == FifthMouseButtonCode)
+    {
+        return glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_5) == GLFW_PRESS;
     }
 
     if (Code < MouseCodeBase)
@@ -457,5 +483,10 @@ std::optional<uint32_t> FirstCodeDown(GLFWwindow* const Window)
         }
     }
 
-    return bWheelDown ? std::optional(MouseWheelCode) : std::nullopt;
+    if (glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_5) == GLFW_PRESS)
+    {
+        return FifthMouseButtonCode;
+    }
+
+    return WheelNotch;
 }

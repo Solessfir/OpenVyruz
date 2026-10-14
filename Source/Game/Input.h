@@ -44,7 +44,7 @@ enum class EAction : uint8_t
 
 inline constexpr size_t ActionCount = size_t(EAction::PanelHelp) + 1;
 
-// A code is the original's key number: below 0x100 a key (PgPoll's codes, named by the table at 00517a94), 0x100 + n mouse input n, 0x200 and up the joypad.
+// A code is the original's key number: below 0x100 a key (PgPoll's codes, named by the table at 00517a94), 0x100 + n mouse input n, 0x200 to 0x3ff the joypad, and from 0x400 the port's own inputs.
 // Bit 31 marks a fixed binding, which the key settings never change.
 inline constexpr uint32_t FixedBinding = 0x80000000;
 inline constexpr uint32_t BindingCodeMask = ~FixedBinding;
@@ -104,7 +104,8 @@ std::string_view ActionKeyword(size_t Action);
 // The section header of a device's bindings in vzconf.txt (Keyboard-Settings, Mouse-Settings, Joypad-Settings).
 std::string_view DeviceKeyword(EInputDevice Device);
 
-// The wheel binds as the mouse's Z axis. WatchMouseWheel counts its turns; StepMouseWheel, once per event poll, reads one notch as down for that poll.
+// The wheel binds up and down apart, as port codes from 0x400 (with the fifth mouse button); the original's Z axis is either way.
+// WatchMouseWheel counts its notches; StepMouseWheel, once per event poll, reads one notch as down for that poll.
 void WatchMouseWheel(GLFWwindow* Window);
 void StepMouseWheel();
 // Whether a code is down now; joypad codes never are.
