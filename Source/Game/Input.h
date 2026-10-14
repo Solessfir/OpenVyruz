@@ -76,6 +76,9 @@ struct FKeyBindings
     const FBindingTable& Table(EInputDevice Device) const;
     // FUN_0041dc90: a fixed binding stays.
     void Bind(EInputDevice Device, EAction Action, FBinding Binding);
+    // The port's key settings: the binding moves to the action and leaves any other action that had it unbound.
+    // A fixed binding, the action's own or another's with the same key, refuses it.
+    bool BindAlone(EInputDevice Device, EAction Action, FBinding Binding);
 };
 
 // An entry of the key settings (FUN_0041de20 with its third argument set): the action, its name, and the devices that list it (1 keyboard, 2 mouse, 4 joypad).
@@ -101,6 +104,9 @@ std::string_view ActionKeyword(size_t Action);
 // The section header of a device's bindings in vzconf.txt (Keyboard-Settings, Mouse-Settings, Joypad-Settings).
 std::string_view DeviceKeyword(EInputDevice Device);
 
+// The wheel binds as the mouse's Z axis. WatchMouseWheel counts its turns; StepMouseWheel, once per event poll, reads one notch as down for that poll.
+void WatchMouseWheel(GLFWwindow* Window);
+void StepMouseWheel();
 // Whether a code is down now; joypad codes never are.
 bool IsCodeDown(GLFWwindow* Window, uint32_t Code);
 // InputActionDown at 0041d650: the action's modifier, if any, and its code are down.

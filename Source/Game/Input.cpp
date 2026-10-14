@@ -5,6 +5,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 
 namespace
@@ -139,6 +140,12 @@ constexpr std::array<std::string_view, 7> MouseNames{
 };
 constexpr uint32_t FirstMouseButton = 3;
 constexpr std::array MouseButtons{ GLFW_MOUSE_BUTTON_LEFT, GLFW_MOUSE_BUTTON_RIGHT, GLFW_MOUSE_BUTTON_MIDDLE, GLFW_MOUSE_BUTTON_4 };
+// The wheel is the mouse's Z axis, which the original names and saves like the other mouse inputs.
+constexpr uint32_t MouseWheelCode = MouseCodeBase + 2;
+
+// The wheel turns that wait to be read, and whether the current poll reads one.
+double WheelTurns = 0.;
+bool bWheelDown = false;
 
 constexpr FBinding Fixed(const uint32_t Code)
 {
@@ -309,6 +316,26 @@ void FKeyBindings::Bind(const EInputDevice Device, const EAction Action, const F
     }
 }
 
+bool FKeyBindings::BindAlone(const EInputDevice Device, const EAction Action, const FBinding Binding)
+{
+    FBindingTable& Bindings = Table(Device);
+    const auto Same = [&](const FBinding& Other)
+    { return (Other.Code & BindingCodeMask) == (Binding.Code & BindingCodeMask) && (Other.Modifier & BindingCodeMask) == (Binding.Modifier & BindingCodeMask); };
+    if ((Bindings[size_t(Action)].Code & FixedBinding) != 0 ||
+        std::ranges::any_of(Bindings, [&](const FBinding& Other) { return (Other.Code & FixedBinding) != 0 && Same(Other); }))
+    {
+        return false;
+    }
+
+    for (FBinding& Other : Bindings)
+    {
+        Other = Same(Other) ? FBinding{} : Other;
+    }
+
+    Bindings[size_t(Action)] = Binding;
+    return true;
+}
+
 std::span<const FActionSetting> ActionSettings()
 {
     return std::span(Settings).subspan(HelpOnlyActions);
@@ -364,8 +391,32 @@ std::string_view DeviceKeyword(const EInputDevice Device)
     return Device == EInputDevice::Mouse ? "Mouse-Settings" : Device == EInputDevice::Joypad ? "Joypad-Settings" : "Keyboard-Settings";
 }
 
+void WatchMouseWheel(GLFWwindow* const Window)
+{
+    glfwSetScrollCallback(Window, [](GLFWwindow*, double, const double Turn) { WheelTurns += std::abs(Turn); });
+}
+
+void StepMouseWheel()
+{
+    // A notch reads as down for one poll and up for the next, so every notch is a fresh press; a touchpad's fractions add up to notches.
+    constexpr double Notch = 1.;
+    if (bWheelDown)
+    {
+        bWheelDown = false;
+        return;
+    }
+
+    bWheelDown = WheelTurns >= Notch;
+    WheelTurns = bWheelDown ? WheelTurns - Notch : WheelTurns;
+}
+
 bool IsCodeDown(GLFWwindow* const Window, const uint32_t Code)
 {
+    if (Code == MouseWheelCode)
+    {
+        return bWheelDown;
+    }
+
     if (Code < MouseCodeBase)
     {
         const auto Key = std::ranges::find(KeyCodes, Code, &FKeyCode::Code);
@@ -406,5 +457,5 @@ std::optional<uint32_t> FirstCodeDown(GLFWwindow* const Window)
         }
     }
 
-    return std::nullopt;
+    return bWheelDown ? std::optional(MouseWheelCode) : std::nullopt;
 }

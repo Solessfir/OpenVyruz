@@ -1111,6 +1111,7 @@ uint32_t ClockMilliseconds()
 void PollEvents(GLFWwindow* const Window)
 {
     glfwPollEvents();
+    StepMouseWheel();
     const auto IsInactive = [Window]
     { return !glfwWindowShouldClose(Window) && (glfwGetWindowAttrib(Window, GLFW_ICONIFIED) != 0 || glfwGetWindowAttrib(Window, GLFW_FOCUSED) == 0); };
     if (!IsInactive())
@@ -2999,7 +3000,7 @@ void RunKeySettingsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMe
                 return;
             }
 
-            Settings.Bindings.Bind(EInputDevice::Keyboard, Setting.Action, { .Code = *Code });
+            Settings.Bindings.BindAlone(EInputDevice::Keyboard, Setting.Action, { .Code = *Code });
         }
 
         std::tie(Shown, Next) = FillKeyPage(Menu, Settings, Pages.back());
@@ -6687,6 +6688,8 @@ int main(const int ArgCount, char** const Args)
         std::fprintf(stderr, "glfwCreateWindow failed\n");
         return 1;
     }
+
+    WatchMouseWheel(Window);
 
     FRenderer Renderer;
     Renderer.Init(Window);
