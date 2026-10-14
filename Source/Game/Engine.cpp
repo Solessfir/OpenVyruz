@@ -879,12 +879,18 @@ void ApplyDamage(FObjectBody& Body, const float Amount)
 
 // EngineUpdateObjects (004406e0) on a knock: a mover that travelled more than 2 units this step hurts itself and what it hit by half its speed times its weight, or itself alone by a tenth of that against the terrain.
 // The player never hurts itself this way, and a Player-direct-fire-only class (flag 0x40 at +0x20) is hurt only in knocks with the player.
-// A Final-object killed this way starts the finale like any other death of one (FUN_0043db70). ponytail: the Bounce-fx spark (FUN_0043d140) is left out.
-void KnockDamage(const FPlayerState& Mover, const FMovementClass& Class, const FCollisionPoint Delta, FObjectBody* const Self, FObjectBody* const HitBody, FPlayerKnock* const PlayerHit)
+// A Final-object killed this way starts the finale like any other death of one (FUN_0043db70).
+// A knock counts once the mover has speed and weight and travelled more than 2 units this step (DAT_00509518).
+bool IsHardKnock(const FPlayerState& Mover, const FMovementClass& Class, const FCollisionPoint Delta)
 {
     constexpr float HardKnockTravel = 2.f;
+    return Mover.SpeedMagnitude * Class.Weight != 0.f && HardKnockTravel < std::abs(Delta.X) + std::abs(Delta.Y);
+}
+
+void KnockDamage(const FPlayerState& Mover, const FMovementClass& Class, const FCollisionPoint Delta, FObjectBody* const Self, FObjectBody* const HitBody, FPlayerKnock* const PlayerHit)
+{
     const float Knock = Mover.SpeedMagnitude * Class.Weight;
-    if (Knock == 0.f || std::abs(Delta.X) + std::abs(Delta.Y) <= HardKnockTravel)
+    if (!IsHardKnock(Mover, Class, Delta))
     {
         return;
     }
@@ -928,6 +934,7 @@ bool HuntsPlayer(const FObjectBody& Body);
 const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, const uint32_t StepMilliseconds,
     const FTerrainCollision& Terrain, const FLevel& Level, const std::span<FObjectBody> Bodies, FObjectBody* const Self, FPlayerKnock* const PlayerHit)
 {
+    Player.KnockPoint.reset();
     // Actors turn their body in their behaviour update instead (SeekerTurnBody at 0042cfa0).
     if (!Self || !Self->Actor)
     {
@@ -1133,6 +1140,11 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
     }
 
     KnockDamage(Player, Class, Delta, Self, HitBody, PlayerHit);
+    if (IsHardKnock(Player, Class, Delta))
+    {
+        Player.KnockPoint = WorldFromCollision(*Contact);
+    }
+
     const EBounce Result = HitBody ? Push(Player, Class, Command, *HitBody, *Contact) : Bounce(Player, Class, Command, *Contact);
     if (Result == EBounce::Accept)
     {
@@ -2942,6 +2954,28 @@ void AdvanceEffect(FEffect& Effect, const FEffectClass& Class, const uint32_t St
     FollowFrameSound(Effect.Sound, &Emitter);
 }
 
+// Spark-on-hit-point (keyword 0x3f) with Bounce-fx, which sets all four sides, then Bounce-fx-up-left and the others one each (keywords 0x10 to 0x14).
+std::array<std::string, 4> ReadBounceEffects(const FLevelPropertyBlock& Class)
+{
+    std::array<std::string, 4> Result;
+    if (ParseLevelFloat(Class.Find("Spark-on-hit-point")).value_or(0.f) == 0.f)
+    {
+        return Result;
+    }
+
+    Result.fill(ToLowerName(Class.Find("Bounce-fx")));
+    constexpr std::array<std::string_view, 4> Sides = { "Bounce-fx-up-left", "Bounce-fx-up-right", "Bounce-fx-down-left", "Bounce-fx-down-right" };
+    for (size_t Side = 0; Side < Sides.size(); ++Side)
+    {
+        if (const std::string_view Name = Class.Find(Sides[Side]); !Name.empty())
+        {
+            Result[Side] = ToLowerName(Name);
+        }
+    }
+
+    return Result;
+}
+
 void SpawnEffect(FCombat& Combat, const std::string_view ClassName, const FCollisionPoint Position, const float Altitude, const float Damage = 0.f,
     const float Zone = 0.f)
 {
@@ -2962,6 +2996,48 @@ void SpawnEffect(FCombat& Combat, const std::string_view ClassName, const FColli
     // ObjectInitialize shows the first frame straight away.
     AdvanceEffect(Effect, *Class, 0);
     Combat.Effects.push_back(Effect);
+}
+
+// FUN_0043d140 for the player under Pinball (object +0xd4 8): the Flipper-Bong FX of fx.3dc, whatever the player's class says.
+constexpr std::array<std::string_view, 4> PinballSparks = { "flipper-bong-up-left", "flipper-bong-up-right", "flipper-bong-down-left", "flipper-bong-down-right" };
+
+// FUN_0043d140: a hard knock throws off one of four FX by the side the mover struck from, when the mover stands near the view (FUN_00436690: within a screen of it each way).
+// Up-left of the struck point, the spark is the down-right one, and so on; it appears 8 pixels above the point, at whole pixels, unless one of its class already stands in that map cell.
+void ThrowBounceSpark(FCombat& Combat, const std::array<std::string, 4>& Sides, const FCollisionPoint Mover, const FCollisionPoint Point, const FCollisionPoint Viewer)
+{
+    constexpr float NearX = 640.f + 320.f;
+    constexpr float NearY = 480.f + 240.f;
+    if (std::abs(Mover.X - Viewer.X) >= NearX || std::abs(Mover.Y - Viewer.Y) >= NearY)
+    {
+        return;
+    }
+
+    enum ESide : size_t
+    {
+        UpLeft,
+        UpRight,
+        DownLeft,
+        DownRight,
+    };
+    const size_t Side = Mover.X < Point.X ? (Mover.Y < Point.Y ? DownRight : UpRight) : (Mover.Y < Point.Y ? DownLeft : UpLeft);
+    const auto Class = std::ranges::find(Combat.EffectClasses, Sides[Side], &FEffectClass::Name);
+    if (Sides[Side].empty() || Class == Combat.EffectClasses.end())
+    {
+        return;
+    }
+
+    constexpr float SparkRise = 8.f;
+    const FCollisionPoint Spot{ .X = float(int32_t(Point.X)), .Y = float(int32_t(Point.Y - SparkRise)) };
+    constexpr int CellWidthShift = 6;
+    constexpr int CellHeightShift = 5;
+    const auto Cell = [](const FCollisionPoint At) { return std::pair(uint32_t(int32_t(At.X)) >> CellWidthShift, uint32_t(int32_t(At.Y)) >> CellHeightShift); };
+    const size_t ClassIndex = size_t(Class - Combat.EffectClasses.begin());
+    if (std::ranges::any_of(Combat.Effects, [&](const FEffect& Effect) { return Effect.ClassIndex == ClassIndex && !Effect.bFinished && Cell(Effect.Position) == Cell(Spot); }))
+    {
+        return;
+    }
+
+    SpawnEffect(Combat, Sides[Side], Spot, 0.f);
 }
 
 // FUN_0041c180: each class in turn, from the last named, makes Count FX objects at the host, Phase spread over a full turn from the last copy back,
@@ -3090,6 +3166,7 @@ std::expected<void, std::string> LoadAmmoClass(FCombat& Combat, const FLevel& Le
         .DamageZone = ClassNumber(*AmmoBlock, "Damage-zone"),
         .DamageAfter = uint32_t(ClassNumber(*AmmoBlock, "Damage-after")),
         .HitEffect = ToLowerName(AmmoBlock->Find("Hit-fx")),
+        .BounceEffects = ReadBounceEffects(*Ammo),
         .ListedDamage = ListedDamage,
         .ListedArea = ListedArea,
         .bUsableWhenInvisible = ClassNumber(*AmmoBlock, "Usable-when-invisible") != 0.f,
@@ -4597,9 +4674,18 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
     }
 
     std::vector<std::string> EffectNames = { std::string(GroundImpactEffect) };
+    EffectNames.insert(EffectNames.end(), PinballSparks.begin(), PinballSparks.end());
     for (const FAmmoClass& Ammo : Combat.AmmoClasses)
     {
         EffectNames.push_back(Ammo.HitEffect);
+        for (const std::string& Spark : Ammo.BounceEffects)
+        {
+            if (!Spark.empty())
+            {
+                EffectNames.push_back(Spark);
+            }
+        }
+
         for (const FExplosionBlock& Explosion : Ammo.Explosions)
         {
             EffectNames.push_back(Explosion.BoomEffect);
@@ -4730,6 +4816,15 @@ void ClearLastShots(FCombat& Combat)
     for (FWeaponState& State : Combat.PlayerSlotStates)
     {
         State.LastFireTime = 0;
+    }
+}
+
+void ThrowPlayerBounceSpark(FCombat& Combat, const FPlayerState& Player, const ESurprise Active)
+{
+    if (Active == ESurprise::Pinball && Player.KnockPoint)
+    {
+        const std::array<std::string, 4> Sides = { std::string(PinballSparks[0]), std::string(PinballSparks[1]), std::string(PinballSparks[2]), std::string(PinballSparks[3]) };
+        ThrowBounceSpark(Combat, Sides, Player.Position, *Player.KnockPoint, Player.Position);
     }
 }
 
@@ -6512,14 +6607,20 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
         // EngineUpdateObjects (004406e0) puts bouncing ammo that met the terrain back and bounces it (ObjectBounce at 004367d0), then turns it to its new heading.
         // A hard knock (more than 2 units of travel) takes a tenth of its speed times its weight from its energy, and an emptied shot bursts where it is.
-        // ponytail: the Bounce-fx spark (FUN_0043d140) and ObjectAdjustImpactPoint are left out, as for the player's bounce.
+        // Before the knock's damage, the hard knock throws off the class's bounce spark (FUN_0043d140).
+        // ponytail: ObjectAdjustImpactPoint is left out, as for the player's bounce.
         if (Ammo.bBouncesOffTerrain && !Struck && !bPlayerStruck)
         {
             Shot.State.Position = Shot.State.PreviousPosition;
-            constexpr float HardKnockTravel = 2.f;
             constexpr double KnockDamageScale = 0.1f;
             const float Knock = Shot.State.SpeedMagnitude * Ammo.Movement.Weight;
-            if (!Ammo.bIndestructible && Knock != 0.f && HardKnockTravel < std::abs(Delta.X) + std::abs(Delta.Y))
+            const bool bHardKnock = IsHardKnock(Shot.State, Ammo.Movement, Delta);
+            if (bHardKnock)
+            {
+                ThrowBounceSpark(Combat, Ammo.BounceEffects, Shot.State.Position, WorldFromCollision(*Contact), Player.State.Position);
+            }
+
+            if (!Ammo.bIndestructible && bHardKnock)
             {
                 const float Damage = float(double(Knock) * KnockDamageScale);
                 Shot.Energy = Shot.Energy <= Damage ? 0.f : Shot.Energy - Damage;
@@ -7342,6 +7443,8 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
     size_t Shots = 0;
     size_t TurretShots = 0;
     size_t GrenadeBounces = 0;
+    // Levels where a bouncing grenade threw off its Small-Metal-Bounce-Spark.
+    size_t SparkLevels = 0;
     size_t Duels = 0;
     size_t DuelShots = 0;
     float DamageTaken = 0.f;
@@ -7456,12 +7559,16 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
                 FireWeapon(*Combat, Throw, { .Position = Player.Position, .Direction = Direction, .SpriteSize = SpriteSize, .ObjectIndex = PlayerIndex }, &Stock);
             }
 
+            const auto Spark = std::ranges::find(Combat->EffectClasses, std::string("small-metal-bounce-spark"), &FEffectClass::Name);
+            bool bSparked = false;
             for (uint32_t Time = 0; Time < FlightMilliseconds; Time += StepMilliseconds)
             {
                 Combat->Clock += StepMilliseconds;
                 StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
+                bSparked = bSparked || (Spark != Combat->EffectClasses.end() && std::ranges::contains(Combat->Effects, size_t(Spark - Combat->EffectClasses.begin()), &FEffect::ClassIndex));
             }
 
+            SparkLevels += bSparked ? 1 : 0;
             GrenadeBounces += size_t(std::ranges::count_if(Combat->Projectiles, [](const FProjectile& Shot) { return Shot.Bounces > 0; }));
             Combat->Projectiles.clear();
         }
@@ -7736,9 +7843,14 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         return std::unexpected(std::format("Orbiters: {}", OrbitCheck.error()));
     }
 
-    return std::format("{} levels, {} player shots, {} turret shots while spinning, {} grenades bounced, {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; "
+    if (SparkLevels == 0)
+    {
+        return std::unexpected("no bouncing grenade threw off a spark");
+    }
+
+    return std::format("{} levels, {} player shots, {} turret shots while spinning, {} grenades bounced (sparking in {} levels), {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; "
         "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth; {}; {}; {}",
-        Levels, Shots, TurretShots, GrenadeBounces, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators,
+        Levels, Shots, TurretShots, GrenadeBounces, SparkLevels, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators,
         *Mines, *FireSurprises, *OrbitCheck);
 }
 

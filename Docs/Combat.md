@@ -164,13 +164,14 @@ Turrets (`Behaviour = Fixed Seeker`, kind Turret) draw a rotating top from the 2
 
 The port runs the original incremental route search from collision centre to collision centre against the terrain graph. Turret shots pass through the turret that fired them and damage the player's shield and energy; blasts reach the player too.
 
+## Bounce sparks
+
+A hard knock (more than 2 units of travel with speed and weight) calls `FUN_0043d140` before its damage. It acts for a class with `Spark-on-hit-point` (keyword `0x3f`, class flag `0x20000000`), and for the player under Pinball, whose sparks are always fx.3dc's `Flipper-Bong-Up-Left` and the other three. A class's four sides are `Bounce-fx-up-left`, `-up-right`, `-down-left` and `-down-right` (class `+0xd0` to `+0xdc`), all four set by `Bounce-fx`. The mover's position against the struck point picks the side: up-left of it, the down-right spark, and so on. The spark appears at the struck point 8 pixels higher, in whole pixels, only while the mover is within a screen of the view each way (`FUN_00436690`) and no object of its class stands in that map cell. Only `Grenade-Ammo` (`Small-Metal-Bounce-Spark`) and `Saw-Ammo-Empty` (`Saw-Bounce-Spark`) name one; the things with the flag have none. `--verify-game` checks that bouncing grenades throw sparks.
+
 ## Not ported yet
 
-- The shield reset value (a class field at `+0x6c`).
-- The spark a bouncing shot throws off (`FUN_0043d140`, one of four `Bounce-fx` classes by side).
-- The idle look-around of two-piece bodies, which turn their top (`FUN_00444b80`).
-- Water splashes, what a surprise does when collected, the generator's opening animation, the `CREATE` trails and smoke (they draw from their own random stream), and sounds.
+- The idle look-around of two-piece bodies, which turn their top (`FUN_00444b80`): no two-piece class can turn on the spot, so it never runs.
+- Water splashes, the generator's opening animation, and the `CREATE` trails and smoke drawing from their own random stream.
 - Blasts hurting pickups.
-- Drawing visible ammo.
 
 `--verify-game` fires every level's player weapon for six seconds of game time while spinning, then puts the player in clear view of a turret for three seconds; it fails if no turret fires in those duels.

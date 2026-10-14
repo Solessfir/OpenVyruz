@@ -125,6 +125,8 @@ struct FPlayerState
     int TurnTimer = 0;
     // Object flag 0x100: set on objects that were hit, so their velocity carries them until it drops below 1.
     bool bPushed = false;
+    // Where this step's hard knock struck, in world space, for the bounce spark (FUN_0043d140).
+    std::optional<FCollisionPoint> KnockPoint;
     // Object flag 8: seekers and gates do not find the object, and the player takes no damage.
     bool bInvisible = false;
     // Object flag 0x400000, Touch-and-destroy: what the object runs into, or what runs into it, loses its energy unless it is Indestructible.
@@ -675,6 +677,8 @@ struct FAmmoClass
     float DamageZone = 0.f;
     uint32_t DamageAfter = 0;
     std::string HitEffect;
+    // Spark-on-hit-point (class flag 0x20000000) with its Bounce-fx classes (class +0xd0 to +0xdc: up-left, up-right, down-left, down-right), which a hard bounce throws off; empty without the flag.
+    std::array<std::string, 4> BounceEffects;
     // The damage and area weapon selection lists (FUN_00437740): the TYPE Ammo block's, or the largest of the class's Ammo and Explosion blocks when either is zero.
     int ListedDamage = 0;
     int ListedArea = 0;
@@ -1037,6 +1041,8 @@ struct FPlayerKnock
 // Returns the body the move ran into, if any.
 const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
     const FLevel& Level, std::span<FObjectBody> Bodies = {}, FObjectBody* Self = nullptr, FPlayerKnock* PlayerHit = nullptr);
+// The player's bounce spark after its step (FUN_0043d140): only under Pinball, the Flipper-Bong FX.
+void ThrowPlayerBounceSpark(FCombat& Combat, const FPlayerState& Player, ESurprise Active);
 // Moves pushed bodies for one step, in object order. They run into the player like into any object, hurt it by their knocks, and a pushed mine goes off against it;
 // returns how far those mines push the player.
 // Actors look for the player, patrol, chase and shoot, then move like the player with the resulting command. Without combat they only patrol.
