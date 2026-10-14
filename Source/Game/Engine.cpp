@@ -1000,7 +1000,7 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
     for (FObjectBody& Body : Bodies)
     {
         // Ignore-same-class-objects lets a class pass through its own kind, as the Particle-of-Death strings on one patrol path do.
-        if (&Body == Self || Body.bPassable || (Self && Self->bIgnoreSameClass && Level.Objects[Body.ObjectIndex].ClassName == Level.Objects[Self->ObjectIndex].ClassName))
+        if (&Body == Self || Body.bPassable || Body.Class.Radius <= 0.f || (Self && Self->bIgnoreSameClass && Level.Objects[Body.ObjectIndex].ClassName == Level.Objects[Self->ObjectIndex].ClassName))
         {
             continue;
         }
@@ -1191,16 +1191,20 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
     const std::optional<uint32_t> ThingBehaviour = Object.SubType == ThingKind ? ParseBehaviour(Object.Behaviour) : std::nullopt;
     const bool bMovingThing = ThingBehaviour && ((*ThingBehaviour & BehaviourMovementMask) == BehaviourPatrol || (*ThingBehaviour & BehaviourMovementMask) == BehaviourRandom);
     const bool bActor = std::ranges::contains(ActorKinds, Object.SubType) || bMovingThing;
-    if (Object.BoundingBoxSize <= 0 || (!bActor && !std::ranges::contains(SolidKinds, Object.SubType)) || IsPickup(Object))
-    {
-        return std::nullopt;
-    }
-
     const FLevelPropertyBlock& Properties = Object.Properties;
     const auto Number = [](const FLevelPropertyBlock* Block, const std::string_view Field)
     {
         return Block ? ParseLevelFloat(Block->Find(Field)).value_or(0.f) : 0.f;
     };
+    // An object without a bounding box never collides (object +0xb4 bit 1), but blasts and Destroy-around still wear it down when it has energy and is not Indestructible,
+    // as Processors Chambers' weld seams (soudure), which set off their Small-Explosion in a chain.
+    const bool bBoxless = Object.BoundingBoxSize <= 0;
+    const bool bDestructible = 0.f < Number(FindBlock(Properties, "Energy"), "Initial") && Number(&Properties, "Indestructible") == 0.f;
+    if ((bBoxless && !bDestructible) || (!bActor && !std::ranges::contains(SolidKinds, Object.SubType)) || IsPickup(Object))
+    {
+        return std::nullopt;
+    }
+
     FMovementClass Class{
         .Weight = Number(FindBlock(Properties, "Weight"), "Initial"),
         .DecelerationStep = Number(&Properties, "Decceleration-step"),
@@ -2909,7 +2913,7 @@ FObjectBody* FindStruckBody(std::vector<FObjectBody>& Bodies, const FCollisionCi
     FObjectBody* Struck = nullptr;
     for (FObjectBody& Body : Bodies)
     {
-        if (Body.ObjectIndex == Owner || Body.bPassable)
+        if (Body.ObjectIndex == Owner || Body.bPassable || Body.Class.Radius <= 0.f)
         {
             continue;
         }
@@ -7528,6 +7532,72 @@ std::expected<std::string, std::string> VerifyDebris(FResourceArchive& Archive)
     return std::format("a Big-Boom threw {} pieces in {} directions, with {} smoke trails", Flying, Directions.size(), Smoke);
 }
 
+// A weld seam set off by hand must take its neighbours with it: seams have no box, so only blasts reach them.
+std::expected<std::string, std::string> VerifyWeldSeams(FResourceArchive& Archive)
+{
+    constexpr uint32_t StepMilliseconds = 14;
+    constexpr uint32_t ChainMilliseconds = 3000;
+    constexpr std::string_view SeamClass = "soudure";
+    FMessages Messages;
+    for (const std::string& Name : Archive.GetNames())
+    {
+        if (!Name.ends_with(".3do"))
+        {
+            continue;
+        }
+
+        std::expected<FLevel, std::string> Level = LoadLevel(Archive, Name.substr(0, Name.size() - 4));
+        const std::optional<size_t> PlayerIndex = Level ? FindPlayerObject(*Level) : std::nullopt;
+        if (!PlayerIndex)
+        {
+            continue;
+        }
+
+        std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+        const auto IsSeam = [&](const FObjectBody& Body) { return Level->Objects[Body.ObjectIndex].ClassName == SeamClass; };
+        const auto First = std::ranges::find_if(Bodies, IsSeam);
+        if (First == Bodies.end())
+        {
+            continue;
+        }
+
+        const size_t Seams = size_t(std::ranges::count_if(Bodies, IsSeam));
+        const std::expected<FTerrainCollision, std::string> Terrain = BuildTerrainCollision(*Level);
+        std::expected<FCombat, std::string> Combat = CreateCombat(*Level, Level->Objects[*PlayerIndex], Archive, Bodies);
+        const std::expected<FMovementClass, std::string> Class = ReadMovementClass(Level->Objects[*PlayerIndex]);
+        if (!Terrain || !Combat || !Class)
+        {
+            return std::unexpected(!Terrain ? Terrain.error() : !Combat ? Combat.error() : Class.error());
+        }
+
+        FPlayerInventory Inventory = CreateInventory(Level->Objects[*PlayerIndex]);
+        const FPlayerState Player = SpawnPlayer(Level->Objects[*PlayerIndex], *Class);
+        if (First->Explosions.empty())
+        {
+            return std::unexpected("a seam has no explosion");
+        }
+
+        const FExplosionBlock& Explosion = First->Explosions.front();
+        SpawnEffect(*Combat, Explosion.BoomEffect, First->State.Position, First->Altitude, Explosion.Damage, Explosion.Zone);
+        for (uint32_t Time = 0; Time < ChainMilliseconds; Time += StepMilliseconds)
+        {
+            Combat->Clock += StepMilliseconds;
+            StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = *PlayerIndex }, Messages);
+        }
+
+        const size_t Left = size_t(std::ranges::count_if(Bodies, IsSeam));
+        constexpr size_t FewestChained = 2;
+        if (Seams - Left < FewestChained)
+        {
+            return std::unexpected(std::format("{} of {} weld seams went off in {}", Seams - Left, Seams, Level->Name));
+        }
+
+        return std::format("{} of {} weld seams in {} went off in a chain", Seams - Left, Seams, Level->Name);
+    }
+
+    return std::unexpected("no level has weld seams");
+}
+
 std::expected<std::string, std::string> VerifyOrbiters(FResourceArchive& Archive)
 {
     constexpr uint32_t StepMilliseconds = 14;
@@ -8015,15 +8085,21 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         return std::unexpected(std::format("Debris: {}", DebrisCheck.error()));
     }
 
+    const std::expected<std::string, std::string> SeamCheck = VerifyWeldSeams(Archive);
+    if (!SeamCheck)
+    {
+        return std::unexpected(std::format("Weld seams: {}", SeamCheck.error()));
+    }
+
     if (SparkLevels == 0)
     {
         return std::unexpected("no bouncing grenade threw off a spark");
     }
 
     return std::format("{} levels, {} player shots, {} turret shots while spinning, {} grenades bounced (sparking in {} levels), {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; "
-        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth; {}; {}; {}; {}",
+        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth; {}; {}; {}; {}; {}",
         Levels, Shots, TurretShots, GrenadeBounces, SparkLevels, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators,
-        *Mines, *FireSurprises, *OrbitCheck, *DebrisCheck);
+        *Mines, *FireSurprises, *OrbitCheck, *DebrisCheck, *SeamCheck);
 }
 
 FDifficultyTable LoadDifficulties(const std::string_view Text)
