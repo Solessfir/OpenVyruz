@@ -2714,7 +2714,92 @@ const FLevelPropertyBlock* FindClass(const FLevel& Level, const std::string_view
     return Found == Level.Classes.end() ? nullptr : &Found->second;
 }
 
-// Adds a weapon class and its ammo class to the combat tables once; returns the weapon's index.
+// Adds an ammo class to the combat tables once.
+std::expected<void, std::string> LoadAmmoClass(FCombat& Combat, const FLevel& Level, const std::string& AmmoName)
+{
+    if (std::ranges::contains(Combat.AmmoClasses, AmmoName, &FAmmoClass::Name))
+    {
+        return {};
+    }
+
+    const FLevelPropertyBlock* const Ammo = FindClass(Level, AmmoName);
+    const FLevelPropertyBlock* const AmmoBlock = Ammo ? FindTypeBlock(*Ammo, "Ammo") : nullptr;
+    if (!AmmoBlock)
+    {
+        return std::unexpected(std::format("unknown ammo class '{}'", AmmoName));
+    }
+
+    // Ammo classes leave most movement fields out; the class record keeps them zeroed.
+    const auto Field = [](const FLevelPropertyBlock* const Parent, const std::string_view FieldName) { return Parent ? ClassNumber(*Parent, FieldName) : 0.f; };
+    const FLevelPropertyBlock* const Thrust = FindBlock(*Ammo, "Thrust");
+    const FLevelPropertyBlock* const Weight = FindBlock(*Ammo, "Weight");
+    const int BoundingBoxSize = int(ClassNumber(*Ammo, "Bounding-box-size"));
+    const FMovementClass Movement{
+        .ThrustInitial = Field(Thrust, "Initial"),
+        .ThrustMin = Field(Thrust, "Min"),
+        .ThrustMax = Field(Thrust, "Max"),
+        .Weight = Weight ? ClassNumber(*Weight, "Initial") : 1.f,
+        .AccelerationStep = ClassNumber(*Ammo, "Acceleration-step"),
+        .DecelerationStep = ClassNumber(*Ammo, "Decceleration-step"),
+        .SpeedMax = ClassNumber(*Ammo, "Speed-max"),
+        .Elasticity = ClassNumber(*Ammo, "Elasticity"),
+        .Grip = ClassNumber(*Ammo, "Grip"),
+        .Friction = ParsePair(Ammo->Find("Friction-factor")).value_or(FCollisionPoint{}),
+        .FrictionThreshold = ParsePair(Ammo->Find("Friction-threshold")).value_or(FCollisionPoint{}),
+        .bUseInertia = ClassNumber(*Ammo, "Use-inertia") != 0.f,
+        .Radius = BoundingBoxSize != 0 ? float(BoundingBoxSize) : DefaultCollisionRadius,
+    };
+    if (Movement.Weight == 0.f)
+    {
+        return std::unexpected(std::format("{}: zero Weight", AmmoName));
+    }
+
+    int ListedDamage = TruncateLow(ClassNumber(*AmmoBlock, "Damage"));
+    int ListedArea = int(ClassNumber(*AmmoBlock, "Damage-zone"));
+    if (ListedDamage == 0 || ListedArea == 0)
+    {
+        for (const FLevelPropertyBlock& Child : Ammo->Children)
+        {
+            if (Child.Kind == "TYPE" && (Child.Name == "Ammo" || Child.Name == "Explosion"))
+            {
+                ListedDamage = std::max(ListedDamage, TruncateLow(ClassNumber(Child, "Damage")));
+                ListedArea = std::max(ListedArea, int(ClassNumber(Child, "Damage-zone")));
+            }
+        }
+    }
+
+    const FLevelPropertyBlock* const EnergyBlock = FindBlock(*Ammo, "Energy");
+    Combat.AmmoClasses.push_back({
+        .Name = AmmoName,
+        .Movement = Movement,
+        .Damage = ClassNumber(*AmmoBlock, "Damage"),
+        .DamageZone = ClassNumber(*AmmoBlock, "Damage-zone"),
+        .DamageAfter = uint32_t(ClassNumber(*AmmoBlock, "Damage-after")),
+        .HitEffect = ToLowerName(AmmoBlock->Find("Hit-fx")),
+        .ListedDamage = ListedDamage,
+        .ListedArea = ListedArea,
+        .bUsableWhenInvisible = ClassNumber(*AmmoBlock, "Usable-when-invisible") != 0.f,
+        .bBouncesOffTerrain = ParseLevelFloat(AmmoBlock->Find("On-hit")).value_or(1.f) == 0.f && ClassNumber(*AmmoBlock, "On-object-hit") != 0.f,
+        .Energy = EnergyBlock ? ClassNumber(*EnergyBlock, "Initial") : 0.f,
+        .bIndestructible = ClassNumber(*Ammo, "Indestructible") != 0.f,
+    });
+    for (const FLevelPropertyBlock& Child : Ammo->Children)
+    {
+        if (Child.Kind == "CREATE")
+        {
+            Combat.AmmoClasses.back().Creates.push_back({
+                .Name = ToLowerName(Child.Find("Name")),
+                .Offset = ParsePair(Child.Find("Offset")).value_or(FCollisionPoint{}),
+                .Delay = uint32_t(ClassNumber(Child, "Delay")),
+                .Repeat = uint32_t(ClassNumber(Child, "Repeat-timeout")),
+            });
+        }
+    }
+
+    return {};
+}
+
+// Adds a weapon class and the ammo classes of its blocks to the combat tables once; returns the weapon's index.
 std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Level, const std::string_view Name)
 {
     const std::string LowerName = ToLowerName(Name);
@@ -2731,75 +2816,27 @@ std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Lev
     }
 
     const std::string AmmoName = ToLowerName(Block->Find("Ammo"));
-    if (!std::ranges::contains(Combat.AmmoClasses, AmmoName, &FAmmoClass::Name))
+    if (const std::expected<void, std::string> Loaded = LoadAmmoClass(Combat, Level, AmmoName); !Loaded)
     {
-        const FLevelPropertyBlock* const Ammo = FindClass(Level, AmmoName);
-        const FLevelPropertyBlock* const AmmoBlock = Ammo ? FindTypeBlock(*Ammo, "Ammo") : nullptr;
-        if (!AmmoBlock)
-        {
-            return std::unexpected(std::format("unknown ammo class '{}'", AmmoName));
-        }
+        return std::unexpected(Loaded.error());
+    }
 
-        // Ammo classes leave most movement fields out; the class record keeps them zeroed.
-        const auto Field = [](const FLevelPropertyBlock* const Parent, const std::string_view FieldName) { return Parent ? ClassNumber(*Parent, FieldName) : 0.f; };
-        const FLevelPropertyBlock* const Thrust = FindBlock(*Ammo, "Thrust");
-        const FLevelPropertyBlock* const Weight = FindBlock(*Ammo, "Weight");
-        const int BoundingBoxSize = int(ClassNumber(*Ammo, "Bounding-box-size"));
-        const FMovementClass Movement{
-            .ThrustInitial = Field(Thrust, "Initial"),
-            .ThrustMin = Field(Thrust, "Min"),
-            .ThrustMax = Field(Thrust, "Max"),
-            .Weight = Weight ? ClassNumber(*Weight, "Initial") : 1.f,
-            .AccelerationStep = ClassNumber(*Ammo, "Acceleration-step"),
-            .DecelerationStep = ClassNumber(*Ammo, "Decceleration-step"),
-            .SpeedMax = ClassNumber(*Ammo, "Speed-max"),
-            .Elasticity = ClassNumber(*Ammo, "Elasticity"),
-            .Grip = ClassNumber(*Ammo, "Grip"),
-            .Friction = ParsePair(Ammo->Find("Friction-factor")).value_or(FCollisionPoint{}),
-            .FrictionThreshold = ParsePair(Ammo->Find("Friction-threshold")).value_or(FCollisionPoint{}),
-            .bUseInertia = ClassNumber(*Ammo, "Use-inertia") != 0.f,
-            .Radius = BoundingBoxSize != 0 ? float(BoundingBoxSize) : DefaultCollisionRadius,
-        };
-        if (Movement.Weight == 0.f)
+    // The later blocks' ammo only widens what the weapon takes; one this level cannot load is left out.
+    std::vector<std::string> AmmoChoices;
+    for (const FLevelPropertyBlock& Child : Class->Children)
+    {
+        if (const std::string Choice = ToLowerName(Child.Find("Ammo")); Child.Kind == "TYPE" && Child.Name == "Weapon" &&
+            (Choice == AmmoName || LoadAmmoClass(Combat, Level, Choice)))
         {
-            return std::unexpected(std::format("{}: zero Weight", AmmoName));
+            AmmoChoices.push_back(Choice);
         }
-
-        int ListedDamage = TruncateLow(ClassNumber(*AmmoBlock, "Damage"));
-        int ListedArea = int(ClassNumber(*AmmoBlock, "Damage-zone"));
-        if (ListedDamage == 0 || ListedArea == 0)
-        {
-            for (const FLevelPropertyBlock& Child : Ammo->Children)
-            {
-                if (Child.Kind == "TYPE" && (Child.Name == "Ammo" || Child.Name == "Explosion"))
-                {
-                    ListedDamage = std::max(ListedDamage, TruncateLow(ClassNumber(Child, "Damage")));
-                    ListedArea = std::max(ListedArea, int(ClassNumber(Child, "Damage-zone")));
-                }
-            }
-        }
-
-        const FLevelPropertyBlock* const EnergyBlock = FindBlock(*Ammo, "Energy");
-        Combat.AmmoClasses.push_back({
-            .Name = AmmoName,
-            .Movement = Movement,
-            .Damage = ClassNumber(*AmmoBlock, "Damage"),
-            .DamageZone = ClassNumber(*AmmoBlock, "Damage-zone"),
-            .DamageAfter = uint32_t(ClassNumber(*AmmoBlock, "Damage-after")),
-            .HitEffect = ToLowerName(AmmoBlock->Find("Hit-fx")),
-            .ListedDamage = ListedDamage,
-            .ListedArea = ListedArea,
-            .bUsableWhenInvisible = ClassNumber(*AmmoBlock, "Usable-when-invisible") != 0.f,
-            .bBouncesOffTerrain = ParseLevelFloat(AmmoBlock->Find("On-hit")).value_or(1.f) == 0.f && ClassNumber(*AmmoBlock, "On-object-hit") != 0.f,
-            .Energy = EnergyBlock ? ClassNumber(*EnergyBlock, "Initial") : 0.f,
-            .bIndestructible = ClassNumber(*Ammo, "Indestructible") != 0.f,
-        });
     }
 
     const FSoundEmitter Channels = MakeSoundEmitter(Class->Find("Sample-channel-range"), Class->Find("Sample-channel-priority"), 0.f, 0.f, 0.f);
     Combat.Weapons.push_back({
         .Name = LowerName,
         .Ammo = AmmoName,
+        .AmmoChoices = std::move(AmmoChoices),
         .Delay = uint32_t(ClassNumber(*Block, "Delay")),
         .FireRange = ClassNumber(*Block, "Fire-Range"),
         .WeaponsGap = ClassNumber(*Block, "Weapons-gap"),
@@ -2923,7 +2960,9 @@ void FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, F
 
     State.LastFireTime = Combat.Clock;
     const FWeaponClass& Weapon = Combat.Weapons[State.Weapon];
-    const auto Ammo = std::ranges::find(Combat.AmmoClasses, Weapon.Ammo, &FAmmoClass::Name);
+    // The shot is the bound stock's ammo (object +0x250), which may be any of the weapon's blocks'; a stock of an unloaded class shoots the first block's.
+    const auto StockAmmo = Stock ? std::ranges::find(Combat.AmmoClasses, ToLowerName(Stock->Name), &FAmmoClass::Name) : Combat.AmmoClasses.end();
+    const auto Ammo = StockAmmo != Combat.AmmoClasses.end() ? StockAmmo : std::ranges::find(Combat.AmmoClasses, Weapon.Ammo, &FAmmoClass::Name);
     // The player's weapon switches when it runs dry (WeaponHasAmmo at 00444450, in StepPlayerWeapon); the original would switch the player's weapon for any shooter, but only the player ever runs out.
     if (!Stock || Stock->Count < 1.f || Ammo == Combat.AmmoClasses.end() || Shooter.Direction == NoDirection)
     {
@@ -2987,6 +3026,11 @@ void FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, F
             .Owner = Shooter.ObjectIndex,
             .Energy = Ammo->Energy,
         };
+        for (const FCreateBlock& Create : Ammo->Creates)
+        {
+            Shot.NextCreates.push_back(Create.Delay);
+        }
+
         Shot.State.Position = Shot.State.PreviousPosition = Muzzle;
         Shot.State.Center = CollisionFromWorld(Muzzle);
         Shot.State.Direction = Shooter.Direction;
@@ -4167,6 +4211,17 @@ void StepObjectBobs(FCombat& Combat, FLevel& Level, const std::span<FObjectBody>
 namespace
 {
 // The stock that feeds a slot's weapon, if the slot holds one.
+// ObjectBindAmmo at 00437540: the first of the player's stocks, in their order, that is not empty and holds an ammo one of the weapon's blocks takes.
+// When all are empty the first that a block takes stands in, so an empty weapon still knows its stock.
+template <typename FInventory>
+auto BoundAmmo(const FWeaponClass& Weapon, FInventory& Inventory) -> decltype(&Inventory.Ammo.front())
+{
+    const auto Takes = [&Weapon](const FAmmoStock& Entry) { return std::ranges::contains(Weapon.AmmoChoices, ToLowerName(Entry.Name)); };
+    const auto Full = std::ranges::find_if(Inventory.Ammo, [&](const FAmmoStock& Entry) { return Entry.Count != 0.f && Takes(Entry); });
+    const auto Any = Full != Inventory.Ammo.end() ? Full : std::ranges::find_if(Inventory.Ammo, Takes);
+    return Any == Inventory.Ammo.end() ? nullptr : &*Any;
+}
+
 const FAmmoStock* SlotAmmo(const FCombat& Combat, const size_t Slot, const FPlayerInventory& Inventory)
 {
     if (Slot == 0 || Slot > Combat.PlayerWeapons.size())
@@ -4174,9 +4229,7 @@ const FAmmoStock* SlotAmmo(const FCombat& Combat, const size_t Slot, const FPlay
         return nullptr;
     }
 
-    const FWeaponClass& Weapon = Combat.Weapons[Combat.PlayerWeapons[Slot - 1]];
-    const auto Stock = std::ranges::find_if(Inventory.Ammo, [&Weapon](const FAmmoStock& Entry) { return ToLowerName(Entry.Name) == Weapon.Ammo; });
-    return Stock == Inventory.Ammo.end() ? nullptr : &*Stock;
+    return BoundAmmo(Combat.Weapons[Combat.PlayerWeapons[Slot - 1]], Inventory);
 }
 
 constexpr size_t WeaponSlotCount = 9;
@@ -4269,7 +4322,7 @@ void SelectPlayerWeapon(FCombat& Combat, const size_t Slot, const FPlayerInvento
 
     // FUN_00437540 binds only a stock that is not empty.
     const FAmmoStock* const Stock = SlotAmmo(Combat, Slot, Inventory);
-    const auto Ammo = std::ranges::find(Combat.AmmoClasses, Weapon.Ammo, &FAmmoClass::Name);
+    const auto Ammo = std::ranges::find(Combat.AmmoClasses, Stock ? ToLowerName(Stock->Name) : Weapon.Ammo, &FAmmoClass::Name);
     if (Stock && Stock->Count != 0.f && Ammo != Combat.AmmoClasses.end())
     {
         List(AmmoLines[0], std::format("AMMO {}", Upper(Ammo->Name)));
@@ -4306,7 +4359,8 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
     }
 
     // ObjectUpdateWeapon fires only Usable-when-invisible ammo while the player is invisible, and says so with option flag 8.
-    const auto AmmoClass = std::ranges::find(Combat.AmmoClasses, Weapon.Ammo, &FAmmoClass::Name);
+    const FAmmoStock* const BoundStock = SlotAmmo(Combat, Combat.PlayerSlot, Inventory);
+    const auto AmmoClass = std::ranges::find(Combat.AmmoClasses, BoundStock ? ToLowerName(BoundStock->Name) : Weapon.Ammo, &FAmmoClass::Name);
     if (Player.bInvisible && (AmmoClass == Combat.AmmoClasses.end() || !AmmoClass->bUsableWhenInvisible))
     {
         constexpr int32_t NoteX = 100;
@@ -4336,7 +4390,7 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
         return;
     }
 
-    const auto Stock = std::ranges::find_if(Inventory.Ammo, [&Weapon](const FAmmoStock& Entry) { return ToLowerName(Entry.Name) == Weapon.Ammo; });
+    FAmmoStock* const Stock = BoundAmmo(Weapon, Inventory);
     const FShooter Shooter{
         .Position = Player.Position,
         .Velocity = Player.Velocity,
@@ -4345,10 +4399,10 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
         .SpriteSize = SpriteSize,
         .ObjectIndex = PlayerIndex,
     };
-    const float RoundsBefore = Stock == Inventory.Ammo.end() ? 0.f : Stock->Count;
-    FireWeapon(Combat, State, Shooter, Stock == Inventory.Ammo.end() ? nullptr : &*Stock);
+    const float RoundsBefore = Stock ? Stock->Count : 0.f;
+    FireWeapon(Combat, State, Shooter, Stock);
     // WeaponFire calls WeaponHasAmmo again once a shot leaves the stock empty, so the next weapon is in hand at once.
-    if (Stock != Inventory.Ammo.end() && RoundsBefore >= 1.f && Stock->Count < 1.f)
+    if (Stock && RoundsBefore >= 1.f && Stock->Count < 1.f)
     {
         SelectPlayerWeapon(Combat, NextPlayerWeaponSlot(Combat, Inventory), Inventory, Messages);
     }
@@ -5500,9 +5554,37 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 {
     const float TimeScale = float(ReferenceStepMilliseconds / double(StepMilliseconds));
     constexpr FPlayerCommand Straight{ .Thrust = EPlayerThrust::Forward };
+    // The trails age first, so the ones made this step start at zero.
+    std::erase_if(Combat.Trails, [&](FTrail& Trail)
+    {
+        Trail.Age += StepMilliseconds;
+        return Trail.Age >= Trail.LifeTime;
+    });
+
     std::erase_if(Combat.Projectiles, [&](FProjectile& Shot)
     {
+        Shot.Age += StepMilliseconds;
         const FAmmoClass& Ammo = Combat.AmmoClasses[Shot.AmmoIndex];
+        // ObjectUpdateCreates makes at most one object per block on each update.
+        for (size_t Index = 0; Index < Ammo.Creates.size() && Index < Shot.NextCreates.size(); ++Index)
+        {
+            std::optional<uint32_t>& Next = Shot.NextCreates[Index];
+            const FCreateBlock& Create = Ammo.Creates[Index];
+            if (!Next || Shot.Age < *Next)
+            {
+                continue;
+            }
+
+            const FLevelPropertyBlock* const Class = FindClass(Level, Create.Name);
+            Combat.Trails.push_back({
+                .ClassName = Create.Name,
+                .Position = { .X = Shot.State.Position.X + Create.Offset.X, .Y = Shot.State.Position.Y + Create.Offset.Y },
+                .Altitude = float(Shot.Altitude),
+                .LifeTime = Class ? uint32_t(ClassNumber(*Class, "Life-Time")) : 0,
+            });
+            Next = Create.Repeat != 0 ? std::optional(*Next + Create.Repeat) : std::nullopt;
+        }
+
         // Target is the object struck, bPlayer the player struck; bSurface marks a wall or other terrain contact.
         const auto Detonate = [&](FObjectBody* const Target, const bool bPlayer, const bool bSurface)
         {

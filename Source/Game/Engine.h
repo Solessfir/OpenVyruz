@@ -574,7 +574,10 @@ struct FDoor
 struct FWeaponClass
 {
     std::string Name;
+    // The first TYPE Weapon block's ammo, whose block also gives the weapon's other fields (ObjectSetWeaponSlot at 004375f0 keeps the first block).
     std::string Ammo;
+    // Every TYPE Weapon block's ammo in order: the player's stock binds to any of them (ObjectBindAmmo at 00437540).
+    std::vector<std::string> AmmoChoices;
     uint32_t Delay = 0;
     float FireRange = 0.f;
     float WeaponsGap = 0.f;
@@ -597,6 +600,15 @@ struct FWeaponClass
     uint32_t SoundPriority = 0;
 };
 
+// A CREATE block of an ammo class: ObjectUpdateCreates (00437b00) makes an object of class Name at Offset from the shot once it has lived Delay milliseconds, then again every Repeat (never again without one).
+struct FCreateBlock
+{
+    std::string Name;
+    FCollisionPoint Offset;
+    uint32_t Delay = 0;
+    uint32_t Repeat = 0;
+};
+
 // An ammo class: its movement and the TYPE Ammo block.
 struct FAmmoClass
 {
@@ -616,6 +628,8 @@ struct FAmmoClass
     // The class's Energy, which hard bounces wear down, and Indestructible (class flag 0x40 at +0x20), which spares it.
     float Energy = 0.f;
     bool bIndestructible = false;
+    // Objects the shot leaves behind as it flies.
+    std::vector<FCreateBlock> Creates;
 };
 
 // An FX class (fx.3dc) and the animation it plays.
@@ -666,6 +680,17 @@ struct FEffect
     int32_t BlastTimer = 0;
 };
 
+
+// An object a shot leaves behind, a Fixed thing such as a pulsar's glow or a rocket's smoke, which lives its class's Life-Time at the shot's altitude.
+struct FTrail
+{
+    std::string ClassName;
+    FCollisionPoint Position;
+    float Altitude = 0.f;
+    uint32_t Age = 0;
+    uint32_t LifeTime = 0;
+};
+
 // A fired ammo object (kind Ammo); bullets with a slope sink as they fly until they reach the ground.
 struct FProjectile
 {
@@ -681,6 +706,10 @@ struct FProjectile
     float Energy = 0.f;
     // Terrain bounces so far, which --verify-game checks.
     uint32_t Bounces = 0;
+    // Milliseconds since it was fired, which picks its animation frame.
+    uint32_t Age = 0;
+    // When each of its class's CREATE blocks next makes an object, by its age; none once a block without a repeat has made its one.
+    std::vector<std::optional<uint32_t>> NextCreates;
 };
 
 // The Video Details options (session +0x27e0) that the port follows.
@@ -723,6 +752,7 @@ struct FCombat
     // Common\Data\Object\Item\surprise.gaf's animations, one per surprise icon.
     std::vector<Gaf::FAnimation> SurpriseIcons;
     std::vector<FProjectile> Projectiles;
+    std::vector<FTrail> Trails;
     std::vector<FEffectClass> EffectClasses;
     std::vector<FEffect> Effects;
     std::vector<FDecorAnimation> DecorAnimations;

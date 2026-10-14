@@ -120,6 +120,40 @@ size_t ObjectAnimationIndex(const FLevelObject& Object, const bool bShadow)
     return size_t((bShadow ? Object.ShadowIndex : Object.GafIndex) - 1 + Offset);
 }
 
+// The 1-based frame UpdateAnimation (0045e7e0) shows Age milliseconds after StartAnimation, without the frames' sounds; an animation that does not loop holds its last frame.
+uint32_t AnimationFrameAt(const Gaf::FAnimation& Animation, const uint32_t Age)
+{
+    constexpr uint32_t LoopFlag = 2;
+    const uint32_t Count = uint32_t(Animation.Frames.size());
+    const bool bLoop = (Animation.Flags & LoopFlag) != 0;
+    const uint32_t LoopStart = Animation.LoopStart >= 1 && Animation.LoopStart <= Count ? Animation.LoopStart : 1;
+    int64_t Left = Age;
+    uint32_t Frame = 1;
+    // A pass over every frame without any time spent stops on the frame reached.
+    for (uint32_t Steps = 0; Count != 0 && Steps <= Count; ++Steps)
+    {
+        const int64_t Duration = int64_t(Animation.Frames[Frame - 1].Duration) * AnimationPeriodMilliseconds;
+        if (Left < Duration)
+        {
+            return Frame;
+        }
+
+        Left -= Duration;
+        Steps = Duration > 0 ? 0 : Steps;
+        if (++Frame > Count)
+        {
+            if (!bLoop)
+            {
+                return Count;
+            }
+
+            Frame = LoopStart;
+        }
+    }
+
+    return Count == 0 ? 0 : Frame;
+}
+
 bool IsSupportedDrawMode(const uint32_t Flags)
 {
     const uint32_t Mode = Flags & AnimationBlendMask;
@@ -2393,6 +2427,31 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 {
                     FindOrLoadSheet(*Objects, Archive, Renderer, Decor.GafPath);
                 }
+
+                // Shots and the objects they leave behind are drawn from their classes like any object.
+                std::vector<std::string> DrawnClasses;
+                for (const FAmmoClass& Ammo : Combat->AmmoClasses)
+                {
+                    DrawnClasses.push_back(Ammo.Name);
+                    for (const FCreateBlock& Create : Ammo.Creates)
+                    {
+                        DrawnClasses.push_back(Create.Name);
+                    }
+                }
+
+                for (const std::string& ClassName : DrawnClasses)
+                {
+                    if (const auto Template = Level->ClassObjects.find(ClassName); Template != Level->ClassObjects.end())
+                    {
+                        for (const std::string& Path : { Template->second.GafPath, Template->second.ShadowGafPath })
+                        {
+                            if (!Path.empty() && !FindOrLoadSheet(*Objects, Archive, Renderer, Path))
+                            {
+                                std::fprintf(stderr, "Cannot decode GAF %s\n", Path.c_str());
+                            }
+                        }
+                    }
+                }
             }
             else
             {
@@ -2602,12 +2661,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             // The weapon in hand's ammo stock (object +0x248); an empty slot holds none.
             if (Combat->PlayerSlot >= 1 && Combat->PlayerSlot <= Combat->PlayerSlotStates.size() && Combat->PlayerWeapon.Weapon < Combat->Weapons.size())
             {
-                const std::string& AmmoName = Combat->Weapons[Combat->PlayerWeapon.Weapon].Ammo;
-                const auto Stock = std::ranges::find_if(Inventory.Ammo, [&](const FAmmoStock& Ammo)
-                {
-                    return std::ranges::equal(Ammo.Name, AmmoName, [](const char A, const char B) { return std::tolower(uint8_t(A)) == std::tolower(uint8_t(B)); });
-                });
-                Values.Ammo = Stock == Inventory.Ammo.end() ? 0.f : Stock->Count;
+                const FAmmoStock* const Stock = PlayerSlotAmmo(*Combat, Inventory);
+                Values.Ammo = Stock ? Stock->Count : 0.f;
             }
         }
 
@@ -2673,6 +2728,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     const std::optional<FObjectGaf> SightGaf = Settings.bMouse ? LoadObjectGaf(Archive, "common\\data\\menu\\cursor.gaf") : std::nullopt;
     const Gaf::FAnimation* const Sight = SightGaf && !SightGaf->Animations.empty() ? &SightGaf->Animations.front() : nullptr;
     FAnimationPlayback SightPlayback = Sight ? StartAnimation(*Sight) : FAnimationPlayback{};
+    // Session +0x1f9c: only InputReadDirection (0041d7e0), which reads the live mouse, moves the sight, so a demo's replayed input leaves it where it was.
+    std::optional<std::pair<int32_t, int32_t>> SightPosition;
     std::optional<FSpriteSheet> SightSheet;
     // FUN_00403b70 loads Data\Menu\pause.gaf's first animation, which FUN_00403d70 centres on the screen in draw mode 7.
     const std::optional<FObjectGaf> PauseGaf = LoadObjectGaf(Archive, "common\\data\\menu\\pause.gaf");
@@ -3012,7 +3069,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 {
                     if ((DemoInput & (FirstWeaponBit << (Slot - 1))) != 0)
                     {
-                        SelectPlayerWeapon(*Combat, Slot, Inventory, Messages);
+                        // PlayerSelectWeaponAction (0043bad0) switches only to another slot.
+                        if (Combat->PlayerSlot != Slot)
+                        {
+                            SelectPlayerWeapon(*Combat, Slot, Inventory, Messages);
+                        }
+
                         break;
                     }
                 }
@@ -3067,6 +3129,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     if (Settings.bMouse)
                     {
                         const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window);
+                        if (!Demo)
+                        {
+                            SightPosition = Mouse;
+                        }
+
                         const FCollisionPoint ToSight{
                             .X = float(Mouse.first - (TruncateLow(Player->Position.X) - int32_t(std::floor(CameraX)))),
                             .Y = float(Mouse.second - (TruncateLow(Player->Position.Y) - int32_t(std::floor(CameraY)))),
@@ -3598,6 +3665,88 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 });
             }
 
+            // The trails, things of one pose that play their animation over their life; Is-detail ones go with low details.
+            for (const FTrail& Trail : Combat->Trails)
+            {
+                const auto Template = Level->ClassObjects.find(Trail.ClassName);
+                if (Template == Level->ClassObjects.end() || (Template->second.bDetail && Settings.Details.bLowDetails) || Template->second.GafIndex == 0)
+                {
+                    continue;
+                }
+
+                const FLevelObject& Class = Template->second;
+                const auto Sheet = Objects->SheetIndices.find(Class.GafPath);
+                const size_t Animation = size_t(Class.GafIndex - 1);
+                if (Sheet == Objects->SheetIndices.end() || Animation >= Objects->Animations[Sheet->second].size())
+                {
+                    continue;
+                }
+
+                const Gaf::FAnimation& Played = Objects->Animations[Sheet->second][Animation];
+                const uint32_t FrameNumber = AnimationFrameAt(Played, Trail.Age);
+                if (FrameNumber == 0 || Played.Frames[FrameNumber - 1].BitmapIndex == 0)
+                {
+                    continue;
+                }
+
+                const Gaf::FAnimationFrame& Frame = Played.Frames[FrameNumber - 1];
+                const int64_t GroundY = SpriteCoordinate(Trail.Position.Y);
+                Sprites.push_back({
+                    .SheetIndex = Sheet->second,
+                    .ObjectIndex = NoObjectIndex,
+                    .Frame = Frame,
+                    .X = float(SpriteCoordinate(Trail.Position.X)),
+                    .Y = float(GroundY) - Trail.Altitude,
+                    .Depth = SpriteDepth(GroundY, false, Class.bInGround, Class.bZShadow),
+                    .Blend = FrameBlend(Frame),
+                });
+            }
+
+            // ObjectDraw at 00431ae0 draws a shot as its ammo class: its shadow on the ground and its body at its altitude, in the pose of its direction and at the frame its age has reached; Invisible classes such as bullets show nothing.
+            for (const FProjectile& Shot : Combat->Projectiles)
+            {
+                const auto Template = Level->ClassObjects.find(Combat->AmmoClasses[Shot.AmmoIndex].Name);
+                if (Template == Level->ClassObjects.end() || ParseLevelFloat(Template->second.Properties.Find("Invisible")).value_or(0.f) != 0.f ||
+                    Shot.State.Direction >= ObjectDirectionCount)
+                {
+                    continue;
+                }
+
+                const FLevelObject& Class = Template->second;
+                const int64_t GroundY = SpriteCoordinate(Shot.State.Position.Y);
+                for (const bool bShadow : { true, false })
+                {
+                    const std::string& Path = bShadow ? Class.ShadowGafPath : Class.GafPath;
+                    const int BaseIndex = bShadow ? Class.ShadowIndex : Class.GafIndex;
+                    const auto Sheet = Objects->SheetIndices.find(Path);
+                    if (Path.empty() || BaseIndex == 0 || Sheet == Objects->SheetIndices.end())
+                    {
+                        continue;
+                    }
+
+                    const int PoseCount = ObjectPoseCount(Class, bShadow);
+                    const size_t Animation = size_t(BaseIndex - 1 + (PoseCount > 1 ? Shot.State.Direction / (ObjectDirectionCount / PoseCount) : 0));
+                    const std::vector<Gaf::FAnimation>& Animations = Objects->Animations[Sheet->second];
+                    const uint32_t FrameNumber = Animation < Animations.size() ? AnimationFrameAt(Animations[Animation], Shot.Age) : 0;
+                    if (FrameNumber == 0 || Animations[Animation].Frames[FrameNumber - 1].BitmapIndex == 0)
+                    {
+                        continue;
+                    }
+
+                    const Gaf::FAnimationFrame& Frame = Animations[Animation].Frames[FrameNumber - 1];
+                    Sprites.push_back({
+                        .SheetIndex = Sheet->second,
+                        .ObjectIndex = NoObjectIndex,
+                        .bShadow = bShadow,
+                        .Frame = Frame,
+                        .X = float(SpriteCoordinate(Shot.State.Position.X)),
+                        .Y = float(GroundY) - (bShadow ? 0.f : float(Shot.Altitude)),
+                        .Depth = SpriteDepth(GroundY, bShadow, Class.bInGround, Class.bZShadow),
+                        .Blend = FrameBlend(Frame),
+                    });
+                }
+            }
+
             if (!Settings.Details.bLowDetails)
             {
                 AddDecorSprites(Sprites, Combat->DecorAnimations, *Objects, ViewCellsAround(OriginX, OriginY, *Level));
@@ -3922,10 +4071,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
             UpdateAnimation(SightPlayback, *Sight, int32_t(LastStepMilliseconds));
             const uint32_t Frame = SightPlayback.bEnded ? 0 : SightPlayback.Frame;
-            if (Frame >= 1 && Frame <= Sight->Frames.size())
+            if (Frame >= 1 && Frame <= Sight->Frames.size() && SightPosition)
             {
-                const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window);
-                DrawHudSprite(Renderer, *SightSheet, { .Frame = Sight->Frames[Frame - 1], .X = float(Mouse.first), .Y = float(Mouse.second) });
+                DrawHudSprite(Renderer, *SightSheet, { .Frame = Sight->Frames[Frame - 1], .X = float(SightPosition->first), .Y = float(SightPosition->second) });
             }
         }
 
