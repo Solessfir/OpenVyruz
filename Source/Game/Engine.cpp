@@ -1593,7 +1593,7 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
     constexpr float CloseTolerance = 0.5f;
     size_t Exact = 0;
     size_t Close = 0;
-    // ponytail: the replay keeps to terrain until weapons and object movement exist; the demo shoots barrels and crates and shoves pallets, so the recorded path crosses where those objects started.
+    // ponytail: the replay steps the player against the terrain alone; the demo shoots barrels and crates and shoves pallets, so the recorded path crosses where those objects started.
     FPlayerState Player = SpawnPlayer(*Object, *Class);
     FPlayerState FreeRun = Player;
     FLevel PickupLevel = *Level;
@@ -4806,7 +4806,7 @@ FCollisionPoint SegmentCorrection(const FObjectBody& Body, const FRouteWork& Wor
 }
 
 // SeekerTurnBody at 0042cfa0 for a body that can turn on the spot: one pose toward the segment per Turn-timeout.
-// ponytail: bodies that cannot turn on the spot scale the timeout with speed; only cops move so far, and they all turn on the spot.
+// ponytail: the original scales the timeout with speed for bodies that cannot turn on the spot, such as tanks; the port turns them at the class's timeout.
 // A two-piece body holds still while its top aims, and its top turns along with it.
 void TurnActorBody(FPlayerState& State, const FMovementClass& Class, FActor& Actor, const uint32_t Range, const int Direction, const int32_t Step)
 {

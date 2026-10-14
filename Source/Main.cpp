@@ -2794,7 +2794,6 @@ void RunEffectsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuAr
 }
 
 // FUN_00423e20, the Audio menu: music, effects and voices, and the sound format's quality, frequency and channels.
-// ponytail: the port's mixer keeps its own output format; the three format items only switch what they show.
 void RunAudioMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
 {
     enum EItem : size_t
@@ -4167,7 +4166,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
     FFrameClock Clock(FramePeriod);
     Clock.Poll(ClockMilliseconds());
-    // ponytail: frame rate in the window title until the HUD can draw text.
+    // Development aid: the frame rate in the window title.
     uint32_t FpsWindowStart = ClockMilliseconds();
     uint32_t FpsFrames = 0;
     // Development aid: N starts the next level, wrapping to the first after the last, always without a carried player.

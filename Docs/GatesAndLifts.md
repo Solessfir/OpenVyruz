@@ -105,5 +105,4 @@ A code item's `TYPE Item` can carry a timeout (item attribute `+0x28` to `+0x7c`
 Not ported yet:
 
 - Putting the carried player first in its grid cell when the activation phases are drawn.
-- The messages, which wait for the HUD.
-- Invisibility, the key cheat and code timeouts.
+- The key cheat (`DAT_00523808`).
