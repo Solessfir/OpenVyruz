@@ -41,7 +41,7 @@ The mouse's default bindings (`DAT_00509368`) fire with the left button (0x103),
 
 ## Absolute keyboard
 
-With the keyboard and the absolute command (Control's `Direction : ABSOLUTE`), `InputReadDirection` makes a screen vector of the movement keys (Left and Right for x, Forward and Backward for y), turns it into a direction the same way, and `DirectionTurnCommand` (with its backward flag) gives the command: the player's own direction (or none) thrusts forward, twelve nodes away backs off, and otherwise the player only turns toward it. The port does the same (`AbsoluteKeyInput`). Without the absolute command the actions drive as they are, Left and Right turning.
+With the keyboard and the absolute command (Control's `Direction : ABSOLUTE`), `InputReadDirection` makes a screen vector of the movement keys (Left and Right for x, Forward and Backward for y), turns it into a direction the same way, and `DirectionTurnCommand` (with its backward flag) gives the command: the player's own direction (or none) thrusts forward, twelve nodes away backs off, and otherwise the player only turns toward it, so a new direction first stops it. The port (`AbsoluteKeyInput`) deliberately thrusts while it turns: forward while the target lies within a quarter turn of the facing, backward beyond, and neither at exactly a quarter turn, so the ship keeps moving the target's way; the target straight behind still backs off without turning. Without the absolute command the actions drive as they are, Left and Right turning.
 
 ## Verification against DEMO.3DR
 

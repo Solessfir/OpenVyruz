@@ -724,7 +724,17 @@ uint32_t AbsoluteKeyInput(const FPlayerState& Player, const FCollisionPoint Scre
 
     constexpr int HalfTurn = DirectionCount / 2;
     const int Ahead = Wrap(Target - Current);
-    return Ahead < HalfTurn ? PlayerInputTurnLeft : Ahead == HalfTurn ? PlayerInputBackward : PlayerInputTurnRight;
+    if (Ahead == HalfTurn)
+    {
+        return PlayerInputBackward;
+    }
+
+    // A deliberate change: the original only turns until it faces the target, so a new direction first stops the ship.
+    // The port thrusts while it turns, forward while the target lies within a quarter turn of the facing and backward beyond, so it always heads the target's way.
+    constexpr int QuarterTurn = DirectionCount / 4;
+    const int Off = std::min(Ahead, DirectionCount - Ahead);
+    const uint32_t Thrust = Off < QuarterTurn ? PlayerInputForward : Off > QuarterTurn ? PlayerInputBackward : 0;
+    return (Ahead < HalfTurn ? PlayerInputTurnLeft : PlayerInputTurnRight) | Thrust;
 }
 
 FPlayerCommand PlayerCommandFromInput(const uint32_t InputBits)
