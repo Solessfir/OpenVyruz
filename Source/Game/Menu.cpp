@@ -147,6 +147,13 @@ namespace
 bool bCursorShown = false;
 }
 
+bool FMenuArt::HasCyrillic() const
+{
+    // Windows-1251's capital A; glyph records are indexed by code minus one.
+    constexpr size_t CyrillicA = 0xc0;
+    return !Fonts.empty() && Fonts.front().Glyphs.size() >= CyrillicA && Fonts.front().Glyphs[CyrillicA - 1].Base.BitmapIndex != 0;
+}
+
 FMenuState FMenuArt::Start(const FMenu& Menu) const
 {
     FMenuState State{

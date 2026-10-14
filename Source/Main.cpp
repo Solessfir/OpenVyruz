@@ -3204,7 +3204,9 @@ void RunLanguageMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuA
     Menu.Items = { { .Text = "English", .Help = Help }, { .Text = "Russian", .Help = Help } };
     AddBack(Menu);
     std::optional<std::pair<int32_t, int32_t>> Cursor;
-    if (const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor); !IsBack(Item, Menu))
+    // The port stays in English when the archive cannot draw Russian.
+    if (const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
+        !IsBack(Item, Menu) && (ELanguage(*Item + 1) != ELanguage::Russian || Art.HasCyrillic()))
     {
         Settings.Language = uint32_t(*Item) + 1;
         SetLanguage(ELanguage(Settings.Language));
@@ -6625,7 +6627,8 @@ int main(const int ArgCount, char** const Args)
     }
 
     FSettings Settings = LoadSettings(Archive, DataPath->parent_path());
-    SetLanguage(ELanguage(Settings.Language));
+    // A vzconf.txt asking for Russian over the English data plays in English; the setting itself stays, for the original and the Russian data.
+    SetLanguage(ELanguage(Settings.Language) == ELanguage::Russian && (!MenuArt || !MenuArt->HasCyrillic()) ? ELanguage::English : ELanguage(Settings.Language));
     Renderer.SetUserGamma(Settings.Gamma);
     if (Panel)
     {

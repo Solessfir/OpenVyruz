@@ -121,6 +121,8 @@ public:
     int32_t TextWidth(size_t Font, std::string_view Text) const;
 
     const std::vector<Gaf::FFrame>& GetBitmaps(EHudSheet Sheet) const;
+    // The Russian data's v-menu.gaf draws Windows-1251 Cyrillic; the English data's fonts have no glyphs there, so its Russian texts would print blank.
+    bool HasCyrillic() const;
 
 private:
     // Returns the cursor's X after the text.
