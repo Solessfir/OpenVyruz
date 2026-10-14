@@ -418,6 +418,8 @@ struct FObjectSprite
     ESpriteBlend Blend = ESpriteBlend::Opaque;
     float Stretch = 1.f;
     uint32_t Diffuse = 0xffffff;
+    // Below one, drawn blended by this alpha.
+    float Alpha = 1.f;
 };
 
 struct FObjectSprites
@@ -4742,15 +4744,28 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
                 }
 
-                StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
+                // EngineRunLevel runs the full EngineUpdateObjects only when Time Warp's counter (session +0x21f0) has run out, then sets it to the divisor (+0x21f4);
+                // the steps between update the player alone, so the rest of the level moves at a quarter of its speed.
+                FSurpriseState& Warp = Inventory.Surprises;
+                const bool bFullUpdate = Warp.WarpCounter-- == 0;
+                if (bFullUpdate)
+                {
+                    Warp.WarpCounter = Warp.WarpDivisor;
+                    StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
+                }
+
                 if (!DeathTimer)
                 {
-                    StepShields(Bodies, *Level, Inventory);
+                    StepShields(bFullUpdate ? std::span<FObjectBody>(Bodies) : std::span<FObjectBody>(), *Level, Inventory);
                 }
 
                 const FPlayerTarget Rider{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
-                StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &Rider);
-                if (const FDoor* const Lift = StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds, Messages); Lift && !NextLevel && !DeathTimer)
+                if (bFullUpdate)
+                {
+                    StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &Rider);
+                }
+
+                if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer)
                 {
                     // A starred 3do-file (only "*End of Tower 3*" in the campaign) ends the game instead of loading a level.
                     NextLevel = Lift->NextLevel.starts_with('*') ? Lift->NextLevel : NextLevelPath(LevelPath, *Lift);
@@ -4768,7 +4783,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     Combat->Clock += StepMilliseconds;
                     const float EnergyBefore = Inventory.Energy;
                     const float ShieldBefore = Inventory.Shield;
-                    StepGenerators(*Combat, *Level, Bodies, Rider, StepMilliseconds);
+                    if (bFullUpdate)
+                    {
+                        StepGenerators(*Combat, *Level, Bodies, Rider, StepMilliseconds);
+                    }
+
                     constexpr uint32_t FireBit = 0x2;
                     const bool bLiveFire = Demo ? (DemoInput & FireBit) != 0 : bAutoFire || ActionDown(EAction::Fire);
                     bFireInput = bLiveFire;
@@ -4778,9 +4797,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         StepPlayerWeapon(*Combat, bFire, *Player, *PlayerObject, PlayerIndex, PlayerSpriteSize, Inventory, Messages);
                     }
 
-                    StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, *Player);
-                    StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies,
-                        { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
+                    if (bFullUpdate)
+                    {
+                        StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, *Player);
+                        StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies,
+                            { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
+                    }
+
                     Player->Velocity = { .X = Player->Velocity.X + Inventory.Shove.X, .Y = Player->Velocity.Y + Inventory.Shove.Y };
                     Inventory.Shove = {};
                     // EngineRunLevel each step: once the fast-kill window closes with the player alive, two or more kills in it pay ((kills - 2) * 5 + 10) * 1000, say so for 8 seconds in red v-bonus font 5, fading, and cheer by the game clock.
@@ -5397,6 +5420,35 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
+        // ObjectDraw for the living player under Triple Fire: the spread (object +0x114) moves on by its step each drawn frame, within 0 to 400, and the player is drawn twice first,
+        // that far out along the facing six directions round one way and then the other. The body takes draw mode 5, which DrawTexturedPolygon gives half alpha;
+        // the shadow and the light layers keep their own modes.
+        if (Player && !DeathTimer && Inventory.Surprises.TripleSpread != 0)
+        {
+            constexpr int32_t MaxSpread = 400;
+            constexpr int SpreadDirections = 6;
+            constexpr float GhostAlpha = 0.5f;
+            FSurpriseState& Surprises = Inventory.Surprises;
+            Surprises.TripleSpread = std::clamp(Surprises.TripleSpread + Surprises.TripleSpreadStep, 0, MaxSpread);
+            const auto First = std::ranges::find(Sprites, PlayerIndex, &FObjectSprite::ObjectIndex);
+            const auto BodySheet = Objects->SheetIndices.find(PlayerObject->GafPath);
+            std::vector<FObjectSprite> Ghosts;
+            for (const int Turn : { SpreadDirections, -SpreadDirections })
+            {
+                const FCollisionPoint Offset = WorldFacingOffset(Player->Direction + Turn, float(Surprises.TripleSpread));
+                for (auto Sprite = First; Sprite != Sprites.end() && Sprite->ObjectIndex == PlayerIndex; ++Sprite)
+                {
+                    FObjectSprite Ghost = *Sprite;
+                    Ghost.X += Offset.X;
+                    Ghost.Y += Offset.Y;
+                    Ghost.Alpha = !Sprite->bShadow && BodySheet != Objects->SheetIndices.end() && Sprite->SheetIndex == BodySheet->second ? GhostAlpha : 1.f;
+                    Ghosts.push_back(Ghost);
+                }
+            }
+
+            Sprites.insert(First, Ghosts.begin(), Ghosts.end());
+        }
+
         const auto DrawObject = [&](const FObjectSprite& Sprite)
         {
             const Gaf::FAnimationFrame& Frame = Sprite.Frame;
@@ -5430,8 +5482,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             constexpr uint32_t ColorMask = 0xffffff;
             const uint32_t Diffuse = (Frame.EventFlags & DiffuseEventFlag) != 0 ? ModulateColor(uint32_t(Frame.EventValue) & ColorMask, Sprite.Diffuse) : Sprite.Diffuse;
             Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + OffsetX - OriginX, Sprite.Y + OffsetY - OriginY,
-                Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer || bFadingObject ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, Diffuse, Sprite.Specular,
-                bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : 1.f);
+                Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer || bFadingObject || Sprite.Alpha < 1.f ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, Diffuse,
+                Sprite.Specular, bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : Sprite.Alpha);
         };
         const auto DrawMapRow = [&](const int64_t Row, const std::optional<int32_t> Depth)
         {

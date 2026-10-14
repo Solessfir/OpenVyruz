@@ -1095,6 +1095,22 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
 
     // ObjectRestorePosition at 004449f0 undoes the move before the bounce is resolved.
     Player.Position = Player.PreviousPosition;
+    // Touch-and-destroy (object flag 0x400000): a mover with it takes the energy of what it runs into, and one that runs into it loses its own, unless that one is Indestructible.
+    // The move ends there, with no knock and no push.
+    if (HitBody && Player.bTouchAndDestroy && !HitBody->bIndestructible)
+    {
+        HitBody->Energy = 0.f;
+        HitBody->bDamaged = true;
+        return HitBody;
+    }
+
+    if (PlayerHit && PlayerHit->bHit && PlayerHit->bTouchAndDestroy && Self && !Self->bIndestructible)
+    {
+        Self->Energy = 0.f;
+        Self->bDamaged = true;
+        return nullptr;
+    }
+
     KnockDamage(Player, Class, Delta, Self, HitBody, PlayerHit);
     const EBounce Result = HitBody ? Push(Player, Class, Command, *HitBody, *Contact) : Bounce(Player, Class, Command, *Contact);
     if (Result == EBounce::Accept)
@@ -1913,6 +1929,12 @@ void EndSurprise(FSurpriseState& State, const ESurprise Type, FPlayerState& Play
         break;
     case ESurprise::TripleFire:
         State.bTripleFire = false;
+        break;
+    case ESurprise::TouchAndDestroy:
+        Player.bTouchAndDestroy = false;
+        break;
+    case ESurprise::TimeWarp:
+        State.WarpDivisor = 0;
         break;
     default:
         break;
@@ -3126,6 +3148,16 @@ struct FShooter
     int Altitude = 0;
     float SpriteSize = 0.f;
     size_t ObjectIndex = 0;
+    // Object +0x114: Triple Fire's spread, which makes each shot three.
+    int32_t Spread = 0;
+};
+
+enum class EWeaponFire : uint8_t
+{
+    NotReady,
+    Fired,
+    // WeaponFire's failure (no ammo), which also stops Circular Fire's turning (object +0x104).
+    Failed,
 };
 
 // WeaponRaiseSlope (0042c210) while the trigger is held, WeaponResetSlope (0042c280) otherwise: holding flattens the slope step by step.
@@ -3158,8 +3190,19 @@ bool WeaponReady(const FCombat& Combat, const FWeaponState& State)
     return State.LastFireTime == 0 || State.LastFireTime == Combat.Clock || Combat.Clock - State.LastFireTime >= Delay;
 }
 
+}
+
+FCollisionPoint WorldFacingOffset(const int Direction, const float Distance)
+{
+    const FCollisionPoint Vector = WorldFacingVector(Direction);
+    return { .X = float(double(Distance) * double(Vector.X)), .Y = float(double(Distance) * double(Vector.Y)) };
+}
+
+namespace
+{
+
 // WeaponFire at 00443bd0.
-void FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, FAmmoStock* const Stock)
+EWeaponFire FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, FAmmoStock* const Stock)
 {
     State.bSoundTrigger = true;
     if (State.LastFireTime == 0)
@@ -3169,7 +3212,7 @@ void FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, F
 
     if (!WeaponReady(Combat, State))
     {
-        return;
+        return EWeaponFire::NotReady;
     }
 
     State.LastFireTime = Combat.Clock;
@@ -3180,7 +3223,7 @@ void FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, F
     // The player's weapon switches when it runs dry (WeaponHasAmmo at 00444450, in StepPlayerWeapon); the original would switch the player's weapon for any shooter, but only the player ever runs out.
     if (!Stock || Stock->Count < 1.f || Ammo == Combat.AmmoClasses.end() || Shooter.Direction == NoDirection)
     {
-        return;
+        return EWeaponFire::Failed;
     }
 
     // Twin weapons fire from both sides of the body, Weapons-gap apart across the facing.
@@ -3201,6 +3244,7 @@ void FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, F
     }
 
     const int SideCount = Weapon.WeaponsGap != 0.f ? 2 : 1;
+    bool bRoundTaken = false;
     for (int Side = 0; Side < SideCount; ++Side)
     {
         const bool bSecondSide = Side == 1;
@@ -3222,60 +3266,86 @@ void FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, F
             Distance = Span == 0 ? 0 : int(Random % Span);
         }
 
+        // With a spread each side fires three shots: Spread out along the facing six directions round one way, then the other, then the middle one.
+        constexpr int SpreadDirections = 6;
+        constexpr std::array<int, 3> SpreadTurns = { SpreadDirections, -SpreadDirections, 0 };
         const FCollisionPoint Direction = WorldFacingVector(Shooter.Direction);
-        FCollisionPoint Muzzle{
-            .X = float(double(float(double(Distance) * double(Direction.X))) + double(Shooter.Position.X)),
-            .Y = float(double(float(double(Distance) * double(Direction.Y))) + double(Shooter.Position.Y)),
-        };
-        if (Weapon.WeaponsGap != 0.f)
+        bool bEmpty = false;
+        for (size_t Turn = Shooter.Spread != 0 ? 0 : SpreadTurns.size() - 1; Turn < SpreadTurns.size() && !bEmpty; ++Turn)
         {
-            const double Sign = bSecondSide ? -1. : 1.;
-            Muzzle = { .X = float(double(Muzzle.X) + Sign * double(Gap.X)), .Y = float(double(Muzzle.Y) + Sign * double(Gap.Y)) };
+            FCollisionPoint Base = Shooter.Position;
+            if (SpreadTurns[Turn] != 0)
+            {
+                const FCollisionPoint Across = WorldFacingVector(Wrap(Shooter.Direction + SpreadTurns[Turn]));
+                Base = {
+                    .X = float(double(float(double(Shooter.Spread) * double(Across.X))) + double(Shooter.Position.X)),
+                    .Y = float(double(float(double(Shooter.Spread) * double(Across.Y))) + double(Shooter.Position.Y)),
+                };
+            }
+
+            FCollisionPoint Muzzle{
+                .X = float(double(float(double(Distance) * double(Direction.X))) + double(Base.X)),
+                .Y = float(double(float(double(Distance) * double(Direction.Y))) + double(Base.Y)),
+            };
+            if (Weapon.WeaponsGap != 0.f)
+            {
+                const double Sign = bSecondSide ? -1. : 1.;
+                Muzzle = { .X = float(double(Muzzle.X) + Sign * double(Gap.X)), .Y = float(double(Muzzle.Y) + Sign * double(Gap.Y)) };
+            }
+
+            FProjectile Shot{
+                .AmmoIndex = size_t(Ammo - Combat.AmmoClasses.begin()),
+                .Altitude = Weapon.FireAltitude != 0 ? Weapon.FireAltitude : Shooter.Altitude,
+                .DamageTimer = Ammo->DamageAfter,
+                .Owner = Shooter.ObjectIndex,
+                .Energy = Ammo->Energy,
+            };
+            for (const FCreateBlock& Create : Ammo->Creates)
+            {
+                Shot.NextCreates.push_back(Create.Delay);
+            }
+
+            Shot.State.Position = Shot.State.PreviousPosition = Muzzle;
+            Shot.State.Center = CollisionFromWorld(Muzzle);
+            Shot.State.Direction = Shooter.Direction;
+            Shot.State.Speed = Ammo->Movement.ThrustInitial;
+            const FCollisionPoint Facing = FacingVector(Shooter.Direction);
+            Shot.State.Velocity = {
+                .X = float(double(float(double(Shot.State.Speed) * double(Facing.X))) + double(Shooter.Velocity.X)),
+                .Y = float(double(float(double(Shot.State.Speed) * double(Facing.Y))) + double(Shooter.Velocity.Y)),
+            };
+            if (Weapon.InitialSlope < 0.f)
+            {
+                Shot.bSloped = true;
+                Shot.AltitudeAccumulator = float(Shot.Altitude);
+                Shot.Slope = State.Slope;
+            }
+
+            if (Ammo->bDropped)
+            {
+                Combat.DroppedMines.push_back({ .AmmoIndex = Shot.AmmoIndex, .Position = Muzzle, .Direction = Shooter.Direction, .Owner = Shooter.ObjectIndex });
+            }
+            else
+            {
+                Combat.Projectiles.push_back(Shot);
+            }
+
+            if (!Combat.bOneRoundPerVolley || !bRoundTaken)
+            {
+                Stock->Count -= 1.f;
+                bRoundTaken = true;
+            }
+
+            bEmpty = Stock->Count < 1.f;
         }
 
-        FProjectile Shot{
-            .AmmoIndex = size_t(Ammo - Combat.AmmoClasses.begin()),
-            .Altitude = Weapon.FireAltitude != 0 ? Weapon.FireAltitude : Shooter.Altitude,
-            .DamageTimer = Ammo->DamageAfter,
-            .Owner = Shooter.ObjectIndex,
-            .Energy = Ammo->Energy,
-        };
-        for (const FCreateBlock& Create : Ammo->Creates)
-        {
-            Shot.NextCreates.push_back(Create.Delay);
-        }
-
-        Shot.State.Position = Shot.State.PreviousPosition = Muzzle;
-        Shot.State.Center = CollisionFromWorld(Muzzle);
-        Shot.State.Direction = Shooter.Direction;
-        Shot.State.Speed = Ammo->Movement.ThrustInitial;
-        const FCollisionPoint Facing = FacingVector(Shooter.Direction);
-        Shot.State.Velocity = {
-            .X = float(double(float(double(Shot.State.Speed) * double(Facing.X))) + double(Shooter.Velocity.X)),
-            .Y = float(double(float(double(Shot.State.Speed) * double(Facing.Y))) + double(Shooter.Velocity.Y)),
-        };
-        if (Weapon.InitialSlope < 0.f)
-        {
-            Shot.bSloped = true;
-            Shot.AltitudeAccumulator = float(Shot.Altitude);
-            Shot.Slope = State.Slope;
-        }
-
-        if (Ammo->bDropped)
-        {
-            Combat.DroppedMines.push_back({ .AmmoIndex = Shot.AmmoIndex, .Position = Muzzle, .Direction = Shooter.Direction, .Owner = Shooter.ObjectIndex });
-        }
-        else
-        {
-            Combat.Projectiles.push_back(Shot);
-        }
-
-        Stock->Count -= 1.f;
-        if (Stock->Count < 1.f)
+        if (bEmpty)
         {
             break;
         }
     }
+
+    return EWeaponFire::Fired;
 }
 
 // Rotations per turret pose step: turret tops have one pose per direction (SeekerTurnTop at 0042d150).
@@ -3639,7 +3709,7 @@ std::expected<void, std::string> ArmSeeker(FCombat& Combat, const FLevel& Level,
 
 namespace
 {
-// surprise::FUN_0041c390: what a surprise does when it starts, unless another is in effect. ponytail: the screen effects (darkness, extasy, gamma flashes, screen shake), Touch-and-destroy's and Invulnerability's attached FX, Time-warp's trails, and how Triple-fire and Circular-fire change a shot are not ported; their flags are kept for when they are.
+// surprise::FUN_0041c390: what a surprise does when it starts, unless another is in effect. ponytail: the orbiting FX that Touch-and-destroy, Invulnerability and Banana attach and Time Warp's trails are not ported.
 void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
     const ESurprise Type)
 {
@@ -3768,6 +3838,16 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
     case ESurprise::TripleFire:
         State.bTripleFire = true;
         break;
+    case ESurprise::TouchAndDestroy:
+        Player.bTouchAndDestroy = true;
+        break;
+    case ESurprise::TimeWarp:
+    {
+        constexpr int32_t WarpDivisor = 3;
+        State.WarpDivisor = WarpDivisor;
+        State.WarpCounter = 0;
+        break;
+    }
     default:
         break;
     }
@@ -4573,9 +4653,36 @@ void SelectPlayerWeapon(FCombat& Combat, const size_t Slot, const FPlayerInvento
     }
 }
 
-void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, const size_t PlayerIndex,
+void StepPlayerWeapon(FCombat& Combat, const bool bFire, FPlayerState& Player, const FLevelObject& PlayerObject, const size_t PlayerIndex,
     const float SpriteSize, FPlayerInventory& Inventory, FMessages& Messages)
 {
+    // EngineUpdateObjects for the player, before its weapon: Triple Fire opens the spread while the trigger is held and closes it otherwise (FUN_00443b80),
+    // and Circular Fire makes the next 24 shots turn the player one direction each. A volley under either takes one round.
+    FSurpriseState& Surprises = Inventory.Surprises;
+    if (Surprises.bTripleFire && bFire ? Surprises.TripleSpread == 0 : Surprises.TripleSpread != 0)
+    {
+        constexpr int32_t SpreadOpening = 100;
+        constexpr int32_t SpreadOpenStep = 20;
+        constexpr int32_t SpreadCloseStep = -50;
+        if (Surprises.TripleSpread != 0)
+        {
+            Surprises.TripleSpreadStep = SpreadCloseStep;
+        }
+        else
+        {
+            Surprises.TripleSpread = SpreadOpening;
+            Surprises.TripleSpreadStep = SpreadOpenStep;
+        }
+    }
+
+    constexpr int32_t CircularShots = 24;
+    if (Surprises.bCircularFire && bFire && !Player.bInvisible && Surprises.CircularShots == 0)
+    {
+        Surprises.CircularShots = CircularShots;
+    }
+
+    Combat.bOneRoundPerVolley = Surprises.bTripleFire || Surprises.bCircularFire;
+
     if (Combat.PlayerSlot == 0 || Combat.PlayerSlot > Combat.PlayerSlotStates.size())
     {
         return;
@@ -4640,9 +4747,20 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, const FPlayerState& Pla
         .Altitude = int(PlayerObject.Altitude),
         .SpriteSize = SpriteSize,
         .ObjectIndex = PlayerIndex,
+        .Spread = Surprises.TripleSpread,
     };
     const float RoundsBefore = Stock ? Stock->Count : 0.f;
-    FireWeapon(Combat, State, Shooter, Stock);
+    // Each shot under Circular Fire turns the player to the next direction of its ring and its pose two on, without its target pose.
+    if (const EWeaponFire Result = FireWeapon(Combat, State, Shooter, Stock); Result == EWeaponFire::Failed)
+    {
+        Surprises.CircularShots = 0;
+    }
+    else if (Result == EWeaponFire::Fired && Surprises.CircularShots != 0)
+    {
+        --Surprises.CircularShots;
+        Player.Direction = Wrap(Player.Direction + 1);
+        Player.Pose = Player.Pose + 2 > PlayerPoseCount ? 1 : Player.Pose + 2;
+    }
     // WeaponFire calls WeaponHasAmmo again once a shot leaves the stock empty, so the next weapon is in hand at once.
     if (Stock && RoundsBefore >= 1.f && Stock->Count < 1.f)
     {
@@ -5525,7 +5643,7 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
         std::optional<FPlayerKnock> Knock;
         if (Target)
         {
-            Knock = FPlayerKnock{ .Circle = { .Center = Target->State.Center, .Radius = Target->Radius } };
+            Knock = FPlayerKnock{ .Circle = { .Center = Target->State.Center, .Radius = Target->Radius }, .bTouchAndDestroy = Target->State.bTouchAndDestroy };
         }
 
         StepPlayer(Body.State, Body.Class, Actor.Command, StepMilliseconds, Terrain, Level, Bodies, &Body, Knock ? &*Knock : nullptr);
@@ -6660,6 +6778,113 @@ std::expected<std::string, std::string> VerifyMines(FResourceArchive& Archive)
 }
 }
 
+namespace
+{
+// UNDERGROUND\T1U1's player under the firing surprises: Triple Fire's volley is three shots for one round, Circular Fire turns the player a direction a shot,
+// and with Touch-and-destroy the player takes the energy of the first destructible object it runs into.
+std::expected<std::string, std::string> VerifyFireSurprises(FResourceArchive& Archive)
+{
+    constexpr uint32_t StepMilliseconds = 14;
+    constexpr float SpriteSize = 64.f;
+    FMessages Messages;
+    std::expected<FLevel, std::string> Level = LoadLevel(Archive, "underground\\t1u1");
+    const std::optional<size_t> PlayerIndex = Level ? FindPlayerObject(*Level) : std::nullopt;
+    if (!PlayerIndex)
+    {
+        return std::unexpected(Level ? std::string("no player") : Level.error());
+    }
+
+    std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+    const std::expected<FMovementClass, std::string> Class = ReadMovementClass(Level->Objects[*PlayerIndex]);
+    const std::expected<FTerrainCollision, std::string> Terrain = BuildTerrainCollision(*Level);
+    std::expected<FCombat, std::string> Combat = CreateCombat(*Level, Level->Objects[*PlayerIndex], Archive, Bodies);
+    if (!Class || !Terrain || !Combat)
+    {
+        return std::unexpected(!Class ? Class.error() : !Terrain ? Terrain.error() : Combat.error());
+    }
+
+    const auto Template = Level->ClassObjects.find(ToLowerName(Level->Objects[*PlayerIndex].ClassName));
+    FPlayerInventory Inventory = CreateInventory(Template != Level->ClassObjects.end() ? Template->second : Level->Objects[*PlayerIndex]);
+    FPlayerState Player = SpawnPlayer(Level->Objects[*PlayerIndex], *Class);
+    const auto Fire = [&]
+    {
+        Combat->Clock += StepMilliseconds;
+        StepPlayerWeapon(*Combat, true, Player, Level->Objects[*PlayerIndex], *PlayerIndex, SpriteSize, Inventory, Messages);
+    };
+
+    // A plain volley, then one under Triple Fire, which opens the spread and goes out three times as wide for a single round.
+    const FAmmoStock* const Stock = SlotAmmo(*Combat, Combat->PlayerSlot, Inventory);
+    const size_t PlainBefore = Combat->Projectiles.size();
+    Fire();
+    const size_t PlainShots = Combat->Projectiles.size() - PlainBefore;
+    Combat->Clock += Combat->Weapons[Combat->PlayerWeapon.Weapon].Delay;
+    Inventory.Surprises.bTripleFire = true;
+    const float RoundsBefore = Stock ? Stock->Count : 0.f;
+    const size_t ShotsBefore = Combat->Projectiles.size();
+    Fire();
+    const size_t TripleShots = Combat->Projectiles.size() - ShotsBefore;
+    if (!Stock || PlainShots == 0 || TripleShots != 3 * PlainShots || Stock->Count != RoundsBefore - 1.f || Inventory.Surprises.TripleSpread == 0)
+    {
+        return std::unexpected(std::format("Triple Fire made {} shots for {} rounds", TripleShots, Stock ? RoundsBefore - Stock->Count : 0.f));
+    }
+
+    Inventory.Surprises.bTripleFire = false;
+    Inventory.Surprises.TripleSpread = 0;
+
+    // Under Circular Fire every volley turns the player on by a direction; the 24 turns start again while the trigger stays held.
+    Inventory.Surprises.bCircularFire = true;
+    const int DirectionBefore = Player.Direction;
+    size_t CircularVolleys = 0;
+    constexpr uint32_t CircularMilliseconds = 3000;
+    for (uint32_t Time = 0; Time < CircularMilliseconds; Time += StepMilliseconds)
+    {
+        const size_t Before = Combat->Projectiles.size();
+        Fire();
+        CircularVolleys += Combat->Projectiles.size() != Before ? 1 : 0;
+    }
+
+    if (CircularVolleys == 0 || Player.Direction != Wrap(DirectionBefore + int(CircularVolleys % DirectionCount)))
+    {
+        return std::unexpected(std::format("Circular Fire turned the player from {} to {} in {} volleys", DirectionBefore, Player.Direction, CircularVolleys));
+    }
+
+    Inventory.Surprises.bCircularFire = false;
+
+    // Touch-and-destroy: the player comes at a destructible object from each facing until it has run into one.
+    const auto Target = std::ranges::find_if(Bodies, [](const FObjectBody& Body) { return !Body.bIndestructible && !Body.Actor && !Body.Mine && !Body.Generator && 0.f < Body.Energy; });
+    if (Target == Bodies.end())
+    {
+        return std::unexpected("no destructible object");
+    }
+
+    Player.bTouchAndDestroy = true;
+    constexpr float Approach = 600.f;
+    constexpr int ApproachSteps = 300;
+    for (int Direction = 0; Direction < DirectionCount && !Target->bDamaged; ++Direction)
+    {
+        Player = SpawnPlayer(Level->Objects[*PlayerIndex], *Class);
+        Player.bTouchAndDestroy = true;
+        Player.Direction = Direction;
+        Player.Pose = Player.TargetPose = Direction * (PlayerPoseCount / DirectionCount) + 1;
+        const FCollisionPoint Facing = FacingVector(Direction);
+        Player.Center = { .X = Target->State.Center.X - Facing.X * Approach, .Y = Target->State.Center.Y - Facing.Y * Approach };
+        Player.Position = Player.PreviousPosition = WorldFromCollision(Player.Center);
+        for (int Step = 0; Step < ApproachSteps && !Target->bDamaged; ++Step)
+        {
+            StepPlayer(Player, *Class, { .Thrust = EPlayerThrust::Forward }, StepMilliseconds, *Terrain, *Level, Bodies);
+        }
+    }
+
+    if (!Target->bDamaged || Target->Energy != 0.f)
+    {
+        return std::unexpected(std::format("Touch-and-destroy left {} with {} energy", Level->Objects[Target->ObjectIndex].ClassName, Target->Energy));
+    }
+
+    return std::format("Triple Fire put out {} shots for a round, Circular Fire turned the player through {} volleys, Touch-and-destroy emptied a {}", TripleShots, CircularVolleys,
+        Level->Objects[Target->ObjectIndex].ClassName);
+}
+}
+
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
 {
     // The check ignores the floating messages it raises.
@@ -7054,10 +7279,16 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         return std::unexpected(std::format("Mines: {}", Mines.error()));
     }
 
+    const std::expected<std::string, std::string> FireSurprises = VerifyFireSurprises(Archive);
+    if (!FireSurprises)
+    {
+        return std::unexpected(std::format("Surprises: {}", FireSurprises.error()));
+    }
+
     return std::format("{} levels, {} player shots, {} turret shots while spinning, {} grenades bounced, {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; "
-        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth; {}",
+        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth; {}; {}",
         Levels, Shots, TurretShots, GrenadeBounces, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators,
-        *Mines);
+        *Mines, *FireSurprises);
 }
 
 FDifficultyTable LoadDifficulties(const std::string_view Text)

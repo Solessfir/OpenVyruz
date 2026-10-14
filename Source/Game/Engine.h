@@ -127,6 +127,8 @@ struct FPlayerState
     bool bPushed = false;
     // Object flag 8: seekers and gates do not find the object, and the player takes no damage.
     bool bInvisible = false;
+    // Object flag 0x400000, Touch-and-destroy: what the object runs into, or what runs into it, loses its energy unless it is Indestructible.
+    bool bTouchAndDestroy = false;
     // Object +0xcc runs: the dead player waits for the game to end, and SeekerFindTarget (0042da80) takes no such object for a target.
     bool bDying = false;
     // Object +0x258: forward thrust sets it to a second and every other step runs it down (EngineUpdateObjects at 004406e0); ObjectDraw shows the player's reactor glow while it lasts.
@@ -193,6 +195,14 @@ struct FSurpriseState
     bool bInvulnerable = false;
     bool bTripleFire = false;
     bool bCircularFire = false;
+    // Object +0x114 and +0x118: Triple Fire's spread, which opens by 20 a drawn frame up to 400 while the trigger is held and closes by 50 (FUN_00443b80, ObjectDraw).
+    int32_t TripleSpread = 0;
+    int32_t TripleSpreadStep = 0;
+    // Object +0x104: Circular Fire's shots left to turn, 24 when the trigger is pulled.
+    int32_t CircularShots = 0;
+    // Session +0x21f4 and +0x21f0: Time Warp's divisor and the counter that lets the objects other than the player update once every divisor + 1 steps.
+    int32_t WarpDivisor = 0;
+    int32_t WarpCounter = 0;
     // Session +0x220c: the weapon that will not fire.
     std::optional<size_t> JammedWeapon;
     // The movement values the surprise replaced (kept at session +0x2208).
@@ -822,6 +832,8 @@ struct FCombat
         size_t Owner = 0;
     };
     std::vector<FDroppedMine> DroppedMines;
+    // Session flags 4 and 8, Triple Fire and Circular Fire: a volley takes one round whatever it fires (WeaponFire at 00443bd0).
+    bool bOneRoundPerVolley = false;
 };
 
 // The player as a target of shots and blasts.
@@ -954,6 +966,7 @@ struct FPlayerKnock
     FCollisionCircle Circle;
     bool bHit = false;
     float Damage = 0.f;
+    bool bTouchAndDestroy = false;
 };
 
 // Bodies are the other collidable objects; Self is the body moving, if any, which knocks hurt.
@@ -984,7 +997,9 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
 void StepObjectBobs(FCombat& Combat, FLevel& Level, std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, FViewCells View);
 // One step of the player's weapon: the slope ramp, then a shot when the trigger is held and the weapon's delay has passed (WeaponFire at 00443bd0).
 // SpriteSize is the smaller side of the player's current frame, which picks the random muzzle distance.
-void StepPlayerWeapon(FCombat& Combat, bool bFire, const FPlayerState& Player, const FLevelObject& PlayerObject, size_t PlayerIndex, float SpriteSize,
+// The world offset Distance along a direction, by the table WeaponFire and ObjectDraw use (0050d440).
+FCollisionPoint WorldFacingOffset(int Direction, float Distance);
+void StepPlayerWeapon(FCombat& Combat, bool bFire, FPlayerState& Player, const FLevelObject& PlayerObject, size_t PlayerIndex, float SpriteSize,
     FPlayerInventory& Inventory, FMessages& Messages);
 // The seeker scan, top rotation and fire decision of every turret (SeekerUpdate at 0042c5a0), then its weapon update.
 void StepTurrets(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level, std::vector<FObjectBody>& Bodies,
