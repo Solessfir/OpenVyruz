@@ -542,10 +542,20 @@ const FLevelPropertyBlock* FindItemBlock(const FLevelObject& Object)
     return nullptr;
 }
 
-// ponytail: crates also carry item blocks for the surprises they drop; the exe tells them apart by an item-attribute flag that is not decoded yet, so pickups are recognised by being indestructible.
+// The class library (keyword 0x8a, FUN_00407e00's table) reads Vision-Angle as an integer and keeps (angle % 361) / 30: the directions either side of the facing that the cone takes in, half a direction per 30 degrees.
+// The data uses 360 (every direction) and 60.
+int VisionDirections(const float Degrees)
+{
+    constexpr int FullCircle = 361;
+    constexpr int DegreesPerStep = 30;
+    return int(Degrees) % FullCircle / DegreesPerStep;
+}
+
+// EngineUpdateObjects picks an item up only when its TYPE Item sets Only-for-player (keyword 0xdb, item attribute +0x10 bit 1); grilles, stains, smoke, saving plots and the empty standby carry item blocks without it.
 bool IsPickup(const FLevelObject& Object)
 {
-    return Object.SubType == "item" && FindItemBlock(Object) && ParseLevelFloat(Object.Properties.Find("Indestructible")).value_or(0.f) != 0.f;
+    const FLevelPropertyBlock* const Item = Object.SubType == "item" ? FindItemBlock(Object) : nullptr;
+    return Item && ParseLevelFloat(Item->Find("Only-for-player")).value_or(0.f) != 0.f;
 }
 
 const FLevelPropertyBlock* FindBlock(const FLevelPropertyBlock& Block, const std::string_view Kind)
@@ -832,9 +842,9 @@ FPlayerState SpawnPlayer(const FLevelObject& Object, const FMovementClass& Class
 
 namespace
 {
-// ApplyDamage at 0043ca30: the shield absorbs first and is reset once it breaks; whatever is left comes off the energy.
-// ponytail: the shield resets to a class field at +0x6c that is not decoded yet; zero until then.
-void ApplyDamage(float& Energy, float& Shield, float Amount)
+// ApplyDamage at 0043ca30: the shield absorbs first and, once it breaks, takes back the class's Shield.Min (class +0x6c); whatever is left comes off the energy.
+// Every class's minimum is zero but four of underground\item.3dc's, whose shields refill whole each time they break.
+void ApplyDamage(float& Energy, float& Shield, const float ShieldMin, float Amount)
 {
     if (0.f < Shield)
     {
@@ -845,10 +855,15 @@ void ApplyDamage(float& Energy, float& Shield, float Amount)
         }
 
         Amount = -Shield;
-        Shield = 0.f;
+        Shield = ShieldMin;
     }
 
     Energy = float(double(Energy) - double(Amount));
+}
+
+void ApplyDamage(FPlayerInventory& Inventory, const float Amount)
+{
+    ApplyDamage(Inventory.Energy, Inventory.Shield, Inventory.ShieldMin, Amount);
 }
 
 void ApplyDamage(FObjectBody& Body, const float Amount)
@@ -859,7 +874,7 @@ void ApplyDamage(FObjectBody& Body, const float Amount)
     }
 
     Body.bDamaged = true;
-    ApplyDamage(Body.Energy, Body.Shield, Amount);
+    ApplyDamage(Body.Energy, Body.Shield, Body.ShieldMin, Amount);
 }
 
 // EngineUpdateObjects (004406e0) on a knock: a mover that travelled more than 2 units this step hurts itself and what it hit by half its speed times its weight, or itself alone by a tenth of that against the terrain.
@@ -1190,6 +1205,7 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
         .bFinalObject = Number(&Properties, "Final-object") != 0.f,
         .ShieldMax = Number(FindBlock(Properties, "Shield"), "Max"),
         .ShieldUpStep = Number(&Properties, "Shield-up-step"),
+        .ShieldMin = Number(FindBlock(Properties, "Shield"), "Min"),
     };
     Body.Absorptions = ReadAbsorptions(Properties);
 
@@ -1247,9 +1263,11 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
         Body.State.Pose = Body.State.TargetPose = Body.State.Direction * ActorPoses + 1;
         ApplySavedMotion(Properties, Body.State);
         constexpr float TankCorrectionScale = 0.01f;
+        const auto ClassBlock = Level.Classes.find(ToLowerName(Object.ClassName));
         FActor& Actor = Body.Actor.emplace(FActor{
             .Behaviour = *Behaviour,
             .bTurnOnPlace = Number(&Properties, "Can-turn-on-place") != 0.f,
+            .ClassTurnTimeout = int(Number(ClassBlock != Level.Classes.end() ? &ClassBlock->second : &Properties, "Turn-timeout")),
             .PosesPerDirection = ActorPoses,
             .bTwoPieces = Number(&Properties, "Two-pieces") != 0.f,
             .CorrectionScale = Object.SubType == TankKind || bLegged ? TankCorrectionScale : 1.f,
@@ -1284,11 +1302,9 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
         const bool bTracker = Target == BehaviourTracker;
         if (const FLevelPropertyBlock* const Seeker = FindTypeBlock(Properties, bTracker ? "Tracker" : "Seeker"); Seeker && (Target == BehaviourSeeker || bTracker))
         {
-            // ponytail: the Vision-Angle conversion is not traced; it is read as for turrets, half a direction per 30 degrees.
-            constexpr float DegreesPerVisionStep = 30.f;
             Actor.Seeker = FSeeker{
                 .bTracker = bTracker,
-                .VisionDirections = int(Number(Seeker, "Vision-Angle") / DegreesPerVisionStep),
+                .VisionDirections = VisionDirections(Number(Seeker, "Vision-Angle")),
                 .SensorRange = Number(Seeker, "Sensor-Range"),
                 .Work = { .Interval = int32_t(Number(Seeker, "Scan-Delay")), .Radius = uint32_t(Number(Seeker, "Min-distance")) },
             };
@@ -1895,8 +1911,7 @@ void EndSurprise(FSurpriseState& State, const ESurprise Type, FPlayerState& Play
         break;
     case ESurprise::Extasy:
     case ESurprise::LowSpeed:
-        Class.AccelerationStep = State.AccelerationStep;
-        Class.DecelerationStep = State.DecelerationStep;
+        Class.SpeedMax = State.SpeedMax;
         break;
     case ESurprise::Pinball:
         Class.Elasticity = State.Elasticity;
@@ -2017,6 +2032,7 @@ FPlayerInventory CreateInventory(const FLevelObject& Player)
         .EnergyMax = Value("Energy", "Max"),
         .Shield = Value("Shield", "Initial"),
         .ShieldMax = Value("Shield", "Max"),
+        .ShieldMin = Value("Shield", "Min"),
         .Absorptions = ReadAbsorptions(Properties),
         .Weight = Value("Weight", "Initial") != 0.f ? Value("Weight", "Initial") : 1.f,
         .ShieldUpStep = ParseLevelFloat(Properties.Find("Shield-up-step")).value_or(0.f),
@@ -2222,11 +2238,14 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
             bUsed = true;
         }
 
-        // ponytail: AddAmmo (00444540) is not traced yet; ammo fills up to the stock's maximum and counts as used when anything was added.
-        if (!Pickup.AmmoType.empty() && Pickup.AddAmmo != 0.f)
+        // PlayerAddAmmo (00444540): only when one of the player's weapons has a TYPE Weapon block for the item's ammo, the first stock of it that is not full fills by the item's amount up to its maximum.
+        // Under Reload Weapons it looks in the saved copy (session +0x2208), which holds the stocks but no weapon, so nothing is added.
+        const auto TakesAmmo = [&](const size_t Weapon) { return std::ranges::contains(Combat->Weapons[Weapon].AmmoChoices, ToLowerName(Pickup.AmmoType)); };
+        if (!Pickup.AmmoType.empty() && Pickup.AddAmmo != 0.f && (!Combat || std::ranges::any_of(Combat->PlayerWeapons, TakesAmmo)) &&
+            Inventory.Surprises.Active != ESurprise::ReloadWeapons)
         {
-            const auto Stock = std::ranges::find(Inventory.Ammo, Pickup.AmmoType, &FAmmoStock::Name);
-            if (Stock != Inventory.Ammo.end() && Stock->Count < Stock->Max)
+            const auto Stock = std::ranges::find_if(Inventory.Ammo, [&](const FAmmoStock& Entry) { return ToLowerName(Entry.Name) == ToLowerName(Pickup.AmmoType) && Entry.Count < Entry.Max; });
+            if (Stock != Inventory.Ammo.end())
             {
                 Stock->Count = std::min(Stock->Max, Stock->Count + Pickup.AddAmmo);
                 OffsetY += bUsed ? LineStep : 0;
@@ -2795,7 +2814,7 @@ void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float
         {
             if (!Player.State.bInvisible && !Player.Inventory.Surprises.bInvulnerable)
             {
-                ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield, *Amount);
+                ApplyDamage(Player.Inventory, *Amount);
                 Player.Inventory.bHit = true;
             }
 
@@ -3832,10 +3851,8 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
         constexpr uint32_t ExtasyVoiceDelay = 3000;
         constexpr uint32_t ExtasyVoiceDuration = 2000;
         QueueVoice((GetVoiceClock() & ExtasyVoiceMask) < FirstYeepee ? EVoice::Ariba : EVoice::Yeepee, ExtasyVoiceDelay, ExtasyVoiceDuration, 0);
-        State.AccelerationStep = Class.AccelerationStep;
-        State.DecelerationStep = Class.DecelerationStep;
-        Class.AccelerationStep = Class.AccelerationStep + Class.AccelerationStep;
-        Class.DecelerationStep = Class.DecelerationStep + Class.DecelerationStep;
+        State.SpeedMax = Class.SpeedMax;
+        Class.SpeedMax = Class.SpeedMax + Class.SpeedMax;
         break;
     }
     case ESurprise::AutoShieldUp:
@@ -3846,11 +3863,10 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
     }
     case ESurprise::LowSpeed:
     {
+        // DAT_00509568.
         constexpr float LowSpeedScale = 0.25f;
-        State.AccelerationStep = Class.AccelerationStep;
-        State.DecelerationStep = Class.DecelerationStep;
-        Class.AccelerationStep *= LowSpeedScale;
-        Class.DecelerationStep *= LowSpeedScale;
+        State.SpeedMax = Class.SpeedMax;
+        Class.SpeedMax *= LowSpeedScale;
         break;
     }
     case ESurprise::Pinball:
@@ -4530,10 +4546,8 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
             return std::unexpected(std::format("{}: {}", Object.ClassName, Weapon.error()));
         }
 
-        // ponytail: the Vision-Angle conversion is not traced; it is read as the full cone, half a direction (15 degrees) per 30 degrees.
-        constexpr float DegreesPerVisionStep = 30.f;
         FTurret Turret{
-            .VisionDirections = int(ClassNumber(*Seeker, "Vision-Angle") / DegreesPerVisionStep),
+            .VisionDirections = VisionDirections(ClassNumber(*Seeker, "Vision-Angle")),
             .SensorRange = ClassNumber(*Seeker, "Sensor-Range"),
             .ScanDelay = int32_t(ClassNumber(*Seeker, "Scan-Delay")),
             .MinDistance = ClassNumber(*Seeker, "Min-distance"),
@@ -5054,15 +5068,31 @@ FCollisionPoint SegmentCorrection(const FObjectBody& Body, const FRouteWork& Wor
     return CollisionFromWorld({ .X = (OffsetX - OffsetY) * WorldXScale, .Y = (OffsetY + OffsetX) * WorldYScale });
 }
 
-// SeekerTurnBody at 0042cfa0 for a body that can turn on the spot: one pose toward the segment per Turn-timeout.
-// ponytail: the original scales the timeout with speed for bodies that cannot turn on the spot, such as tanks; the port turns them at the class's timeout.
+// SeekerTurnBody at 0042cfa0: one pose toward the segment per turn timeout (object +0xec).
+// A body that cannot turn on the spot, such as a jeep or a tank, turns only while moving at 1 or more (DAT_0050950c); with a class Turn-timeout its timeout becomes
+// (1 - speed / Speed-max) times it, quicker the faster it goes, and the time already waited is cut to that.
 // A two-piece body holds still while its top aims, and its top turns along with it.
-void TurnActorBody(FPlayerState& State, const FMovementClass& Class, FActor& Actor, const uint32_t Range, const int Direction, const int32_t Step)
+void TurnActorBody(FPlayerState& State, FMovementClass& Class, FActor& Actor, const uint32_t Range, const int Direction, const int32_t Step)
 {
     constexpr uint32_t Firing = 4;
     if (Actor.bTwoPieces && (Range & Firing) != 0)
     {
         return;
+    }
+
+    if (!Actor.bTurnOnPlace)
+    {
+        constexpr float TurnSpeedMin = 1.f;
+        if (State.SpeedMagnitude < TurnSpeedMin)
+        {
+            return;
+        }
+
+        if (Actor.ClassTurnTimeout != 0)
+        {
+            Class.TurnTimeout = TruncateLow((1. - double(State.SpeedMagnitude) / double(Class.SpeedMax)) * double(Actor.ClassTurnTimeout));
+            State.TurnTimer = std::min(State.TurnTimer, Class.TurnTimeout);
+        }
     }
 
     const int PosesPerStep = Actor.PosesPerDirection;
@@ -5781,7 +5811,7 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
         // ApplyDamage spares an invisible player and an invulnerable one, as for shots.
         if (Knock && Knock->Damage != 0.f && !Target->State.bInvisible && !Target->Inventory.Surprises.bInvulnerable)
         {
-            ApplyDamage(Target->Inventory.Energy, Target->Inventory.Shield, Knock->Damage);
+            ApplyDamage(Target->Inventory, Knock->Damage);
         }
     }
 }
@@ -6344,8 +6374,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
                 if (!Player.State.bInvisible && !Player.Inventory.Surprises.bInvulnerable)
                 {
                     const auto Absorption = std::ranges::find(Player.Inventory.Absorptions, Ammo.Name, &FAbsorption::AmmoClass);
-                    ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield,
-                        Absorption == Player.Inventory.Absorptions.end() ? Ammo.Damage : float(double(Ammo.Damage) * double(Absorption->Coeff)));
+                    ApplyDamage(Player.Inventory, Absorption == Player.Inventory.Absorptions.end() ? Ammo.Damage : float(double(Ammo.Damage) * double(Absorption->Coeff)));
                 }
             }
 

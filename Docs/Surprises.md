@@ -20,8 +20,8 @@ The pickup branch of `EngineUpdateObjects` leaves a surprise lying while the pla
 | 3 | malus-trap | 1 ms | An Explosion FX (there is no "Shock Wave" class); energy and shield times 0.75; `RandomRange(-16, 16)` twice for the screen shake. |
 | 4 | malus-weapon-jam | 10 s | The weapon in hand does not fire (session `+0x220c`). |
 | 5 | malus-darken | 20 s | A dark zone around the player. |
-| 6 | malus-extasy | 10 s | Acceleration and deceleration doubled, screen effects. |
-| 7 | malus-low-speed | 20 s | Acceleration and deceleration times 0.25. |
+| 6 | malus-extasy | 10 s | `Speed-max` and `Speed-min` (object `+0x1a4`, `+0x1a8`) doubled, screen effects. |
+| 7 | malus-low-speed | 20 s | `Speed-max` and `Speed-min` times 0.25. |
 | 8 | malus-pinball | 20 s | Elasticity 1.5. |
 | 9 | malus-banana | 15 s | Friction 0.999 both ways and grip 1; the end restores the friction only. |
 | 10 | malus-blocked-motor | 5 s | No command and no firing (object flag `0x2000000`). |

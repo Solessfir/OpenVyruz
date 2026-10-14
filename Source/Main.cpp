@@ -4158,9 +4158,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     int32_t FinaleTimer = 0;
     int32_t FinaleFlashTimer = 0;
     bool bFinaleFlash = false;
-    // The class's acceleration and turn timeout, which the speed surprises and the speed toggle change.
+    // The class's Speed-max (object +0x1a4) and turn timeout, which the speed surprises and the speed toggle change.
     // A session's Turn-timeout is the player's own; high speed goes back to the class's.
-    const float ClassAcceleration = PlayerClass ? PlayerClass->AccelerationStep : 0.f;
+    const float ClassSpeedMax = PlayerClass ? PlayerClass->SpeedMax : 0.f;
     std::string PlayerClassName = PlayerObject ? PlayerObject->ClassName : std::string();
     std::ranges::transform(PlayerClassName, PlayerClassName.begin(), [](const unsigned char Character) { return char(std::tolower(Character)); });
     const auto PlayerClassBlock = Level->Classes.find(PlayerClassName);
@@ -4179,7 +4179,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             .Money = Inventory.Money,
             .Kills = Inventory.Kills,
             .Enemies = CountEnemies(*Level, Bodies),
-            .bBoost = PlayerClass && PlayerClass->AccelerationStep != ClassAcceleration,
+            .bBoost = PlayerClass && PlayerClass->SpeedMax != ClassSpeedMax,
             .bLocked = Combat && Combat->bPlayerLocked,
             .bSurprise = Inventory.Surprises.Active != ESurprise::None,
         };
@@ -4866,7 +4866,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 Panel->CyclePanels(glfwGetKey(Window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS);
             }
 
-            // action-toggle-hilo-speed (Page Down by default), FUN_0043b830: at full acceleration or more the player drops to a third of the class's and turns 1.5 times slower ("low speed"); otherwise both return to the class's ("high speed").
+            // action-toggle-hilo-speed (Page Down by default), FUN_0043b830: at the class's Speed-max or more the player's drops to a third of it and turns 1.5 times slower ("low speed"); otherwise both return to the class's ("high speed").
             const bool bSpeedPressed = ActionDown(EAction::ToggleSpeed) && !bSpeedKeyDown;
             bSpeedKeyDown = ActionDown(EAction::ToggleSpeed);
             if (bSpeedPressed && Player && PlayerClass && !Demo && !bFinaleStarted)
@@ -4875,15 +4875,15 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 constexpr double LowSpeedTurnScale = 1.5f;
                 constexpr uint32_t SpeedVoiceDuration = 1000;
                 constexpr uint32_t SpeedVoiceHold = 2000;
-                if (PlayerClass->AccelerationStep >= ClassAcceleration)
+                if (PlayerClass->SpeedMax >= ClassSpeedMax)
                 {
-                    PlayerClass->AccelerationStep = ClassAcceleration * LowSpeedScale;
+                    PlayerClass->SpeedMax = ClassSpeedMax * LowSpeedScale;
                     PlayerClass->TurnTimeout = TruncateLow(double(PlayerClass->TurnTimeout) * LowSpeedTurnScale);
                     QueueVoice(EVoice::LowSpeed, 0, SpeedVoiceDuration, SpeedVoiceHold);
                 }
                 else
                 {
-                    PlayerClass->AccelerationStep = ClassAcceleration;
+                    PlayerClass->SpeedMax = ClassSpeedMax;
                     PlayerClass->TurnTimeout = ClassTurnTimeout;
                     QueueVoice(EVoice::HighSpeed, 0, SpeedVoiceDuration, SpeedVoiceHold);
                 }

@@ -205,9 +205,9 @@ struct FSurpriseState
     int32_t WarpCounter = 0;
     // Session +0x220c: the weapon that will not fire.
     std::optional<size_t> JammedWeapon;
-    // The movement values the surprise replaced (kept at session +0x2208).
-    float AccelerationStep = 0.f;
-    float DecelerationStep = 0.f;
+    // The movement values the surprise replaced (kept at session +0x2208): Extasy and Low Speed change the object's Speed-max (+0x1a4) and Speed-min (+0x1a8), which ObjectInitializeClassProperties (00419d30) copies from class +0x64 and +0x60.
+    // ponytail: the port keeps no Speed-min, which nothing it runs reads.
+    float SpeedMax = 0.f;
     float Elasticity = 0.f;
     FCollisionPoint Friction;
     // Session +0x25a0: the red, green and blue gamma offsets that flashes push and each frame takes back by one (EngineRunLevel at 0043e5f0).
@@ -343,6 +343,8 @@ struct FActor
     uint32_t Behaviour = 0;
     // Class property Can-turn-on-place (class flag 0x20).
     bool bTurnOnPlace = false;
+    // The class's own Turn-timeout (class +0x7c), from which a body that cannot turn on the spot takes its timeout by its speed.
+    int ClassTurnTimeout = 0;
     // Body poses per direction: 2 for cops' 48 poses, 1 for the 24-pose vehicles (SeekerTurnBody, PlayerAdvancePose at 00438390).
     int PosesPerDirection = 2;
     // Two-pieces (class flag 0x20 at +0x20, bit 2): a turret top that aims on its own while the body holds still in firing range.
@@ -459,6 +461,8 @@ struct FObjectBody
     // The class's Shield.Max and Shield-up-step (object +0xe4): EngineUpdateObjects adds the step to the shield on each update, up to the maximum.
     float ShieldMax = 0.f;
     float ShieldUpStep = 0.f;
+    // The class's Shield.Min (class +0x6c), which a shield takes back when it breaks.
+    float ShieldMin = 0.f;
     std::vector<FAbsorption> Absorptions;
     // Every TYPE Explosion block: the Boom-fx objects spawned on destruction and the blasts they carry.
     std::vector<FExplosionBlock> Explosions;
@@ -524,6 +528,8 @@ struct FPlayerInventory
     float EnergyMax = 0.f;
     float Shield = 0.f;
     float ShieldMax = 0.f;
+    // Shield.Min (class +0x6c), which the shield takes back when it breaks.
+    float ShieldMin = 0.f;
     float Money = 0.f;
     std::vector<FAmmoStock> Ammo;
     // Carried key items in pickup order (object +0x11c lists them newest first).

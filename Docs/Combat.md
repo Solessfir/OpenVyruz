@@ -94,7 +94,7 @@ While the timer runs, `EngineRunLevel` reads no action keys, and `FUN_00445dd0` 
 
 `AreaDamage` scans the grid cells within the zone and damages every live object whose collision centre lies within `Damage-zone` units: the full damage at distance zero, otherwise `(zone - trunc(sqrt(trunc(d^2)))) / zone * damage`.
 
-`ApplyDamage` (`0043ca30`) takes damage from the shield first; when the shield breaks, the rest goes to energy. An object whose energy reaches zero is destroyed in its next update. Cops, generators, walkers, burners, jeeps, rollers, helicopters, turrets, spiders and tanks pay their `Reward` to the player.
+`ApplyDamage` (`0043ca30`) takes damage from the shield first; when the shield breaks, the rest goes to energy and the shield takes back the class's `Shield [Min]` (class `+0x6c`; the block's `Initial`, `Min` and `Max` fill `+0x68` to `+0x70`). Every class's minimum is zero but four of `underground\item.3dc`'s, whose shield equals its maximum, so it refills whole each time it breaks. An object whose energy reaches zero is destroyed in its next update. Cops, generators, walkers, burners, jeeps, rollers, helicopters, turrets, spiders and tanks pay their `Reward` to the player.
 
 ## Effects and explosions
 
