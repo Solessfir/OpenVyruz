@@ -905,6 +905,11 @@ void KnockDamage(const FPlayerState& Mover, const FMovementClass& Class, const F
 }
 }
 
+namespace
+{
+bool HuntsPlayer(const FObjectBody& Body);
+}
+
 const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class, const FPlayerCommand& Command, const uint32_t StepMilliseconds,
     const FTerrainCollision& Terrain, const FLevel& Level, const std::span<FObjectBody> Bodies, FObjectBody* const Self, FPlayerKnock* const PlayerHit)
 {
@@ -1004,6 +1009,90 @@ const FObjectBody* StepPlayer(FPlayerState& Player, const FMovementClass& Class,
         return nullptr;
     }
 
+    // AmmoHit (0043d7d0) moves a mine to the contact point, and AmmoImpact (0043d350) pushes what it struck by 40 / Weight along the mine's facing.
+    // ponytail: a mine's own TYPE Ammo damage and blast, zero for every mine class, and Ignore-owner, off for both, are left out.
+    constexpr double ImpactPush = 40.;
+    const auto Impact = [&](const FObjectBody& Mine, FPlayerState& Struck, const float Weight)
+    {
+        const FCollisionPoint Facing = FacingVector(Mine.State.Direction);
+        Struck.Velocity.X = float(double(Facing.X) * ImpactPush / double(Weight) + double(Struck.Velocity.X));
+        Struck.Velocity.Y = float(double(Facing.Y) * ImpactPush / double(Weight) + double(Struck.Velocity.Y));
+    };
+    const auto Count = [](FMine& Mine, const bool bHunter) { ++(bHunter ? Mine.Hits : Mine.Misses); };
+
+    // A mover that is not ammo itself sets off the mine it runs into (EngineUpdateObjects calls AmmoHit with its destroy flag). The mover's update ends there:
+    // its collision centre stays and its position is not put back.
+    const bool bAmmoMover = Self && Self->Mine.has_value();
+    if (HitBody && HitBody->Mine && !HitBody->Mine->bStruck && !bAmmoMover)
+    {
+        HitBody->Mine->bStruck = true;
+        Count(*HitBody->Mine, Self && HuntsPlayer(*Self));
+        HitBody->State.Position = WorldFromCollision(*Contact);
+        HitBody->bPassable = true;
+        HitBody->bDamaged = true;
+        HitBody->Energy = 0.f;
+        Impact(*HitBody, Player, Class.Weight);
+        return HitBody;
+    }
+
+    // A pushed mine (ammo with neither On-hit nor On-object-hit) goes off on the terrain. Against an object AmmoHit moves it and pushes the object without destroying it,
+    // then the object's shield and energy wear the mine's shield and its energy, both by the whole amount once the shield holds it; a mine with energy left goes on through.
+    // ponytail: pushed objects never meet the player in the port (StepObjectBodies passes no player circle), so a pushed mine passes it.
+    if (Self && Self->Mine && !Self->Mine->bStruck)
+    {
+        Self->State.Position = WorldFromCollision(*Contact);
+        if (!HitBody)
+        {
+            Self->Mine->bStruck = true;
+            Count(*Self->Mine, false);
+            Self->bPassable = true;
+            Self->bDamaged = true;
+            Self->Energy = 0.f;
+            return nullptr;
+        }
+
+        Count(*Self->Mine, HuntsPlayer(*HitBody));
+        Impact(*Self, HitBody->State, HitBody->Class.Weight);
+        float Wear = HitBody->Shield + HitBody->Energy;
+        if (0.f < Wear)
+        {
+            if (Self->Shield < Wear)
+            {
+                if (0.f < Self->Shield)
+                {
+                    Wear -= Self->Shield;
+                    Self->Shield = 0.f;
+                }
+            }
+            else
+            {
+                Self->Shield -= Wear;
+            }
+
+            if (0.f < Wear)
+            {
+                if (Self->Energy < Wear)
+                {
+                    Self->Energy = 0.f < Self->Energy ? 0.f : Self->Energy;
+                }
+                else
+                {
+                    Self->Energy -= Wear;
+                }
+            }
+        }
+
+        if (Self->Energy <= 0.f)
+        {
+            Self->bDamaged = true;
+            return HitBody;
+        }
+
+        Player.Velocity = { .X = float(double(TimeScale) * Delta.X), .Y = float(double(TimeScale) * Delta.Y) };
+        Player.Center = Candidate;
+        return HitBody;
+    }
+
     // ObjectRestorePosition at 004449f0 undoes the move before the bounce is resolved.
     Player.Position = Player.PreviousPosition;
     KnockDamage(Player, Class, Delta, Self, HitBody, PlayerHit);
@@ -1039,7 +1128,7 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
 {
     const FLevelObject& Object = Level.Objects[Index];
     // Kinds come from the class Sub-type or the GAF folder (CreateObject at 00413800); pickups are collected instead of blocking.
-    constexpr std::array<std::string_view, 8> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller", "lift", "gate" };
+    constexpr std::array<std::string_view, 9> SolidKinds = { "item", "thing", "turret", "staticgen", "burner", "roller", "lift", "gate", "ammo" };
     constexpr std::array<std::string_view, 8> ActorKinds = { "cop", "jeep", "tank", "walker", "spider", "heli", "burner", "roller" };
     constexpr std::string_view CopKind = "cop";
     constexpr std::string_view BurnerKind = "burner";
@@ -1094,6 +1183,24 @@ std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, const size_t In
         {
             Body.Explosions.push_back({ .BoomEffect = ToLowerName(Child.Find("Boom-fx")), .Damage = Number(&Child, "Damage"), .Zone = Number(&Child, "Damage-zone") });
         }
+    }
+
+    // ObjectInitializeClassProperties (00419d30) starts the on and off timers at Random-on-timeout's and Random-off-timeout's Initial; a session sets them with On-timeout and Off-timeout.
+    if (const FLevelPropertyBlock* const Ammo = Object.SubType == "ammo" ? FindTypeBlock(Properties, "Ammo") : nullptr)
+    {
+        const FLevelPropertyBlock* const On = FindBlock(Properties, "Random-on-timeout");
+        const FLevelPropertyBlock* const Off = FindBlock(Properties, "Random-off-timeout");
+        Body.Mine = FMine{
+            .DamageTimer = uint32_t(Number(Ammo, "Damage-after")),
+            .OnTimer = int32_t(ParseLevelFloat(Properties.Find("On-timeout")).value_or(Number(On, "Initial"))),
+            .OffTimer = int32_t(ParseLevelFloat(Properties.Find("Off-timeout")).value_or(Number(Off, "Initial"))),
+            .OnMin = int32_t(Number(On, "Min")),
+            .OnMax = int32_t(Number(On, "Max")),
+            .OffMin = int32_t(Number(Off, "Min")),
+            .OffMax = int32_t(Number(Off, "Max")),
+            .bKeepBoxHidden = Number(&Properties, "Keep-bb-when-invisible") != 0.f,
+        };
+        Body.State.Direction = Object.Direction < DirectionCount ? Object.Direction : 0;
     }
 
     Body.Altitude = Object.Altitude;
@@ -2864,6 +2971,7 @@ std::expected<void, std::string> LoadAmmoClass(FCombat& Combat, const FLevel& Le
     }
 
     const FLevelPropertyBlock* const EnergyBlock = FindBlock(*Ammo, "Energy");
+    const std::optional<uint32_t> Behaviour = ParseBehaviour(Ammo->Find("Behaviour"));
     Combat.AmmoClasses.push_back({
         .Name = AmmoName,
         .Movement = Movement,
@@ -2877,9 +2985,20 @@ std::expected<void, std::string> LoadAmmoClass(FCombat& Combat, const FLevel& Le
         .bBouncesOffTerrain = ParseLevelFloat(AmmoBlock->Find("On-hit")).value_or(1.f) == 0.f && ClassNumber(*AmmoBlock, "On-object-hit") != 0.f,
         .Energy = EnergyBlock ? ClassNumber(*EnergyBlock, "Initial") : 0.f,
         .bIndestructible = ClassNumber(*Ammo, "Indestructible") != 0.f,
+        .bDropped = Behaviour && (*Behaviour & BehaviourMovementMask) == BehaviourFixed,
+        .ActiveAfter = int32_t(ClassNumber(*AmmoBlock, "Active-after")),
     });
     for (const FLevelPropertyBlock& Child : Ammo->Children)
     {
+        if (Child.Kind == "TYPE" && Child.Name == "Explosion")
+        {
+            Combat.AmmoClasses.back().Explosions.push_back({
+                .BoomEffect = ToLowerName(Child.Find("Boom-fx")),
+                .Damage = ClassNumber(Child, "Damage"),
+                .Zone = ClassNumber(Child, "Damage-zone"),
+            });
+        }
+
         if (Child.Kind == "CREATE")
         {
             Combat.AmmoClasses.back().Creates.push_back({
@@ -3142,7 +3261,15 @@ void FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Shooter, F
             Shot.Slope = State.Slope;
         }
 
-        Combat.Projectiles.push_back(Shot);
+        if (Ammo->bDropped)
+        {
+            Combat.DroppedMines.push_back({ .AmmoIndex = Shot.AmmoIndex, .Position = Muzzle, .Direction = Shooter.Direction, .Owner = Shooter.ObjectIndex });
+        }
+        else
+        {
+            Combat.Projectiles.push_back(Shot);
+        }
+
         Stock->Count -= 1.f;
         if (Stock->Count < 1.f)
         {
@@ -4259,6 +4386,10 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
     for (const FAmmoClass& Ammo : Combat.AmmoClasses)
     {
         EffectNames.push_back(Ammo.HitEffect);
+        for (const FExplosionBlock& Explosion : Ammo.Explosions)
+        {
+            EffectNames.push_back(Explosion.BoomEffect);
+        }
     }
 
     for (const FObjectBody& Body : Bodies)
@@ -5672,6 +5803,77 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         return Trail.Age >= Trail.LifeTime;
     });
 
+    // The mines' part of EngineUpdateObjects (004406e0). While the off timer runs a mine is left out of its update; when it runs out ObjectShow (00439140) shows the mine and makes it solid,
+    // and the on timer is drawn; when that one runs out ObjectHide (004391d0) hides it, solid only with Keep-bb-when-invisible, and the off timer is drawn.
+    // Each draw reseeds the generator with the object's own seed (object +0x2a8 and +0x2ac), the level seed CreateObject gives every object, and puts the shared one back, so every draw is the same.
+    for (FObjectBody& Body : Bodies)
+    {
+        if (!Body.Mine || Level.Objects[Body.ObjectIndex].bRemoved)
+        {
+            continue;
+        }
+
+        FMine& Mine = *Body.Mine;
+        if (Mine.Owner == Player.ObjectIndex)
+        {
+            Player.Inventory.ShotsHit += Mine.Hits;
+            Player.Inventory.ShotsMissed += Mine.Misses;
+        }
+
+        Mine.Hits = 0;
+        Mine.Misses = 0;
+        if (Mine.bStruck)
+        {
+            continue;
+        }
+
+        const int32_t Step = int32_t(StepMilliseconds);
+        if (Mine.OffTimer != 0)
+        {
+            if (Mine.OffTimer < 0 || (Mine.OffTimer -= Step) > 0)
+            {
+                continue;
+            }
+
+            Mine.OnTimer = 0;
+            Mine.OffTimer = 0;
+            Body.bInvisible = false;
+            Body.bPassable = false;
+            if (Mine.OnMax != 0)
+            {
+                Mine.OnTimer = FRandom{}.Range(Mine.OnMin, Mine.OnMax);
+            }
+        }
+
+        if (0 < Mine.OnTimer && (Mine.OnTimer -= Step) < 0)
+        {
+            Mine.OnTimer = 0;
+            Mine.OffTimer = -1;
+            Body.bInvisible = true;
+            Body.bPassable = !Mine.bKeepBoxHidden;
+            if (Mine.OffMax != 0)
+            {
+                Mine.OffTimer = FRandom{}.Range(Mine.OffMin, Mine.OffMax);
+            }
+
+            continue;
+        }
+
+        // Damage-after sets it off where it lies, through ObjectDestroy.
+        if (Mine.DamageTimer != 0)
+        {
+            if (Mine.DamageTimer <= StepMilliseconds)
+            {
+                Body.bDamaged = true;
+                Body.Energy = 0.f;
+            }
+            else
+            {
+                Mine.DamageTimer -= StepMilliseconds;
+            }
+        }
+    }
+
     std::erase_if(Combat.Projectiles, [&](FProjectile& Shot)
     {
         Shot.Age += StepMilliseconds;
@@ -5699,12 +5901,16 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         // Target is the object struck, bPlayer the player struck; bSurface marks a wall or other terrain contact.
         const auto Detonate = [&](FObjectBody* const Target, const bool bPlayer, const bool bSurface)
         {
-            // AreaDamage and AmmoHit add every object a player's shot finishes off to the player's kills.
+            // AreaDamage and AmmoHit add every object a player's shot finishes off to the player's kills. Only AmmoHit, on a contact, counts the shot as a hit or a miss.
             std::vector<bool> WasAlive;
             if (Shot.Owner == Player.ObjectIndex)
             {
-                const bool bHit = Target && (HuntsPlayer(*Target) || Level.Objects[Target->ObjectIndex].SubType == "item");
-                ++(bHit ? Player.Inventory.ShotsHit : Player.Inventory.ShotsMissed);
+                if (Target || bPlayer || bSurface)
+                {
+                    const bool bHit = Target && (HuntsPlayer(*Target) || Level.Objects[Target->ObjectIndex].SubType == "item");
+                    ++(bHit ? Player.Inventory.ShotsHit : Player.Inventory.ShotsMissed);
+                }
+
                 std::ranges::transform(Bodies, std::back_inserter(WasAlive), [](const FObjectBody& Body) { return 0.f < Body.Energy; });
             }
 
@@ -5787,6 +5993,12 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             else if (Shot.Altitude < 1)
             {
                 SpawnEffect(Combat, GroundImpactEffect, Shot.State.Position, 0.f);
+            }
+
+            // Then ObjectDestroy (00437d40) hands each of the class's TYPE Explosion blocks to a Boom-fx, as it does for any object.
+            for (const FExplosionBlock& Explosion : Ammo.Explosions)
+            {
+                SpawnEffect(Combat, Explosion.BoomEffect, Shot.State.Position, float(Shot.Altitude), Explosion.Damage, Explosion.Zone);
             }
 
             return true;
@@ -6055,6 +6267,36 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             Combat.CreatedObjects.push_back(*Index);
         }
     }
+
+    // WeaponFire (00443bd0) makes a mine an object facing the shooter's way; with an active-after ObjectHide (004391d0) leaves it shown but passable, and its off timer runs that long.
+    for (const FCombat::FDroppedMine& Dropped : Combat.DroppedMines)
+    {
+        const FAmmoClass& Ammo = Combat.AmmoClasses[Dropped.AmmoIndex];
+        const std::optional<size_t> Index = CreateLevelObject(Level, Ammo.Name, Dropped.Position.X, Dropped.Position.Y);
+        if (!Index)
+        {
+            continue;
+        }
+
+        Level.Objects[*Index].Direction = Dropped.Direction;
+        std::optional<FObjectBody> Body = CreateObjectBody(Level, *Index);
+        if (Body && Body->Mine)
+        {
+            Body->Mine->Owner = Dropped.Owner;
+            if (Ammo.ActiveAfter != 0)
+            {
+                Body->bPassable = true;
+                Body->Mine->OnTimer = 0;
+                Body->Mine->OffTimer = Ammo.ActiveAfter;
+            }
+
+            Bodies.push_back(std::move(*Body));
+        }
+
+        Combat.CreatedObjects.push_back(*Index);
+    }
+
+    Combat.DroppedMines.clear();
 }
 
 std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive)
@@ -6285,6 +6527,139 @@ int CountEnemies(const FLevel& Level, const std::span<const FObjectBody> Bodies)
     }));
 }
 
+namespace
+{
+// UNDERGROUND\T2U1's minefield: the player drives into a placed mine and sets it off, and a dropped Mine-Ammo lies passable until it arms, blinks, still collides while hidden and goes off by itself.
+std::expected<std::string, std::string> VerifyMines(FResourceArchive& Archive)
+{
+    constexpr uint32_t StepMilliseconds = 14;
+    FMessages Messages;
+    std::expected<FLevel, std::string> Level = LoadLevel(Archive, "underground\\t2u1");
+    const std::optional<size_t> PlayerIndex = Level ? FindPlayerObject(*Level) : std::nullopt;
+    if (!PlayerIndex)
+    {
+        return std::unexpected(Level ? std::string("no player") : Level.error());
+    }
+
+    std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+    const std::expected<FMovementClass, std::string> Class = ReadMovementClass(Level->Objects[*PlayerIndex]);
+    const std::expected<FTerrainCollision, std::string> Terrain = BuildTerrainCollision(*Level);
+    std::expected<FCombat, std::string> Combat = CreateCombat(*Level, Level->Objects[*PlayerIndex], Archive, Bodies);
+    if (!Class || !Terrain || !Combat)
+    {
+        return std::unexpected(!Class ? Class.error() : !Terrain ? Terrain.error() : Combat.error());
+    }
+
+    FPlayerInventory Inventory = CreateInventory(Level->Objects[*PlayerIndex]);
+    const auto Placed = std::ranges::find_if(Bodies, [](const FObjectBody& Body) { return Body.Mine.has_value(); });
+    if (Placed == Bodies.end())
+    {
+        return std::unexpected("no placed mine");
+    }
+
+    // The player comes at the mine from 60 units back along a facing the terrain leaves open, and thrusts.
+    const size_t PlacedIndex = Placed->ObjectIndex;
+    constexpr float Approach = 600.f;
+    constexpr int ApproachSteps = 300;
+    FPlayerState Player;
+    for (int Direction = 0; Direction < DirectionCount && !Placed->Mine->bStruck; ++Direction)
+    {
+        Player = SpawnPlayer(Level->Objects[*PlayerIndex], *Class);
+        Player.Direction = Direction;
+        Player.Pose = Player.TargetPose = Direction * (PlayerPoseCount / DirectionCount) + 1;
+        const FCollisionPoint Facing = FacingVector(Direction);
+        Player.Center = { .X = Placed->State.Center.X - Facing.X * Approach, .Y = Placed->State.Center.Y - Facing.Y * Approach };
+        Player.Position = Player.PreviousPosition = WorldFromCollision(Player.Center);
+        for (int Step = 0; Step < ApproachSteps && !Placed->Mine->bStruck; ++Step)
+        {
+            StepPlayer(Player, *Class, { .Thrust = EPlayerThrust::Forward }, StepMilliseconds, *Terrain, *Level, Bodies);
+        }
+    }
+
+    const size_t EffectsBefore = Combat->Effects.size();
+    const FPlayerTarget Target{ .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = *PlayerIndex };
+    StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Target, Messages);
+    if (!Level->Objects[PlacedIndex].bRemoved || Combat->Effects.size() == EffectsBefore)
+    {
+        return std::unexpected("the player did not set off the placed mine");
+    }
+
+    // Another placed mine shoved along each facing in turn goes off on the terrain or is worn by the first object it meets.
+    const auto Shoved = std::ranges::find_if(Bodies, [](const FObjectBody& Body) { return Body.Mine && !Body.Mine->bStruck; });
+    if (Shoved == Bodies.end())
+    {
+        return std::unexpected("no second placed mine");
+    }
+
+    const size_t ShovedIndex = Shoved->ObjectIndex;
+    const FObjectBody Resting = *Shoved;
+    constexpr float ShoveSpeed = 20.f;
+    constexpr int ShoveSteps = 500;
+    bool bShovedOff = false;
+    for (int Direction = 0; Direction < DirectionCount && !bShovedOff; ++Direction)
+    {
+        FObjectBody& Mine = *std::ranges::find(Bodies, ShovedIndex, &FObjectBody::ObjectIndex);
+        Mine = Resting;
+        const FCollisionPoint Facing = FacingVector(Direction);
+        Mine.State.bPushed = true;
+        Mine.State.Velocity = { .X = Facing.X * ShoveSpeed, .Y = Facing.Y * ShoveSpeed };
+        for (int Step = 0; Step < ShoveSteps && !bShovedOff && Mine.State.bPushed; ++Step)
+        {
+            StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level);
+            bShovedOff = Mine.Mine->bStruck || Mine.Shield < Resting.Shield || Mine.Energy < Resting.Energy;
+        }
+    }
+
+    if (!bShovedOff)
+    {
+        return std::unexpected("a shoved mine met nothing");
+    }
+
+    const std::string_view ShovedOutcome = std::ranges::find(Bodies, ShovedIndex, &FObjectBody::ObjectIndex)->Mine->bStruck ? "went off on the terrain" : "was worn by an object";
+
+    // A dropped mine away from the player.
+    const auto Ammo = std::ranges::find(Combat->AmmoClasses, std::string("mine-ammo"), &FAmmoClass::Name);
+    if (Ammo == Combat->AmmoClasses.end() || !Ammo->bDropped)
+    {
+        return std::unexpected("Mine-Ammo is not a dropped ammo");
+    }
+
+    Combat->DroppedMines.push_back({ .AmmoIndex = size_t(Ammo - Combat->AmmoClasses.begin()), .Position = { .X = Level->Objects[*PlayerIndex].X, .Y = Level->Objects[*PlayerIndex].Y }, .Owner = *PlayerIndex });
+    Player.Center = { .X = -10000.f, .Y = -10000.f };
+    StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Target, Messages);
+    const size_t DroppedIndex = Level->Objects.size() - 1;
+    uint32_t ArmedAt = 0;
+    uint32_t HiddenAt = 0;
+    bool bSolidWhileHidden = false;
+    uint32_t GoneAt = 0;
+    constexpr uint32_t LongestLife = 300000;
+    for (uint32_t Time = StepMilliseconds; Time < LongestLife && GoneAt == 0; Time += StepMilliseconds)
+    {
+        StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Target, Messages);
+        const auto Dropped = std::ranges::find(Bodies, DroppedIndex, &FObjectBody::ObjectIndex);
+        if (Dropped == Bodies.end())
+        {
+            GoneAt = Time;
+            break;
+        }
+
+        ArmedAt = ArmedAt == 0 && !Dropped->bPassable && !Dropped->bInvisible ? Time : ArmedAt;
+        if (HiddenAt == 0 && Dropped->bInvisible)
+        {
+            HiddenAt = Time;
+            bSolidWhileHidden = !Dropped->bPassable;
+        }
+    }
+
+    if (ArmedAt < uint32_t(Ammo->ActiveAfter) || HiddenAt <= ArmedAt || !bSolidWhileHidden || GoneAt == 0)
+    {
+        return std::unexpected(std::format("the dropped mine armed at {} ms, hid at {} ms and went at {} ms", ArmedAt, HiddenAt, GoneAt));
+    }
+
+    return std::format("a placed mine set off by the player, a shoved one {}, a dropped one armed at {} ms, hidden at {} ms, gone at {} ms", ShovedOutcome, ArmedAt, HiddenAt, GoneAt);
+}
+}
+
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
 {
     // The check ignores the floating messages it raises.
@@ -6383,7 +6758,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             StepPlayer(Player, *Class, Spin, StepMilliseconds, *Terrain, *Level, Bodies);
             Combat->Clock += StepMilliseconds;
             const size_t Before = Combat->Projectiles.size();
-            StepPlayerWeapon(*Combat, true, Player, *PlayerObject, PlayerIndex, SpriteSize, Inventory, Messages);
+            StepPlayerWeapon(*Combat, true, Player, Level->Objects[PlayerIndex], PlayerIndex, SpriteSize, Inventory, Messages);
             LevelShots += Combat->Projectiles.size() - Before;
             const size_t TurretBefore = Combat->Projectiles.size();
             StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Player);
@@ -6556,7 +6931,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         // Nine in ten generators must give birth within 20 seconds while the player waits at the start; the others have something standing on them, which holds a birth back (ObjectOverlapsSolid).
         constexpr uint32_t GeneratorMilliseconds = 20000;
         std::set<size_t> Parents;
-        const FPlayerState Waiting = SpawnPlayer(*PlayerObject, *Class);
+        const FPlayerState Waiting = SpawnPlayer(Level->Objects[PlayerIndex], *Class);
         const FPlayerTarget Target{ .State = Waiting, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
         Generators += size_t(std::ranges::count_if(Bodies, [&](const FObjectBody& Body) { return Body.Generator && !Level->Objects[Body.ObjectIndex].bRemoved; }));
         ActivateGenerators(*Level, Bodies, Target);
@@ -6673,9 +7048,16 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         return std::unexpected(std::format("no cop fired in {} duels", CopDuels));
     }
 
+    const std::expected<std::string, std::string> Mines = VerifyMines(Archive);
+    if (!Mines)
+    {
+        return std::unexpected(std::format("Mines: {}", Mines.error()));
+    }
+
     return std::format("{} levels, {} player shots, {} turret shots while spinning, {} grenades bounced, {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; "
-        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth",
-        Levels, Shots, TurretShots, GrenadeBounces, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators);
+        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth; {}",
+        Levels, Shots, TurretShots, GrenadeBounces, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators,
+        *Mines);
 }
 
 FDifficultyTable LoadDifficulties(const std::string_view Text)

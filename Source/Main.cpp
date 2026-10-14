@@ -3679,6 +3679,17 @@ bool VerifyBoundKeys()
     return bDefaultsKept && NameBoundKeys(std::string(Page), Bindings) == Expected;
 }
 
+// A level object by its index, which stays valid while the object list grows.
+struct FObjectHandle
+{
+    std::vector<FLevelObject>* Objects = nullptr;
+    std::optional<size_t> Index;
+
+    FLevelObject* operator->() const { return &(*Objects)[*Index]; }
+    FLevelObject& operator*() const { return (*Objects)[*Index]; }
+    explicit operator bool() const { return Index.has_value(); }
+};
+
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a menu ends or restarts the level.
 // A level loaded from a session takes its objects and the player's numbers from Restore; any other becomes the default session, in Session and on disk.
 std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
@@ -3706,9 +3717,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     }
 
     const std::optional<size_t> PlayerFound = FindPlayerObject(*Level);
-    const auto PlayerObject = PlayerFound ? Level->Objects.begin() + std::ptrdiff_t(*PlayerFound) : Level->Objects.end();
+    // By index: dropped objects and mines grow the object list during the level, which would leave an iterator behind.
+    const FObjectHandle PlayerObject{ .Objects = &Level->Objects, .Index = PlayerFound };
     // LoopLevels puts the carried player object where the new level's player starts; a session's player keeps the level's object.
-    if (Carried && !Carried->Object.ClassName.empty() && PlayerObject != Level->Objects.end())
+    if (Carried && !Carried->Object.ClassName.empty() && PlayerObject)
     {
         const float X = PlayerObject->X;
         const float Y = PlayerObject->Y;
@@ -3740,7 +3752,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // The smaller side of the player's current frame, which AnimUpdateBounds makes the body's bounds.
     float PlayerSpriteSize = 0.f;
     std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
-    const size_t PlayerIndex = size_t(PlayerObject - Level->Objects.begin());
+    const size_t PlayerIndex = PlayerObject.Index.value_or(Level->Objects.size());
     std::vector<FPickup> Pickups = CreatePickups(*Level);
     std::vector<std::optional<FActorAnimation>> ActorAnimations = CreateActorAnimations(Bodies, *Level, *Objects);
     std::vector<FPlacedAnimation> PlacedAnimations = CreatePlacedAnimations(*Objects, *Level, ActorAnimations);
@@ -3767,16 +3779,16 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     }
 
     const FSpriteSheet ColorSheet = Renderer.CreateSpriteSheet(RadarPixels);
-    FPlayerInventory Inventory = Carried ? Carried->Inventory : PlayerObject != Level->Objects.end() ? CreateInventory(*PlayerObject) : FPlayerInventory{};
+    FPlayerInventory Inventory = Carried ? Carried->Inventory : PlayerObject ? CreateInventory(*PlayerObject) : FPlayerInventory{};
     // A carried or saved inventory takes the class's absorptions and weight from this level's player.
-    if (Carried && PlayerObject != Level->Objects.end())
+    if (Carried && PlayerObject)
     {
         FPlayerInventory Class = CreateInventory(*PlayerObject);
         Inventory.Absorptions = std::move(Class.Absorptions);
         Inventory.Weight = Class.Weight;
         Inventory.ShieldUpStep = Class.ShieldUpStep;
     }
-    if (PlayerObject != Level->Objects.end())
+    if (PlayerObject)
     {
         std::expected<FMovementClass, std::string> Class = ReadMovementClass(*PlayerObject);
         std::expected<FTerrainCollision, std::string> Collision = BuildTerrainCollision(*Level);
@@ -3835,7 +3847,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         SelectPlayerWeapon(*Combat, Restore->WeaponSlot, Inventory, Unused);
                     }
 
-                    for (const size_t Index : std::views::reverse(CarriedObjects[size_t(PlayerObject - Level->Objects.begin())]))
+                    for (const size_t Index : std::views::reverse(CarriedObjects[*PlayerObject.Index]))
                     {
                         const std::optional<FPickup> Pickup = CreatePickup(*Level, Index);
                         if (Pickup && Pickup->Key)
@@ -4082,8 +4094,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // EngineReadActionKeys (0043b5c0) and InputActionPressed (0041d4c0) read the actions through the device's bindings (InputActionDown at 0041d650).
     const auto ActionDown = [&](const EAction Action) { return IsActionDown(Window, Settings.Bindings, Settings.Device, Action); };
     bool bEscapeDown = ActionDown(EAction::Menu);
-    double CameraX = PlayerObject != Level->Objects.end() ? PlayerObject->X - ScreenWidth * 0.5 : 0.0;
-    double CameraY = PlayerObject != Level->Objects.end() ? PlayerObject->Y - ScreenHeight * 0.5 : 0.0;
+    double CameraX = PlayerObject ? PlayerObject->X - ScreenWidth * 0.5 : 0.0;
+    double CameraY = PlayerObject ? PlayerObject->Y - ScreenHeight * 0.5 : 0.0;
     std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
     std::fflush(stdout);
 
@@ -4103,7 +4115,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // The class's acceleration and turn timeout, which the speed surprises and the speed toggle change.
     // A session's Turn-timeout is the player's own; high speed goes back to the class's.
     const float ClassAcceleration = PlayerClass ? PlayerClass->AccelerationStep : 0.f;
-    std::string PlayerClassName = PlayerObject != Level->Objects.end() ? PlayerObject->ClassName : std::string();
+    std::string PlayerClassName = PlayerObject ? PlayerObject->ClassName : std::string();
     std::ranges::transform(PlayerClassName, PlayerClassName.begin(), [](const unsigned char Character) { return char(std::tolower(Character)); });
     const auto PlayerClassBlock = Level->Classes.find(PlayerClassName);
     const int ClassTurnTimeout = PlayerClassBlock != Level->Classes.end() ? int(ParseLevelFloat(PlayerClassBlock->second.Find("Turn-timeout")).value_or(0.f))
@@ -5807,7 +5819,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         // The level ends after the frame in which the player took a lift.
-        if (NextLevel && Player && PlayerObject != Level->Objects.end())
+        if (NextLevel && Player && PlayerObject)
         {
             Carried = CarriedNow();
             return FLevelEnd{ .Kind = ELevelEnd::Lift, .NextLevel = *NextLevel };

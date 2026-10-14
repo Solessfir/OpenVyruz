@@ -377,6 +377,30 @@ struct FAbsorption
     float Coeff = 1.f;
 };
 
+// An ammo object lying in the level, a mine: placed (Mine-Infinite) or dropped by the mine weapon (Mine-Ammo).
+// A mover that runs into it sets it off (EngineUpdateObjects at 004406e0 calls AmmoHit), and its on and off timers (object +0xc8 and +0xcc) show and hide it.
+struct FMine
+{
+    // Object +0x2b4: the shooter that dropped it, by object index.
+    std::optional<size_t> Owner;
+    // The TYPE Ammo damage-after (attribute +0x20): it goes off when this runs out.
+    uint32_t DamageTimer = 0;
+    // While the off timer runs the mine is left out of its update; once it runs out the mine shows and the on timer is drawn from Random-on-timeout (class +0xb0, +0xb4), and the other way round.
+    int32_t OnTimer = 0;
+    int32_t OffTimer = 0;
+    int32_t OnMin = 0;
+    int32_t OnMax = 0;
+    int32_t OffMin = 0;
+    int32_t OffMax = 0;
+    // Keep-bb-when-invisible (class +0x20 bit 1): a hidden mine still collides.
+    bool bKeepBoxHidden = false;
+    // Set when it goes off on a contact; its update stops and it is destroyed.
+    bool bStruck = false;
+    // The contacts AmmoHit counts for a mine of the player's, a hit on a hunter and a miss on anything else, which StepProjectiles adds to the player's shots.
+    int Hits = 0;
+    int Misses = 0;
+};
+
 // A placed object that takes part in collisions (Bounding-Box-Size above zero), with its own inertia once pushed.
 // A StaticGen's TYPE Generator block (attribute kind 2) and its birth cycle (ObjectUpdateGenerator at 004372a0).
 struct FGenerator
@@ -434,6 +458,7 @@ struct FObjectBody
     std::optional<FGenerator> Generator;
     // Object +0x2b4: the generator that made this object, by object index.
     std::optional<size_t> Parent;
+    std::optional<FMine> Mine;
 };
 
 inline constexpr int PlayerPoseCount = 48;
@@ -640,6 +665,12 @@ struct FAmmoClass
     bool bIndestructible = false;
     // Objects the shot leaves behind as it flies.
     std::vector<FCreateBlock> Creates;
+    // The class's TYPE Explosion blocks, which ObjectDestroy (00437d40) sets off when the shot goes.
+    std::vector<FExplosionBlock> Explosions;
+    // Behaviour Fixed: the shot is dropped as a mine, a level object, instead of flying.
+    bool bDropped = false;
+    // The TYPE Ammo active-after (attribute +0x1c): a dropped mine lies visible but passable this long before it arms (WeaponFire at 00443bd0).
+    int32_t ActiveAfter = 0;
 };
 
 // An FX class (fx.3dc) and the animation it plays.
@@ -782,6 +813,15 @@ struct FCombat
     int FastKillCount = 0;
     // Level objects the steps created, such as dropped items, for the window and the pickups to take on.
     std::vector<size_t> CreatedObjects;
+    // Mines fired this step, which StepProjectiles adds to the level once its object list may grow.
+    struct FDroppedMine
+    {
+        size_t AmmoIndex = 0;
+        FCollisionPoint Position;
+        int Direction = 0;
+        size_t Owner = 0;
+    };
+    std::vector<FDroppedMine> DroppedMines;
 };
 
 // The player as a target of shots and blasts.
