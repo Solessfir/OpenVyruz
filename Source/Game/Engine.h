@@ -666,6 +666,11 @@ struct FCreateBlock
     FCollisionPoint Offset;
     uint32_t Delay = 0;
     uint32_t Repeat = 0;
+    // FUN_00413740 launches the product: with Random-dir (keyword 0xec, flag 2) along a direction drawn from the Misc stream, at its class's initial thrust,
+    // or with Set-speed (0xed, flag 4) at the block's Speed (0xea), which also becomes its Speed-max.
+    bool bRandomDirection = false;
+    bool bSetSpeed = false;
+    float Speed = 0.f;
 };
 
 // An ammo class: its movement and the TYPE Ammo block.
@@ -776,6 +781,9 @@ struct FEffect
     float Damage = 0.f;
     float Zone = 0.f;
     int32_t BlastTimer = 0;
+    // Its age and its class's CREATE blocks' next times (ObjectUpdateCreates at 00437b00), none once a block has made its last.
+    uint32_t Age = 0;
+    std::vector<std::optional<uint32_t>> NextCreates;
 };
 
 // An FX object circling its host (FUN_0041c180 creates it, the FX part of ObjectUpdateWeapon at 00444ca0 moves it): a class's ADD FX, as on the Final-PC,
@@ -803,6 +811,16 @@ struct FTrail
     float Altitude = 0.f;
     uint32_t Age = 0;
     uint32_t LifeTime = 0;
+    // A launched product, an explosion's debris: it flies on its inertia, through everything, since its Bounding-Box-Size is zero (object +0xb4 bit 1 skips every collision),
+    // leaving its own CREATE trails, such as Big-Yellow-Smoke-Trail.
+    struct FFlight
+    {
+        FPlayerState State;
+        FMovementClass Class;
+        std::vector<FCreateBlock> Creates;
+        std::vector<std::optional<uint32_t>> NextCreates;
+    };
+    std::optional<FFlight> Flight;
 };
 
 // A fired ammo object (kind Ammo); bullets with a slope sink as they fly until they reach the ground.

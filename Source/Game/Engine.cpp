@@ -742,7 +742,9 @@ FPlayerCommand PlayerCommandFromInput(const uint32_t InputBits)
 
 namespace
 {
-std::expected<FMovementClass, std::string> ReadMovementProperties(const FLevelPropertyBlock& Properties, const std::string_view ClassName, const int BoundingBoxSize)
+// Weight divides a thrust push and a shove; a body without one is an error, but thrown debris, which only coasts, has thing.3dc's default of zero.
+std::expected<FMovementClass, std::string> ReadMovementProperties(const FLevelPropertyBlock& Properties, const std::string_view ClassName, const int BoundingBoxSize,
+    const bool bNeedsWeight = true)
 {
     const auto Number = [&](const FLevelPropertyBlock& Block, const std::string_view Field) -> std::expected<float, std::string>
     {
@@ -788,7 +790,7 @@ std::expected<FMovementClass, std::string> ReadMovementProperties(const FLevelPr
         return std::unexpected(!TurnTimeout ? TurnTimeout.error() : UseInertia.error());
     }
 
-    if (Class.Weight == 0.f)
+    if (Class.Weight == 0.f && bNeedsWeight)
     {
         return std::unexpected(std::format("{}: zero Weight", ClassName));
     }
@@ -2955,6 +2957,17 @@ void AdvanceEffect(FEffect& Effect, const FEffectClass& Class, const uint32_t St
     FollowFrameSound(Effect.Sound, &Emitter);
 }
 
+std::vector<std::optional<uint32_t>> FirstCreateTimes(const std::span<const FCreateBlock> Creates)
+{
+    std::vector<std::optional<uint32_t>> Times;
+    for (const FCreateBlock& Create : Creates)
+    {
+        Times.emplace_back(Create.Delay);
+    }
+
+    return Times;
+}
+
 // Spark-on-hit-point (keyword 0x3f) with Bounce-fx, which sets all four sides, then Bounce-fx-up-left and the others one each (keywords 0x10 to 0x14).
 std::array<std::string, 4> ReadBounceEffects(const FLevelPropertyBlock& Class)
 {
@@ -2993,6 +3006,7 @@ void SpawnEffect(FCombat& Combat, const std::string_view ClassName, const FColli
         .Damage = Damage,
         .Zone = Zone,
         .BlastTimer = BlastDelayMilliseconds,
+        .NextCreates = FirstCreateTimes(Class->Creates),
     };
     // ObjectInitialize shows the first frame straight away.
     AdvanceEffect(Effect, *Class, 0);
@@ -3111,6 +3125,87 @@ const FLevelPropertyBlock* FindClass(const FLevel& Level, const std::string_view
     return Found == Level.Classes.end() ? nullptr : &Found->second;
 }
 
+// A CREATE block of a class (attribute kind 0x11). Distance (keyword 0xeb, +0x2c) is read but nothing uses it.
+FCreateBlock ReadCreateBlock(const FLevelPropertyBlock& Child)
+{
+    const auto Number = [&](const std::string_view Field) { return ParseLevelFloat(Child.Find(Field)).value_or(0.f); };
+    return {
+        .Name = ToLowerName(Child.Find("Name")),
+        .Offset = ParsePair(Child.Find("Offset")).value_or(FCollisionPoint{}),
+        .Delay = uint32_t(Number("Delay")),
+        .Repeat = uint32_t(Number("Repeat-timeout")),
+        .bRandomDirection = Number("Random-dir") != 0.f,
+        .bSetSpeed = Number("Set-speed") != 0.f,
+        .Speed = Number("Speed"),
+    };
+}
+
+// ObjectUpdateCreates (00437b00): each block whose time the object's age has reached makes its product at the object's place plus the block's offset, at most one per update,
+// then waits its Repeat-timeout, or never again without one. The products are Fixed things that live their Life-Time; a launched one flies off (FUN_00413740).
+void RunCreates(FCombat& Combat, const FLevel& Level, const std::span<const FCreateBlock> Creates, std::vector<std::optional<uint32_t>>& NextCreates, const uint32_t Age,
+    const FCollisionPoint Position, const float Altitude, std::vector<FTrail>& Out)
+{
+    for (size_t Index = 0; Index < Creates.size() && Index < NextCreates.size(); ++Index)
+    {
+        std::optional<uint32_t>& Next = NextCreates[Index];
+        const FCreateBlock& Create = Creates[Index];
+        if (!Next || Age < *Next)
+        {
+            continue;
+        }
+
+        Next = Create.Repeat != 0 ? std::optional(*Next + Create.Repeat) : std::nullopt;
+        const FLevelPropertyBlock* const Class = FindClass(Level, Create.Name);
+        FTrail Trail{
+            .ClassName = Create.Name,
+            .Position = { .X = Position.X + Create.Offset.X, .Y = Position.Y + Create.Offset.Y },
+            .Altitude = Altitude,
+            .LifeTime = Class ? uint32_t(ClassNumber(*Class, "Life-Time")) : 0,
+        };
+        // The class as the level resolved it, with the library's DEFAULT-PROPERTY and Derived-From values.
+        const auto Template = Level.ClassObjects.find(Create.Name);
+        if (Template != Level.ClassObjects.end() && (Create.bRandomDirection || Create.bSetSpeed))
+        {
+            const FLevelPropertyBlock& Resolved = Template->second.Properties;
+            // The direction comes from the Misc stream, swapped in around the draw (FUN_00428e20 and FUN_00428eb0 with session +0x259c), so the shared one is left alone.
+            constexpr int LastDirection = DirectionCount - 1;
+            const int Direction = Create.bRandomDirection ? Combat.MiscRandom.Range(0, LastDirection) : 0;
+            std::expected<FMovementClass, std::string> Movement = ReadMovementProperties(Resolved, Create.Name, 0, false);
+            if (Movement)
+            {
+                FTrail::FFlight Flight{ .Class = *Movement };
+                if (Create.bSetSpeed)
+                {
+                    Flight.Class.SpeedMax = Create.Speed;
+                }
+
+                const float Thrust = Create.bSetSpeed ? Create.Speed : Movement->ThrustInitial;
+                const FCollisionPoint Facing = FacingVector(Direction);
+                Flight.State = {
+                    .Position = Trail.Position,
+                    .PreviousPosition = Trail.Position,
+                    .Center = CollisionFromWorld(Trail.Position),
+                    .Velocity = { .X = float(double(Thrust) * double(Facing.X)), .Y = float(double(Thrust) * double(Facing.Y)) },
+                    .Speed = Thrust,
+                    .Direction = Direction,
+                };
+                for (const FLevelPropertyBlock& Child : Resolved.Children)
+                {
+                    if (Child.Kind == "CREATE")
+                    {
+                        Flight.Creates.push_back(ReadCreateBlock(Child));
+                    }
+                }
+
+                Flight.NextCreates = FirstCreateTimes(Flight.Creates);
+                Trail.Flight = std::move(Flight);
+            }
+        }
+
+        Out.push_back(std::move(Trail));
+    }
+}
+
 // Adds an ammo class to the combat tables once.
 std::expected<void, std::string> LoadAmmoClass(FCombat& Combat, const FLevel& Level, const std::string& AmmoName)
 {
@@ -3197,12 +3292,7 @@ std::expected<void, std::string> LoadAmmoClass(FCombat& Combat, const FLevel& Le
 
         if (Child.Kind == "CREATE")
         {
-            Combat.AmmoClasses.back().Creates.push_back({
-                .Name = ToLowerName(Child.Find("Name")),
-                .Offset = ParsePair(Child.Find("Offset")).value_or(FCollisionPoint{}),
-                .Delay = uint32_t(ClassNumber(Child, "Delay")),
-                .Repeat = uint32_t(ClassNumber(Child, "Repeat-timeout")),
-            });
+            Combat.AmmoClasses.back().Creates.push_back(ReadCreateBlock(Child));
         }
     }
 
@@ -3335,12 +3425,7 @@ std::expected<void, std::string> LoadEffect(FCombat& Combat, const FLevel& Level
     {
         if (Child.Kind == "CREATE")
         {
-            EffectClass.Creates.push_back({
-                .Name = ToLowerName(Child.Find("Name")),
-                .Offset = ParsePair(Child.Find("Offset")).value_or(FCollisionPoint{}),
-                .Delay = uint32_t(ClassNumber(Child, "Delay")),
-                .Repeat = uint32_t(ClassNumber(Child, "Repeat-timeout")),
-            });
+            EffectClass.Creates.push_back(ReadCreateBlock(Child));
         }
     }
 
@@ -6288,24 +6373,7 @@ void StepOrbiters(FCombat& Combat, const FLevel& Level, const std::span<FObjectB
 
         AdvanceEffect(Orbiter.Effect, Class, StepMilliseconds, true);
         Orbiter.Age += StepMilliseconds;
-        for (size_t Index = 0; Index < Class.Creates.size() && Index < Orbiter.NextCreates.size(); ++Index)
-        {
-            std::optional<uint32_t>& Next = Orbiter.NextCreates[Index];
-            const FCreateBlock& Create = Class.Creates[Index];
-            if (!Next || Orbiter.Age < *Next)
-            {
-                continue;
-            }
-
-            const FLevelPropertyBlock* const TrailClass = FindClass(Level, Create.Name);
-            Combat.Trails.push_back({
-                .ClassName = Create.Name,
-                .Position = { .X = Orbiter.Effect.Position.X + Create.Offset.X, .Y = Orbiter.Effect.Position.Y + Create.Offset.Y },
-                .Altitude = Orbiter.Effect.Altitude,
-                .LifeTime = TrailClass ? uint32_t(ClassNumber(*TrailClass, "Life-Time")) : 0,
-            });
-            Next = Create.Repeat != 0 ? std::optional(*Next + Create.Repeat) : std::nullopt;
-        }
+        RunCreates(Combat, Level, Class.Creates, Orbiter.NextCreates, Orbiter.Age, Orbiter.Effect.Position, Orbiter.Effect.Altitude, Combat.Trails);
 
         if (!Class.bCircular)
         {
@@ -6346,12 +6414,36 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
     StepOrbiters(Combat, Level, Bodies, Player, StepMilliseconds);
     const float TimeScale = float(ReferenceStepMilliseconds / double(StepMilliseconds));
     constexpr FPlayerCommand Straight{ .Thrust = EPlayerThrust::Forward };
-    // The trails age first, so the ones made this step start at zero.
+    // The trails age first, so the ones made this step start at zero. Flying debris moves as any launched object does without a command (object flag 0x8000),
+    // leaves its own trails, and goes once it leaves the level.
+    std::vector<FTrail> Left;
     std::erase_if(Combat.Trails, [&](FTrail& Trail)
     {
         Trail.Age += StepMilliseconds;
-        return Trail.Age >= Trail.LifeTime;
+        if (Trail.Age >= Trail.LifeTime)
+        {
+            return true;
+        }
+
+        if (!Trail.Flight)
+        {
+            return false;
+        }
+
+        FTrail::FFlight& Flight = *Trail.Flight;
+        RunCreates(Combat, Level, Flight.Creates, Flight.NextCreates, Trail.Age, Trail.Position, Trail.Altitude, Left);
+        FPlayerState& State = Flight.State;
+        const FCollisionPoint Delta = Displacement(State, Flight.Class, {}, TimeScale);
+        const FCollisionPoint Candidate{ .X = float(double(Delta.X) + double(State.Center.X)), .Y = float(double(Delta.Y) + double(State.Center.Y)) };
+        State.PreviousPosition = State.Position;
+        State.Position = WorldFromCollision(Candidate);
+        State.Velocity = { .X = float(double(TimeScale) * Delta.X), .Y = float(double(TimeScale) * Delta.Y) };
+        State.Center = Candidate;
+        Trail.Position = State.Position;
+        constexpr float LowerLimit = 1.f;
+        return State.Position.X < LowerLimit || float(Level.WorldExtentX) <= State.Position.X || State.Position.Y < LowerLimit || float(Level.WorldExtentY) <= State.Position.Y;
     });
+    Combat.Trails.insert(Combat.Trails.end(), std::make_move_iterator(Left.begin()), std::make_move_iterator(Left.end()));
 
     // The mines' part of EngineUpdateObjects (004406e0). While the off timer runs a mine is left out of its update; when it runs out ObjectShow (00439140) shows the mine and makes it solid,
     // and the on timer is drawn; when that one runs out ObjectHide (004391d0) hides it, solid only with Keep-bb-when-invisible, and the off timer is drawn.
@@ -6428,25 +6520,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
     {
         Shot.Age += StepMilliseconds;
         const FAmmoClass& Ammo = Combat.AmmoClasses[Shot.AmmoIndex];
-        // ObjectUpdateCreates makes at most one object per block on each update.
-        for (size_t Index = 0; Index < Ammo.Creates.size() && Index < Shot.NextCreates.size(); ++Index)
-        {
-            std::optional<uint32_t>& Next = Shot.NextCreates[Index];
-            const FCreateBlock& Create = Ammo.Creates[Index];
-            if (!Next || Shot.Age < *Next)
-            {
-                continue;
-            }
-
-            const FLevelPropertyBlock* const Class = FindClass(Level, Create.Name);
-            Combat.Trails.push_back({
-                .ClassName = Create.Name,
-                .Position = { .X = Shot.State.Position.X + Create.Offset.X, .Y = Shot.State.Position.Y + Create.Offset.Y },
-                .Altitude = float(Shot.Altitude),
-                .LifeTime = Class ? uint32_t(ClassNumber(*Class, "Life-Time")) : 0,
-            });
-            Next = Create.Repeat != 0 ? std::optional(*Next + Create.Repeat) : std::nullopt;
-        }
+        RunCreates(Combat, Level, Ammo.Creates, Shot.NextCreates, Shot.Age, Shot.State.Position, float(Shot.Altitude), Combat.Trails);
 
         // Target is the object struck, bPlayer the player struck; bSurface marks a wall or other terrain contact.
         const auto Detonate = [&](FObjectBody* const Target, const bool bPlayer, const bool bSurface)
@@ -6689,6 +6763,8 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             }
         }
 
+        Effect.Age += StepMilliseconds;
+        RunCreates(Combat, Level, Class.Creates, Effect.NextCreates, Effect.Age, Effect.Position, Effect.Altitude, Combat.Trails);
         AdvanceEffect(Effect, Class, StepMilliseconds);
         return Effect.bFinished;
     });
@@ -7379,6 +7455,65 @@ std::expected<std::string, std::string> VerifyFireSurprises(FResourceArchive& Ar
 namespace
 {
 // CPU\T3P2's Final-PC carries five ADD FX of three orbiters each, whose timers keep it invulnerable for 10 seconds and then open it for 2, hiding them.
+// A Big-Boom at UNDERGROUND\T1U1's player throws its particles: half a second on, its debris flies outward in several directions, leaving smoke.
+std::expected<std::string, std::string> VerifyDebris(FResourceArchive& Archive)
+{
+    constexpr uint32_t StepMilliseconds = 14;
+    constexpr uint32_t FlightMilliseconds = 500;
+    FMessages Messages;
+    std::expected<FLevel, std::string> Level = LoadLevel(Archive, "underground\\t1u1");
+    const std::optional<size_t> PlayerIndex = Level ? FindPlayerObject(*Level) : std::nullopt;
+    if (!PlayerIndex)
+    {
+        return std::unexpected(Level ? std::string("no player") : Level.error());
+    }
+
+    std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+    const std::expected<FTerrainCollision, std::string> Terrain = BuildTerrainCollision(*Level);
+    std::expected<FCombat, std::string> Combat = CreateCombat(*Level, Level->Objects[*PlayerIndex], Archive, Bodies);
+    const std::expected<FMovementClass, std::string> Class = ReadMovementClass(Level->Objects[*PlayerIndex]);
+    if (!Terrain || !Combat || !Class)
+    {
+        return std::unexpected(!Terrain ? Terrain.error() : !Combat ? Combat.error() : Class.error());
+    }
+
+    constexpr std::string_view Boom = "big-boom";
+    if (const std::expected<void, std::string> Loaded = LoadEffect(*Combat, *Level, Archive, std::string(Boom)); !Loaded)
+    {
+        return std::unexpected(Loaded.error());
+    }
+
+    FPlayerInventory Inventory = CreateInventory(Level->Objects[*PlayerIndex]);
+    const FPlayerState Player = SpawnPlayer(Level->Objects[*PlayerIndex], *Class);
+    SpawnEffect(*Combat, Boom, Player.Position, 0.f);
+    for (uint32_t Time = 0; Time < FlightMilliseconds; Time += StepMilliseconds)
+    {
+        Combat->Clock += StepMilliseconds;
+        StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = *PlayerIndex }, Messages);
+    }
+
+    constexpr float FarEnough = 20.f;
+    std::set<int> Directions;
+    size_t Flying = 0;
+    for (const FTrail& Trail : Combat->Trails)
+    {
+        if (Trail.Flight && std::hypot(Trail.Position.X - Player.Position.X, Trail.Position.Y - Player.Position.Y) > FarEnough)
+        {
+            ++Flying;
+            Directions.insert(Trail.Flight->State.Direction);
+        }
+    }
+
+    const size_t Smoke = size_t(std::ranges::count_if(Combat->Trails, [](const FTrail& Trail) { return !Trail.Flight; }));
+    constexpr size_t FewestDirections = 3;
+    if (Directions.size() < FewestDirections || Smoke == 0)
+    {
+        return std::unexpected(std::format("{} pieces flew off in {} directions, {} smoke trails", Flying, Directions.size(), Smoke));
+    }
+
+    return std::format("a Big-Boom threw {} pieces in {} directions, with {} smoke trails", Flying, Directions.size(), Smoke);
+}
+
 std::expected<std::string, std::string> VerifyOrbiters(FResourceArchive& Archive)
 {
     constexpr uint32_t StepMilliseconds = 14;
@@ -7860,15 +7995,21 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         return std::unexpected(std::format("Orbiters: {}", OrbitCheck.error()));
     }
 
+    const std::expected<std::string, std::string> DebrisCheck = VerifyDebris(Archive);
+    if (!DebrisCheck)
+    {
+        return std::unexpected(std::format("Debris: {}", DebrisCheck.error()));
+    }
+
     if (SparkLevels == 0)
     {
         return std::unexpected("no bouncing grenade threw off a spark");
     }
 
     return std::format("{} levels, {} player shots, {} turret shots while spinning, {} grenades bounced (sparking in {} levels), {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; "
-        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth; {}; {}; {}",
+        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth; {}; {}; {}; {}",
         Levels, Shots, TurretShots, GrenadeBounces, SparkLevels, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators,
-        *Mines, *FireSurprises, *OrbitCheck);
+        *Mines, *FireSurprises, *OrbitCheck, *DebrisCheck);
 }
 
 FDifficultyTable LoadDifficulties(const std::string_view Text)
