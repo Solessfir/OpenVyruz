@@ -52,7 +52,7 @@ The music is three WAV loops, not the CD (`MusicLoad`, `0042eaf0`): 1 `techno.wa
 
 `AnimInitializeGraphics` (`00417b30`) stamps each object's GAF descriptors through `AnimStampSoundChannels` (`00417a20`): the class's `Sample-channel-range` (keyword `0x3b`, `first, last`, class `+0xe8`) as the channel mask, its `Sample-channel-priority` (keyword `0x3c`, class `+0xec`) as the priority, channel 2's volume (the sound-fx volume) as the volume, and the boxes `DAT_0050d420` (400 on each axis) and `DAT_0050d430` (800). Each `.3DC` file sets these in its `DEFAULT-PROPERTY` block: FX on channels 6 to 8 at priority 130, ammo on 9 to 12 at 128, weapons on 9 to 16 at 129, common decor on 13 and 14, everything else on 1 to 16 at 127. `ObjectDraw` hands the animation instance the object's position and altitude, so object sounds are positional. The panel's animations are never stamped, so their sounds play on any idle channel at priority `0x7f` with the channel's own volume and pan.
 
-In the port, FX effects (explosions, impacts) and gates and lifts play their sounds from where they are. A fresh animation instance has no position until `ObjectDraw` gives it one, so the frame a door shows when the level loads sounds from the origin, which keeps it silent. Not checked yet: the original advances `Graphic-update-needed` classes (gates, lifts, FX) in the object update, outside `ObjectDraw`'s position copy; whether their instance position then lags behind the object.
+In the port, FX effects (explosions, impacts), gates and lifts, and every other looping object animation (items, things, mines) play their sounds from where they are; the map animations play theirs from their cell at priority `0x3f`. A fresh animation instance has no position until `ObjectDraw` gives it one, so the frame a door shows when the level loads sounds from the origin, which keeps it silent. Not checked yet: the original advances `Graphic-update-needed` classes (gates, lifts, FX) in the object update, outside `ObjectDraw`'s position copy; whether their instance position then lags behind the object.
 
 ## Menus
 
@@ -85,7 +85,7 @@ The pass covers every object of the level (session `+0x2010`) except ammo, FX, i
 | `aaaa.wav` | 2 | The player's death (`EngineUpdateObjects`) |
 | `shield-alarm.wav` | 3 | `ShieldAlarmUpdate` (`0043e370`), each frame with the panel in mode 0 or 1: once a second while the shield is at 1% or less. With HUD Green Info it also keeps "DANGER : SHIELD IS LOW" up at 100, 100 for two seconds; the other modes show the bars' own warning |
 | `money.wav` | 3 | The open map's drain crossing a multiple of 5000 cash (`PanelUpdate`), and a saving plot's payment (`SavingPlotUpdate`) |
-| `fade.wav` | any | The gamma fades (not ported) |
+| `fade.wav` | any | The gamma fades as the game menu closes, and the game's end |
 
 ## Voices
 
@@ -119,4 +119,3 @@ The fire input is what `ReadPlayerInput` (`00438540`) returns. The two timers be
 ## Not ported yet
 
 - **ADD Weapon channels**: an ADD Weapon entry's own channel (`+0x18`) is not read; every object uses its weapon class's range.
-- **Other animated objects**: items, things, FX and the map animations play their animation sounds from where they are.
