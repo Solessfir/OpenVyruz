@@ -64,6 +64,7 @@ constexpr uint32_t InverseSourceDrawMode = 8;
 constexpr int FourWayDirectionCount = 4;
 constexpr std::string_view TankKind = "tank";
 constexpr std::string_view TurretKind = "turret";
+constexpr std::string_view GeneratorKind = "staticgen";
 
 // ObjectDraw at 00431ae0 draws a walker's body (kind 0x19) 32 pixels above its other sprites.
 float BodyLift(const FLevelObject& Object, const bool bShadow)
@@ -389,8 +390,7 @@ int VerifyLevels(FResourceArchive& Archive)
         std::printf("%-16s %ux%u, %u layers, %zu blocks, %zu tile types (%td untyped), %zu objects, %zu collision shapes, %u missing tile refs, %zu patrol paths, "
             "%zu patrollers (%zu without a path), \"%s\"\n",
             LevelPath.c_str(), Level->GridWidth, Level->GridHeight, Level->LayerCount, Level->Blocks.size(), Level->TileTypes.size() - 1, Untyped,
-            Level->Objects.size(), Terrain->GetShapes().size(), Level->MissingTileRefs, Level->PatrolPaths.size(), Patrollers, Unrouted, Level->Name.c_str());
-        ++Loaded;
+            Level->Objects.size(), Terrain->GetShapes().size(), Level->MissingTileRefs, Level->PatrolPaths.size(), Patrollers, Unrouted, Level->Name.c_str());        ++Loaded;
     }
     std::printf("Levels: %d loaded, %d failed\n", Loaded, Failed);
     return Failed == 0 && Loaded > 0 ? 0 : 1;
@@ -412,6 +412,8 @@ struct FObjectSprite
     bool bDeltaBase = false;
     // A turret's fixed base: the animation after its 24 top poses, drawn under the top (ObjectDraw, kind 0x1e).
     bool bTurretBase = false;
+    // A generator's working light, its Shadow-gaf's animation 1: played while it is closed for a birth and drawn above its body (ObjectDraw, kind 0x17).
+    bool bGeneratorLight = false;
     Gaf::FAnimationFrame Frame;
     float X = 0.f;
     float Y = 0.f;
@@ -518,6 +520,9 @@ struct FPlacedAnimation
     size_t SheetIndex = 0;
     size_t Animation = 0;
     bool bGraphicUpdate = false;
+    // A generator's light, which an open generator hides and rewinds to its first frame.
+    bool bGeneratorLight = false;
+    bool bHidden = false;
     FAnimationPlayback Playback;
 };
 
@@ -528,8 +533,16 @@ std::vector<FPlacedAnimation> CreatePlacedAnimations(const FObjectSprites& Sprit
     for (const FObjectSprite& Sprite : Sprites.Sprites)
     {
         const FLevelObject& Object = Level.Objects[Sprite.ObjectIndex];
+        // A generator's light plays from its first animation whatever its length; its body holds its first frame.
+        if (Sprite.bGeneratorLight)
+        {
+            const Gaf::FAnimation& Light = Sprites.Animations[Sprite.SheetIndex].front();
+            Result.push_back({ .ObjectIndex = Sprite.ObjectIndex, .SheetIndex = Sprite.SheetIndex, .bGeneratorLight = true, .Playback = StartAnimation(Light) });
+            continue;
+        }
+
         if (Sprite.bShadow || Sprite.bTop || Sprite.bTurretBase || Sprite.bDeltaBase || Actors[Sprite.ObjectIndex] || Object.SubType == "lift" || Object.SubType == "gate" ||
-            Object.SubType == TurretKind || Object.SubType == "vyruz")
+            Object.SubType == TurretKind || Object.SubType == "vyruz" || Object.SubType == GeneratorKind)
         {
             continue;
         }
@@ -551,6 +564,25 @@ std::vector<FPlacedAnimation> CreatePlacedAnimations(const FObjectSprites& Sprit
     return Result;
 }
 
+// ObjectDraw for a generator (kind 0x17): while it stands open (passable, object +0x5c bit 1) its light is hidden and set back to its first frame.
+void SyncGeneratorLights(std::vector<FPlacedAnimation>& Animations, const FObjectSprites& Sprites, const std::span<const FObjectBody> Bodies)
+{
+    for (FPlacedAnimation& Placed : Animations)
+    {
+        const auto Body = Placed.bGeneratorLight ? std::ranges::find(Bodies, Placed.ObjectIndex, &FObjectBody::ObjectIndex) : Bodies.end();
+        if (Body == Bodies.end())
+        {
+            continue;
+        }
+
+        Placed.bHidden = Body->bPassable;
+        if (Placed.bHidden)
+        {
+            Placed.Playback = StartAnimation(Sprites.Animations[Placed.SheetIndex].front());
+        }
+    }
+}
+
 void StepPlacedAnimations(std::vector<FPlacedAnimation>& Animations, const FObjectSprites& Sprites, const FLevel& Level, const FViewCells View, const int32_t StepMilliseconds,
     const bool bDrawPass)
 {
@@ -558,7 +590,7 @@ void StepPlacedAnimations(std::vector<FPlacedAnimation>& Animations, const FObje
     {
         const FLevelObject& Object = Level.Objects[Placed.ObjectIndex];
         const bool bSteps = Placed.bGraphicUpdate ? !bDrawPass : View.Contains({ .X = Object.X, .Y = Object.Y });
-        if (bSteps && !Object.bRemoved)
+        if (bSteps && !Object.bRemoved && !Placed.bHidden)
         {
             const FSoundEmitter Emitter = MakeSoundEmitter(Object.Properties.Find("Sample-channel-range"), Object.Properties.Find("Sample-channel-priority"), Object.X, Object.Y,
                 Object.Altitude);
@@ -901,6 +933,16 @@ std::expected<void, std::string> AddObjectSprites(FObjectSprites& Result, FResou
                 .Blend = DrawMode == AdditiveDrawMode ? ESpriteBlend::Additive : DrawMode == InverseSourceDrawMode ? ESpriteBlend::InverseSourceColor : ESpriteBlend::Opaque,
             });
 
+            // A generator's Shadow-gaf also holds its light as animation 1, beside the shadow its Shadow-index names.
+            if (bShadow && Object.SubType == GeneratorKind && !GafAnimations.front().Frames.empty())
+            {
+                FObjectSprite Light = Result.Sprites.back();
+                Light.bShadow = false;
+                Light.bGeneratorLight = true;
+                Light.Frame = GafAnimations.front().Frames.front();
+                Result.Sprites.push_back(Light);
+            }
+
             const bool bDoor = Object.SubType == "lift" || Object.SubType == "gate";
             if (!bShadow && bDoor && ParseLevelFloat(Object.Properties.Find("Use-delta-packing")).value_or(0.f) != 0.f)
             {
@@ -964,6 +1006,23 @@ void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std
 
     for (FObjectSprite& Sprite : Sprites.Sprites)
     {
+        // The light stands where the body does, 90 rows deeper (depth + 0x168), and shows only while its generator is closed.
+        if (Sprite.bGeneratorLight)
+        {
+            const FLevelObject& Object = Level.Objects[Sprite.ObjectIndex];
+            const FPlacedAnimation* const Light = PlacedOf[Sprite.ObjectIndex];
+            const std::vector<Gaf::FAnimationFrame>& Frames = Sprites.Animations[Sprite.SheetIndex].front().Frames;
+            const uint32_t Frame = !Light || Light->bHidden || Light->Playback.bEnded ? 0 : Light->Playback.Frame;
+            Sprite.Frame = Frame >= 1 && Frame <= Frames.size() ? Frames[Frame - 1] : Gaf::FAnimationFrame{};
+            Sprite.Blend = FrameBlend(Sprite.Frame);
+            constexpr int64_t LightDepthBias = 0x168;
+            const int64_t GroundY = SpriteCoordinate(Object.Y);
+            Sprite.X = float(SpriteCoordinate(Object.X));
+            Sprite.Y = float(GroundY) - Object.Altitude - BodyLift(Object, false);
+            Sprite.Depth = SpriteDepth(GroundY, false, Object.bInGround, Object.bZShadow) + LightDepthBias;
+            continue;
+        }
+
         const FLevelObject& Object = Level.Objects[Sprite.ObjectIndex];
         const std::vector<Gaf::FAnimation>& Animations = Sprites.Animations[Sprite.SheetIndex];
         const Gaf::FAnimation& Animation = Animations[ObjectAnimationIndex(Object, Sprite.bShadow)];
@@ -5412,6 +5471,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
 
                 AnimateActors(ActorAnimations, Bodies, *Level, *Objects, View, int32_t(StepMilliseconds));
+                SyncGeneratorLights(PlacedAnimations, *Objects, Bodies);
                 StepPlacedAnimations(PlacedAnimations, *Objects, *Level, View, int32_t(StepMilliseconds), false);
                 if (Combat && !Settings.Details.bLowDetails)
                 {
@@ -5476,6 +5536,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         const uint32_t DrawStepMilliseconds = bRecordedSteps ? RecordedDrawStep.value_or(0) : LastStepMilliseconds;
         AnimateActors(ActorAnimations, Bodies, *Level, *Objects, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level),
             int32_t(DrawStepMilliseconds));
+        SyncGeneratorLights(PlacedAnimations, *Objects, Bodies);
         StepPlacedAnimations(PlacedAnimations, *Objects, *Level, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level), int32_t(DrawStepMilliseconds), true);
         UpdateObjectSprites(*Objects, *Level, ActorAnimations, *Doors, PlacedAnimations);
         if (Player)

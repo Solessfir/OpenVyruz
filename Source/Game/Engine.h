@@ -719,6 +719,8 @@ struct FEffectClass
     std::string Name;
     std::string GafPath;
     int GafIndex = 0;
+    // Uniq-at-xy (keyword 0x47, class flag 0x1000000): an impact adds none where one of the class already stands (FUN_0043dc40).
+    bool bUniqAtXy = false;
     Gaf::FAnimation Animation;
     // The class's sample channels and priority; each effect plays its sounds from where it is.
     uint32_t ChannelMask = 0;

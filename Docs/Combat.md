@@ -148,6 +148,8 @@ A StaticGen (kind 0x17, the `Generator-*` classes of tower 3) carries a `TYPE Ge
 
 `Active = 1` makes the first birth come at the first update. As the level starts, `EngineActivateObject` (`0043c150`) sets up every placed generator whatever its `Active`: with something solid on it (`ObjectOverlapsSolid`) the generator opens (object `+0x5c` bit 1) and its flag 2 clears, so it waits; otherwise flag 2 is set and it stands closed, so its first birth comes at the first update. With `Stable-population`, `ObjectDropContents` takes a dead product off its generator's births, so it makes another.
 
+`AnimInitializeGraphics` gives a generator its body's first frame, held (object `+0x1b4`), and its `Shadow-gaf`'s animation 1 (object `+0x1b8`), the working light of `V-GENERATOR.GAF` (16 frames), beside the shadow its `Shadow-index` (2) names. `ObjectDraw` (kind 0x17) plays the light and draws it at the body's place, its depth 0x168 (90 rows) deeper, while the generator stands closed; open (object `+0x5c` bit 1, passable) it hides the light and sets it back to its first frame.
+
 ## Wrecks
 
 A class with `Two-pieces` (class `+0x20` bit 2: tanks and turrets) dies twice. On the first death `EngineUpdateObjects` calls `ObjectDestroy` with its keep flag: the explosions go off and the reward is paid, but nothing drops and the enemy count stays. The object becomes a wreck (object `+0x128` bit `0x20`, Only-base, which other classes may start with): its energy and shield go back to the class's initial values, its shield step drops to zero, and its behaviour becomes plain Fixed (8), so it neither moves nor looks for the player. `ObjectDraw` leaves out a wreck's upper half, a tank's top or a turret's gun, and keeps the turret's base (the animation after its 24 gun poses) and the shadow. The second death destroys it for good. Gold boxes leave `Gold` (500 money), and many classes drop a `Surprise` power-up by chance.
@@ -164,6 +166,10 @@ Turrets (`Behaviour = Fixed Seeker`, kind Turret) draw a rotating top from the 2
 
 The port runs the original incremental route search from collision centre to collision centre against the terrain graph. Turret shots pass through the turret that fired them and damage the player's shield and energy; blasts reach the player too.
 
+## Impacts
+
+`AmmoImpact` (`0043d350`) puts the ammo's `Hit-fx` where a shot struck. A shot that sank to the ground without striking anything leaves a `Water-Splash` where its cell's terrain marker reads `0x100`, open water (`FUN_0042c130` with no margin), and a `Bullet-Ground-Impact` elsewhere. Either goes at the spot clamped into the level, only near the view (`FUN_00436690`: within a screen of it each way), and a class with `Uniq-at-xy` (keyword `0x47`, class flag `0x1000000`: Flame-Smoke, Little-Smoke and three trails) only where none of its own stands at exactly that spot (`FUN_0043dc40`). The port measures the near view from the player rather than the clamped camera.
+
 ## Bounce sparks
 
 A hard knock (more than 2 units of travel with speed and weight) calls `FUN_0043d140` before its damage. It acts for a class with `Spark-on-hit-point` (keyword `0x3f`, class flag `0x20000000`), and for the player under Pinball, whose sparks are always fx.3dc's `Flipper-Bong-Up-Left` and the other three. A class's four sides are `Bounce-fx-up-left`, `-up-right`, `-down-left` and `-down-right` (class `+0xd0` to `+0xdc`), all four set by `Bounce-fx`. The mover's position against the struck point picks the side: up-left of it, the down-right spark, and so on. The spark appears at the struck point 8 pixels higher, in whole pixels, only while the mover is within a screen of the view each way (`FUN_00436690`) and no object of its class stands in that map cell. Only `Grenade-Ammo` (`Small-Metal-Bounce-Spark`) and `Saw-Ammo-Empty` (`Saw-Bounce-Spark`) name one; the things with the flag have none. `--verify-game` checks that bouncing grenades throw sparks.
@@ -171,7 +177,7 @@ A hard knock (more than 2 units of travel with speed and weight) calls `FUN_0043
 ## Not ported yet
 
 - The idle look-around of two-piece bodies, which turn their top (`FUN_00444b80`): no two-piece class can turn on the spot, so it never runs.
-- Water splashes, the generator's opening animation, and the `CREATE` trails and smoke drawing from their own random stream.
+- The `CREATE` trails and smoke drawing from their own random stream.
 - Blasts hurting pickups.
 
 `--verify-game` fires every level's player weapon for six seconds of game time while spinning, then puts the player in clear view of a turret for three seconds; it fails if no turret fires in those duels.

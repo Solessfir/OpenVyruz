@@ -2911,6 +2911,7 @@ FObjectBody* FindStruckBody(std::vector<FObjectBody>& Bodies, const FCollisionCi
 
 // AmmoImpact at 0043d350 spawns this when a shot sinks into the ground.
 constexpr std::string_view GroundImpactEffect = "bullet-ground-impact";
+constexpr std::string_view WaterSplashEffect = "water-splash";
 // An exploding object's blast goes off this long after its Boom-fx appears, or at half its animation if that comes first.
 constexpr int32_t BlastDelayMilliseconds = 500;
 
@@ -3001,13 +3002,20 @@ void SpawnEffect(FCombat& Combat, const std::string_view ClassName, const FColli
 // FUN_0043d140 for the player under Pinball (object +0xd4 8): the Flipper-Bong FX of fx.3dc, whatever the player's class says.
 constexpr std::array<std::string_view, 4> PinballSparks = { "flipper-bong-up-left", "flipper-bong-up-right", "flipper-bong-down-left", "flipper-bong-down-right" };
 
+// FUN_00436690: a point within a screen of the view each way, which the view, centred on the player, gives as within a screen and a half of the player.
+// ponytail: measured from the player rather than the clamped camera; at the level's edges the margin is a half screen wider on that side.
+bool IsNearView(const FCollisionPoint Point, const FCollisionPoint Viewer)
+{
+    constexpr float NearX = 640.f + 320.f;
+    constexpr float NearY = 480.f + 240.f;
+    return std::abs(Point.X - Viewer.X) < NearX && std::abs(Point.Y - Viewer.Y) < NearY;
+}
+
 // FUN_0043d140: a hard knock throws off one of four FX by the side the mover struck from, when the mover stands near the view (FUN_00436690: within a screen of it each way).
 // Up-left of the struck point, the spark is the down-right one, and so on; it appears 8 pixels above the point, at whole pixels, unless one of its class already stands in that map cell.
 void ThrowBounceSpark(FCombat& Combat, const std::array<std::string, 4>& Sides, const FCollisionPoint Mover, const FCollisionPoint Point, const FCollisionPoint Viewer)
 {
-    constexpr float NearX = 640.f + 320.f;
-    constexpr float NearY = 480.f + 240.f;
-    if (std::abs(Mover.X - Viewer.X) >= NearX || std::abs(Mover.Y - Viewer.Y) >= NearY)
+    if (!IsNearView(Mover, Viewer))
     {
         return;
     }
@@ -3297,6 +3305,7 @@ std::expected<void, std::string> LoadEffect(FCombat& Combat, const FLevel& Level
         .LoopStart = Animation.LoopStart,
         .bLoop = ClassNumber(*Effect, "Loop") != 0.f,
     };
+    EffectClass.bUniqAtXy = ClassNumber(*Class, "Uniq-at-xy") != 0.f;
     if (const float Stretch = ClassNumber(*Effect, "Stretch-ratio"); Stretch != 0.f)
     {
         EffectClass.Stretch = Stretch;
@@ -4673,7 +4682,7 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
         Body.Turret = Turret;
     }
 
-    std::vector<std::string> EffectNames = { std::string(GroundImpactEffect) };
+    std::vector<std::string> EffectNames = { std::string(GroundImpactEffect), std::string(WaterSplashEffect) };
     EffectNames.insert(EffectNames.end(), PinballSparks.begin(), PinballSparks.end());
     for (const FAmmoClass& Ammo : Combat.AmmoClasses)
     {
@@ -6520,19 +6529,27 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
                 QueueVoice(KillVoices[Pick], KillVoiceDelay, KillVoiceDuration, 0);
             }
 
-            // AmmoImpact puts the Hit-fx at the contact point; a shot that sank to the ground leaves a ground impact instead.
-            // ponytail: water splashes and the check that the spot is on walkable terrain are not ported.
-            if (Target || bPlayer || bSurface)
+            // AmmoImpact (0043d350) puts the Hit-fx where the shot struck; a shot that sank to the ground leaves a Water-Splash on open water (its cell's terrain marker 0x100, FUN_0042c130)
+            // and a Bullet-Ground-Impact elsewhere. Either goes at the spot clamped into the level, only near the view (FUN_00436690), and a Uniq-at-xy class not where one of its own stands.
+            const bool bHit = Target || bPlayer || bSurface;
+            if (bHit || Shot.Altitude < 1)
             {
+                const FWorldCell Cell = CellOf(Shot.State.Position);
+                const std::string_view Name = bHit ? std::string_view(Ammo.HitEffect) : Terrain.IsWater(Cell.X, Cell.Y) ? WaterSplashEffect : GroundImpactEffect;
                 const FCollisionPoint Spot{
                     .X = std::clamp(Shot.State.Position.X, 0.f, float(Level.WorldExtentX) - 1.f),
                     .Y = std::clamp(Shot.State.Position.Y, 0.f, float(Level.WorldExtentY) - 1.f),
                 };
-                SpawnEffect(Combat, Ammo.HitEffect, Spot, float(Shot.Altitude));
-            }
-            else if (Shot.Altitude < 1)
-            {
-                SpawnEffect(Combat, GroundImpactEffect, Shot.State.Position, 0.f);
+                const auto Class = std::ranges::find(Combat.EffectClasses, Name, &FEffectClass::Name);
+                const bool bTaken = Class != Combat.EffectClasses.end() && Class->bUniqAtXy &&
+                    std::ranges::any_of(Combat.Effects, [&](const FEffect& Effect)
+                    {
+                        return Effect.ClassIndex == size_t(Class - Combat.EffectClasses.begin()) && !Effect.bFinished && Effect.Position.X == Spot.X && Effect.Position.Y == Spot.Y;
+                    });
+                if (!bTaken && IsNearView(Spot, Player.State.Position))
+                {
+                    SpawnEffect(Combat, Name, Spot, bHit ? float(Shot.Altitude) : 0.f);
+                }
             }
 
             // Then ObjectDestroy (00437d40) hands each of the class's TYPE Explosion blocks to a Boom-fx, as it does for any object.

@@ -428,6 +428,11 @@ std::expected<FTerrainCollision, std::string> BuildTerrainCollision(const FLevel
     return Result;
 }
 
+bool FTerrainCollision::IsWater(const int X, const int Y) const
+{
+    return X >= 0 && Y >= 0 && size_t(X) < MarkerWidth && size_t(Y) < MarkerHeight && Markers[size_t(X) * MarkerHeight + size_t(Y)] == WaterMarker;
+}
+
 bool FTerrainCollision::IsOpenGround(const int X, const int Y, const int Margin) const
 {
     constexpr uint32_t EnclosedGround = 0xff;
