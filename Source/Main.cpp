@@ -5140,7 +5140,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
 
                     LastMouse = Mouse;
-                    if ((ActionDown(EAction::Left) && !bSideLeft) || (ActionDown(EAction::Right) && !bSideRight) || Demo)
+                    // With the absolute command every movement key gives a direction, so each of them takes the steering back.
+                    if ((ActionDown(EAction::Left) && !bSideLeft) || (ActionDown(EAction::Right) && !bSideRight) || (Settings.bAbsolute && (bForwardKey || bBackwardKey)) || Demo)
                     {
                         bMouseSteers = false;
                     }
