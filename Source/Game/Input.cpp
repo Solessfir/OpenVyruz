@@ -380,9 +380,9 @@ bool IsCodeDown(GLFWwindow* const Window, const uint32_t Code)
     return false;
 }
 
-bool IsActionDown(GLFWwindow* const Window, const FKeyBindings& Bindings, const EInputDevice Device, const EAction Action)
+bool IsActionDown(GLFWwindow* const Window, const FBindingTable& Bindings, const EAction Action)
 {
-    const FBinding& Binding = Bindings.Table(Device)[size_t(Action)];
+    const FBinding& Binding = Bindings[size_t(Action)];
     const uint32_t Modifier = Binding.Modifier & BindingCodeMask;
     const uint32_t Code = Binding.Code & BindingCodeMask;
     return (Modifier == 0 || IsCodeDown(Window, Modifier)) && Code != 0 && IsCodeDown(Window, Code);

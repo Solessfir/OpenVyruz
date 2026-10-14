@@ -2071,15 +2071,16 @@ void ShowScores(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive&
 struct FSettings
 {
     const FDifficulty& Difficulty() const { return Difficulties.Levels[DifficultyLevel]; }
-    bool UsesMouse() const { return Device == EInputDevice::Mouse; }
+    // The port plays with every device at once from the keyboard's table, which binds keys and mouse buttons alike; the mouse and joypad tables only travel through vzconf.txt.
+    const FBindingTable& Controls() const { return Bindings.Keyboard; }
 
     // The game folder's vzconf.txt, which ConfigSave writes.
     std::filesystem::path ConfigPath;
     std::filesystem::path Folder;
     // session-name: the session folder and the player's name, which the saving plots address.
     std::string PlayerName;
-    // use-keyboard, use-joystick and use-mouse (session +0x165c), and absolute-command (option flag 1), which the mouse always has.
-    // The mouse makes the ship turn toward the sight, the left button fire, the right one thrust, Down back off and Left and Right strafe.
+    // use-keyboard, use-joystick and use-mouse (session +0x165c), and absolute-command (option flag 1), which the original's mouse always has.
+    // The original plays with one device; the port keeps the choice only to write it back, and steers with the sight whenever the mouse moves.
     EInputDevice Device = EInputDevice::Keyboard;
     bool bAbsolute = false;
     FKeyBindings Bindings = FKeyBindings::Defaults();
@@ -2232,7 +2233,7 @@ FSettings LoadSettings(FResourceArchive& Archive, const std::filesystem::path& C
         {
             Numbers(Value, Settings.Gamma);
         }
-        else if (Key == "absolute-command" && Settings.Device != EInputDevice::Mouse)
+        else if (Key == "absolute-command")
         {
             Settings.bAbsolute = bSet;
         }
@@ -2241,7 +2242,6 @@ FSettings LoadSettings(FResourceArchive& Archive, const std::filesystem::path& C
             if (bSet)
             {
                 Settings.Device = Key == "use-mouse" ? EInputDevice::Mouse : Key == "use-joystick" ? EInputDevice::Joypad : EInputDevice::Keyboard;
-                Settings.bAbsolute = Settings.bAbsolute || Settings.Device == EInputDevice::Mouse;
             }
         }
         else if (Key == "language" || Key == "voice-type")
@@ -2926,12 +2926,12 @@ std::pair<std::vector<size_t>, size_t> FillKeyPage(FMenu& Menu, const FSettings&
     size_t Next = First;
     for (; Next < All.size() && Shown.size() < PageSize; ++Next)
     {
-        if (!ListsSetting(All[Next], Settings.Device))
+        if (!ListsSetting(All[Next], EInputDevice::Keyboard))
         {
             continue;
         }
 
-        const FBinding& Binding = Settings.Bindings.Table(Settings.Device)[size_t(All[Next].Action)];
+        const FBinding& Binding = Settings.Controls()[size_t(All[Next].Action)];
         Menu.Items.push_back({
             .Text = std::format("{} : {}", Localize(All[Next].Name), BindingName(Binding)),
             .Help = "Modify setting.",
@@ -2939,7 +2939,7 @@ std::pair<std::vector<size_t>, size_t> FillKeyPage(FMenu& Menu, const FSettings&
         Shown.push_back(Next);
     }
 
-    while (Next < All.size() && !ListsSetting(All[Next], Settings.Device))
+    while (Next < All.size() && !ListsSetting(All[Next], EInputDevice::Keyboard))
     {
         ++Next;
     }
@@ -2953,7 +2953,8 @@ std::pair<std::vector<size_t>, size_t> FillKeyPage(FMenu& Menu, const FSettings&
     return { Shown, Next };
 }
 
-// FUN_004253f0, the key settings of the device in use: choosing one waits for a key or button and binds it alone (a fixed binding stays); [Next ...] pages on and Back pages back, then leaves.
+// FUN_004253f0, the key settings: choosing one waits for a key or button and binds it alone (a fixed binding stays); [Next ...] pages on and Back pages back, then leaves.
+// The original lists the device in use; the port lists the keyboard's table, every action of which takes a key or a mouse button.
 void RunKeySettingsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
 {
     FMenu Menu = OptionsList("/Control", "/Settings");
@@ -2998,7 +2999,7 @@ void RunKeySettingsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMe
                 return;
             }
 
-            Settings.Bindings.Bind(Settings.Device, Setting.Action, { .Code = *Code });
+            Settings.Bindings.Bind(EInputDevice::Keyboard, Setting.Action, { .Code = *Code });
         }
 
         std::tie(Shown, Next) = FillKeyPage(Menu, Settings, Pages.back());
@@ -3007,7 +3008,7 @@ void RunKeySettingsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMe
 
 // FUN_00424f30, the Control menu: the device, the direction (absolute or relative, which the mouse keeps absolute), the key settings and their defaults.
 // It shows the device's picture from menu.gaf (animations 2, 3 and 7) at the screen's bottom left.
-// ponytail: the port has no joypad yet; Use JoyPad still makes it the device, as the original does.
+// The port plays with every device at once, so the device items do nothing and the keyboard's picture stays; the direction applies whenever the keys steer.
 void RunControlMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
 {
     enum EItem : size_t
@@ -3033,35 +3034,20 @@ void RunControlMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuAr
         { .Text = "Restore default settings" },
     };
     AddBack(Menu);
-    // The direction the joypad returns to; the keyboard always starts relative.
-    bool bChosenAbsolute = Settings.bAbsolute;
     const auto Update = [&]
     {
         Menu.Items[DirectionItem] = Settings.bAbsolute ? FMenuItem{ .Text = "Direction : ABSOLUTE" }
                                                        : FMenuItem{ .Text = "Direction : RELATIVE", .Help = "Turning left or right is relative to the Vyruz direction." };
         constexpr size_t KeyboardPicture = 2;
-        constexpr size_t MousePicture = 3;
-        constexpr size_t JoypadPicture = 7;
-        Menu.Picture = Settings.Device == EInputDevice::Mouse ? MousePicture : Settings.Device == EInputDevice::Joypad ? JoypadPicture : KeyboardPicture;
+        Menu.Picture = KeyboardPicture;
     };
     Update();
     std::optional<std::pair<int32_t, int32_t>> Cursor;
     for (std::optional<size_t> Item; !IsBack(Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor), Menu);)
     {
-        if (*Item == KeyboardItem || *Item == JoypadItem)
-        {
-            Settings.Device = *Item == KeyboardItem ? EInputDevice::Keyboard : EInputDevice::Joypad;
-            Settings.bAbsolute = *Item == JoypadItem && bChosenAbsolute;
-        }
-        else if (*Item == MouseItem)
-        {
-            Settings.Device = EInputDevice::Mouse;
-            Settings.bAbsolute = true;
-        }
-        else if (*Item == DirectionItem && Settings.Device != EInputDevice::Mouse)
+        if (*Item == DirectionItem)
         {
             Settings.bAbsolute = !Settings.bAbsolute;
-            bChosenAbsolute = Settings.bAbsolute;
         }
         else if (*Item == KeySettingsItem)
         {
@@ -3073,7 +3059,7 @@ void RunControlMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuAr
             const std::optional<bool> Restore = Confirm(Window, Renderer, Art, Sheets, Random, "Restore default key settings ?", "Yes", "No", No);
             if (Restore && *Restore)
             {
-                Settings.Bindings.Table(Settings.Device) = FKeyBindings::DefaultTable(Settings.Device);
+                Settings.Bindings.Keyboard = FKeyBindings::DefaultTable(EInputDevice::Keyboard);
             }
         }
 
@@ -4197,7 +4183,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     };
     std::optional<FMenuSheets> MenuSheets;
     // EngineReadActionKeys (0043b5c0) and InputActionPressed (0041d4c0) read the actions through the device's bindings (InputActionDown at 0041d650).
-    const auto ActionDown = [&](const EAction Action) { return IsActionDown(Window, Settings.Bindings, Settings.Device, Action); };
+    const auto ActionDown = [&](const EAction Action) { return IsActionDown(Window, Settings.Controls(), Action); };
     bool bEscapeDown = ActionDown(EAction::Menu);
     double CameraX = PlayerObject ? PlayerObject->X - ScreenWidth * 0.5 : 0.0;
     double CameraY = PlayerObject ? PlayerObject->Y - ScreenHeight * 0.5 : 0.0;
@@ -4325,27 +4311,17 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // Session +0x2090: the shield alarm's repeat timer.
     int32_t ShieldAlarmTimer = 0;
     // EngineApplyDisplayAndCursor (0042f2d0) loads Data\Menu\cursor.gaf's sight (session +0x25b8) for the mouse; EngineRunLevel plays it by the last step and draws it at the mouse after everything else.
-    // Any other device hides the cursor altogether.
-    // Options in the game menu may change the device, so this runs again after it.
-    std::optional<FObjectGaf> SightGaf;
-    const Gaf::FAnimation* Sight = nullptr;
-    FAnimationPlayback SightPlayback;
+    // The original shows it only with the mouse as the device. The port plays with every device at once: moving the mouse hands the steering to the sight, as the original's mouse device steers,
+    // and a turn key hands it back to the keys. The sight shows while the mouse steers and fades once the mouse has been still a while.
+    const std::optional<FObjectGaf> SightGaf = LoadObjectGaf(Archive, "common\\data\\menu\\cursor.gaf");
+    const Gaf::FAnimation* const Sight = SightGaf && !SightGaf->Animations.empty() ? &SightGaf->Animations.front() : nullptr;
+    FAnimationPlayback SightPlayback = Sight ? StartAnimation(*Sight) : FAnimationPlayback{};
     std::optional<FSpriteSheet> SightSheet;
-    const auto LoadSight = [&]
-    {
-        if (Settings.UsesMouse() == SightGaf.has_value())
-        {
-            return;
-        }
-
-        SightGaf = Settings.UsesMouse() ? LoadObjectGaf(Archive, "common\\data\\menu\\cursor.gaf") : std::nullopt;
-        Sight = SightGaf && !SightGaf->Animations.empty() ? &SightGaf->Animations.front() : nullptr;
-        SightPlayback = Sight ? StartAnimation(*Sight) : FAnimationPlayback{};
-        SightSheet.reset();
-    };
-    LoadSight();
     // Session +0x1f9c: only InputReadDirection (0041d7e0), which reads the live mouse, moves the sight, so a demo's replayed input leaves it where it was.
     std::optional<std::pair<int32_t, int32_t>> SightPosition;
+    bool bMouseSteers = false;
+    std::optional<std::pair<int32_t, int32_t>> LastMouse;
+    uint32_t MouseMovedAt = 0;
     // FUN_00403b70 loads Data\Menu\pause.gaf's first animation, which FUN_00403d70 centres on the screen in draw mode 7.
     const std::optional<FObjectGaf> PauseGaf = LoadObjectGaf(Archive, "common\\data\\menu\\pause.gaf");
     // EngineRunLevel shows Data\Extra\failed.gaf's skull when the player dies: animation 2 (its dark outline, mode 8) under animation 1, centred, until the game ends (FUN_004457f0).
@@ -4578,7 +4554,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
             if (bHelp)
             {
-                return LayoutHelp(Settings.Bindings.Table(Settings.Device), Scroll, VisibleRows, Top);
+                return LayoutHelp(Settings.Controls(), Scroll, VisibleRows, Top);
             }
 
             std::array<FInventoryWeapon, InfoWeaponSlots> Weapons;
@@ -4896,7 +4872,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     GameAudio->Apply(Settings.Audio);
                 }
 
-                LoadSight();
+                // The mouse moved over the menu, which steers nothing.
+                LastMouse.reset();
 
                 // Then FUN_0041e5a0 fades the level in, without a sound.
                 MenuFadeStep = 0;
@@ -5142,7 +5119,21 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     bool bTurnRight = false;
                     bool bForwardKey = ActionDown(EAction::Forward);
                     bool bBackwardKey = ActionDown(EAction::Backward);
-                    if (!Settings.UsesMouse() && Settings.bAbsolute)
+                    // Moving the mouse hands the steering to the sight and a turn key hands it back; a demo steers by its records.
+                    const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window);
+                    if (LastMouse && Mouse != *LastMouse && !Demo)
+                    {
+                        bMouseSteers = true;
+                        MouseMovedAt = ClockMilliseconds();
+                    }
+
+                    LastMouse = Mouse;
+                    if ((ActionDown(EAction::Left) && !bSideLeft) || (ActionDown(EAction::Right) && !bSideRight) || Demo)
+                    {
+                        bMouseSteers = false;
+                    }
+
+                    if (!bMouseSteers && Settings.bAbsolute)
                     {
                         const FCollisionPoint Keys{
                             .X = float(ActionDown(EAction::Right)) - float(ActionDown(EAction::Left)),
@@ -5154,18 +5145,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         bForwardKey = (Input & PlayerInputForward) != 0;
                         bBackwardKey = (Input & PlayerInputBackward) != 0;
                     }
-                    else if (!Settings.UsesMouse())
+                    else if (!bMouseSteers)
                     {
                         bTurnLeft = ActionDown(EAction::Left) && !bSideLeft;
                         bTurnRight = ActionDown(EAction::Right) && !bSideRight;
                     }
                     else
                     {
-                        const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window);
-                        if (!Demo)
-                        {
-                            SightPosition = Mouse;
-                        }
+                        SightPosition = Mouse;
 
                         const FCollisionPoint ToSight{
                             .X = float(Mouse.first - (TruncateLow(Player->Position.X) - int32_t(std::floor(CameraX)))),
@@ -6251,9 +6238,27 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
             UpdateAnimation(SightPlayback, *Sight, int32_t(DrawStepMilliseconds));
             const uint32_t Frame = SightPlayback.bEnded ? 0 : SightPlayback.Frame;
-            if (Frame >= 1 && Frame <= Sight->Frames.size() && SightPosition)
+            // Full while the mouse moves, then fading out once it has been still for a while.
+            constexpr uint32_t SightIdleMilliseconds = 3000;
+            constexpr uint32_t SightFadeMilliseconds = 500;
+            const uint32_t Still = ClockMilliseconds() - MouseMovedAt;
+            const float Shown = !bMouseSteers || Still >= SightIdleMilliseconds + SightFadeMilliseconds ? 0.f
+                              : Still <= SightIdleMilliseconds                                         ? 1.f
+                                                                                                       : 1.f - float(Still - SightIdleMilliseconds) / float(SightFadeMilliseconds);
+            if (Frame >= 1 && Frame <= Sight->Frames.size() && SightPosition && Shown > 0.f)
             {
-                DrawHudSprite(Renderer, *SightSheet, { .Frame = Sight->Frames[Frame - 1], .X = float(SightPosition->first), .Y = float(SightPosition->second) });
+                // An additive sight fades by darkening; any other by its alpha.
+                const Gaf::FAnimationFrame& SightFrame = Sight->Frames[Frame - 1];
+                const bool bAdditive = FrameBlend(SightFrame) == ESpriteBlend::Additive;
+                constexpr float FullChannel = 255.f;
+                const uint32_t Channel = uint32_t(FullChannel * Shown);
+                DrawHudSprite(Renderer, *SightSheet, {
+                    .Frame = SightFrame,
+                    .X = float(SightPosition->first),
+                    .Y = float(SightPosition->second),
+                    .Diffuse = bAdditive ? Channel << 16 | Channel << 8 | Channel : 0xffffff,
+                    .Alpha = bAdditive ? 1.f : Shown,
+                });
             }
         }
 
