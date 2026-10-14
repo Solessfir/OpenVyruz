@@ -5,6 +5,7 @@
 #include "Game/Language.h"
 #include "Game/Level.h"
 #include "Game/Menu.h"
+#include "Game/Misc.h"
 #include "Game/Score.h"
 #include "Game/Session.h"
 #include "Game/Loop.h"
@@ -3668,6 +3669,40 @@ std::string NameBoundKeys(std::string Page, const FKeyBindings& Bindings)
     return Page;
 }
 
+// The screens' rows as the original showed them in cave\t1c2 with the first part of code 3 and the starting gatling, the help's first rows with the default keys,
+// and v-inventory.gaf's short font record.
+std::expected<std::string, std::string> VerifyInfoScreens(FResourceArchive& Archive)
+{
+    constexpr int32_t Top = 48;
+    constexpr int32_t Rows = 9;
+    const FCarriedKey Part{ .Id = 3, .bCode = true, .PartId = 1, .PartCount = 3, .CodeString = "ACTIVATE" };
+    const FCarriedKey Key{ .Id = 2 };
+    std::array<FInventoryWeapon, InfoWeaponSlots> Weapons;
+    Weapons[0] = { .Name = "Gatling-II", .Count = 1000, .Max = 5000, .bBound = true };
+    const FInfoLayout Inventory = LayoutInventory(std::array{ Part, Key }, Weapons, 0, Rows, Top);
+    const auto RowText = [](const FInfoLayout& Layout, const size_t Row) { return Row < Layout.Rows.size() ? Layout.Rows[Row].Text : std::string(); };
+    if (Inventory.Rows.size() != 3 || RowText(Inventory, 0) != "Code #3 : ACTIVATE-\?\?\?-\?\?\?" || RowText(Inventory, 1) != "Key #2" ||
+        RowText(Inventory, 2) != "Gatling-II (1000/5000)" || Inventory.Rows[2].Y != Top + 5 * InfoRowHeight || !Inventory.bWalkedWeapons)
+    {
+        return std::unexpected(std::format("inventory rows {}: '{}', '{}', '{}'", Inventory.Rows.size(), RowText(Inventory, 0), RowText(Inventory, 1), RowText(Inventory, 2)));
+    }
+
+    const FInfoLayout Help = LayoutHelp(FKeyBindings::DefaultTable(EInputDevice::Keyboard), 0, Rows, Top);
+    if (RowText(Help, 0) != "Help : key F1" || RowText(Help, 1) != "Panel Help : key F2" || RowText(Help, 2) != "Weapon #1 : key 1" || Help.Rows[2].Icon != EInfoIcon::Weapon)
+    {
+        return std::unexpected(std::format("help rows '{}', '{}', '{}'", RowText(Help, 0), RowText(Help, 1), RowText(Help, 2)));
+    }
+
+    constexpr size_t FontGlyphs = 256;
+    const std::optional<std::vector<Font::FFont>> Fonts = LoadGafFonts(Archive, "common\\data\\menu\\v-inventory.gaf");
+    if (!Fonts || Fonts->empty() || Fonts->front().Glyphs.size() != FontGlyphs)
+    {
+        return std::unexpected("v-inventory.gaf's font did not load");
+    }
+
+    return std::format("inventory and help rows as the original's, {} help rows with the default keys", Help.Count);
+}
+
 // The first level's page with the defaults stays as it is, and a rebound key replaces only its own line's keys.
 bool VerifyBoundKeys()
 {
@@ -4363,6 +4398,346 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // Object +0xcc of the dead player: EngineUpdateObjects ends the game when it runs out.
     constexpr int32_t DeathMilliseconds = 10000;
     std::optional<int32_t> DeathTimer;
+    // The inventory (session +0x20d0 bit 0x200) and help (bit 0x400) screens, which EngineRunLevel runs in place of a frame (FUN_00439b00, FUN_0043ab50).
+    bool bInventoryPending = false;
+    bool bHelpPending = false;
+    bool bInventoryKeyDown = ActionDown(EAction::Inventory);
+    bool bHelpKeyDown = ActionDown(EAction::Help);
+    bool bPanelHelpKeyDown = ActionDown(EAction::PanelHelp);
+    // Session +0x20d0 bit 0x800, the panel help, which EngineRunLevel clears as a level starts.
+    bool bPanelHelp = false;
+    struct FInfoArt
+    {
+        // Common\Data\Menu\v-inventory.gaf (FUN_00439a20, FUN_0043b3d0): its first animation's frame is the window's tile and its first font prints the rows.
+        std::vector<Gaf::FFrame> Bitmaps;
+        std::vector<uint32_t> BitmapWidths;
+        Gaf::FAnimationFrame Tile;
+        Font::FFont Font;
+        FSpriteSheet Sheet;
+        // v-bonus.gaf's animations 2 and 3: the arrows that show more rows above and below.
+        std::array<Gaf::FAnimation, 2> Arrows;
+    };
+    std::optional<FInfoArt> InfoArt;
+    const auto LoadInfoArt = [&]
+    {
+        constexpr std::string_view InfoPath = "common\\data\\menu\\v-inventory.gaf";
+        constexpr std::string_view BonusPath = "common\\data\\extra\\v-bonus.gaf";
+        constexpr size_t UpArrow = 1;
+        constexpr size_t DownArrow = 2;
+        // FUN_00439f90 prints in draw mode 7 (PgFontSetMode at 0044ceb0) whatever the font's own.
+        constexpr uint32_t InfoTextDrawMode = 7;
+        auto Gaf = LoadHudGaf(Archive, InfoPath);
+        const std::optional<std::vector<Font::FFont>> Fonts = LoadGafFonts(Archive, InfoPath);
+        const auto Bonus = LoadHudGaf(Archive, BonusPath);
+        if (!Gaf || Gaf->second.empty() || Gaf->second.front().Frames.empty() || !Fonts || Fonts->empty() || !Bonus || Bonus->second.size() <= DownArrow)
+        {
+            return;
+        }
+
+        Font::FFont Font = Fonts->front();
+        Font.DrawMode = InfoTextDrawMode;
+        std::vector<uint32_t> Widths = BitmapWidthsOf(Gaf->first);
+        FSpriteSheet Sheet = Renderer.CreateSpriteSheet(Gaf->first);
+        InfoArt = FInfoArt{
+            .Bitmaps = std::move(Gaf->first),
+            .BitmapWidths = std::move(Widths),
+            .Tile = Gaf->second.front().Frames.front(),
+            .Font = std::move(Font),
+            .Sheet = std::move(Sheet),
+            .Arrows = { Bonus->second[UpArrow], Bonus->second[DownArrow] },
+        };
+    };
+    // The last frame shown, which the screens keep under their window (FUN_0044f6d0).
+    std::optional<FSpriteSheet> BackdropSheet;
+    const auto RunInfoScreen = [&](const bool bHelp, const std::optional<std::vector<uint16_t>>& Backdrop)
+    {
+        if (!InfoArt)
+        {
+            LoadInfoArt();
+        }
+
+        // FUN_00439f90 and FUN_0043afc0 close the screen without their art ("Help: Invalid black square.").
+        if (!Panel || !InfoArt || InfoArt->Tile.BitmapIndex == 0 || InfoArt->Tile.BitmapIndex > InfoArt->Bitmaps.size())
+        {
+            return;
+        }
+
+        // FUN_00439ec0's tile: its bitmap's size. The window holds as many whole tiles as fit with one to spare, centred, and a row every 40 pixels.
+        const Gaf::FAnimationFrame& Tile = InfoArt->Tile;
+        const int32_t TileWidth = int32_t(InfoArt->Bitmaps[Tile.BitmapIndex - 1].Width);
+        const int32_t TileHeight = int32_t(InfoArt->Bitmaps[Tile.BitmapIndex - 1].Height);
+        if (TileWidth == 0 || TileHeight == 0)
+        {
+            return;
+        }
+
+        const int32_t ViewWidth = int32_t(ScreenWidth);
+        const int32_t ViewHeight = int32_t(ScreenHeight);
+        const int32_t Width = (ViewWidth - TileWidth) / TileWidth * TileWidth;
+        const int32_t Height = (ViewHeight - TileHeight) / TileHeight * TileHeight;
+        const int32_t Left = (ViewWidth - Width) >> 1;
+        const int32_t Top = (ViewHeight - Height) >> 1;
+        const int32_t VisibleRows = Height / InfoRowHeight;
+        // A row's icon stands 32 pixels in and 8 down, its text 50 pixels further in.
+        constexpr int32_t RowX = 0x20;
+        constexpr int32_t IconDropY = 8;
+        constexpr int32_t TextX = 0x32;
+        const bool bBackdrop = Backdrop && Backdrop->size() == size_t(ViewWidth) * size_t(ViewHeight);
+        if (bBackdrop)
+        {
+            if (!BackdropSheet)
+            {
+                BackdropSheet = Renderer.CreateVideoSheet(uint32_t(ViewWidth), uint32_t(ViewHeight));
+            }
+
+            constexpr uint32_t ChannelMask = 0x1f;
+            constexpr uint32_t OpaqueAlpha = 0xff000000;
+            const auto Expand = [](const uint32_t Channel) { return Channel << 3 | Channel >> 2; };
+            std::vector<uint32_t> Rgba(Backdrop->size());
+            std::ranges::transform(*Backdrop, Rgba.begin(), [&](const uint16_t Pixel)
+            {
+                return Expand(uint32_t(Pixel) >> 10 & ChannelMask) | Expand(uint32_t(Pixel) >> 5 & ChannelMask) << 8 | Expand(uint32_t(Pixel) & ChannelMask) << 16 | OpaqueAlpha;
+            });
+            Renderer.UpdateVideoSheet(*BackdropSheet, Rgba);
+        }
+
+        if (!WhiteSheet)
+        {
+            constexpr uint16_t White = 0x7fff;
+            WhiteSheet = Renderer.CreateSpriteSheet({ Gaf::FFrame{ .Width = 1, .Height = 1, .Pixels = { White } } });
+        }
+
+        int32_t Scroll = 0;
+        // What the last list returned, which bounds the scroll and shows the lower arrow.
+        int32_t Count = 0;
+        bool bOpen = true;
+        const auto LayOut = [&]
+        {
+            if (!bOpen)
+            {
+                return FInfoLayout{};
+            }
+
+            if (bHelp)
+            {
+                return LayoutHelp(Settings.Bindings.Table(Settings.Device), Scroll, VisibleRows, Top);
+            }
+
+            std::array<FInventoryWeapon, InfoWeaponSlots> Weapons;
+            for (size_t Slot = 1; Combat && Slot <= InfoWeaponSlots; ++Slot)
+            {
+                if (const FAmmoStock* const Stock = SlotAmmo(*Combat, Slot, Inventory))
+                {
+                    Weapons[Slot - 1] = {
+                        .Name = Combat->Weapons[Combat->PlayerWeapons[Slot - 1]].ClassName,
+                        .Count = int32_t(Stock->Count),
+                        .Max = int32_t(Stock->Max),
+                        .bBound = true,
+                    };
+                }
+            }
+
+            FInfoLayout Layout = LayoutInventory(Inventory.Keys, Weapons, Scroll, VisibleRows, Top);
+            if (Layout.bWalkedWeapons && Combat)
+            {
+                ClearLastShots(*Combat);
+            }
+
+            return Layout;
+        };
+        // A carried item's icon is its object's animation (object +0x188), which only the screen plays now, or the still frame it was placed with.
+        const auto FindPlaced = [&](const size_t ObjectIndex) { return std::ranges::find(PlacedAnimations, ObjectIndex, &FPlacedAnimation::ObjectIndex); };
+        const auto ItemIcon = [&](const size_t ObjectIndex) -> std::optional<std::pair<size_t, Gaf::FAnimationFrame>>
+        {
+            if (const auto Placed = FindPlaced(ObjectIndex); Placed != PlacedAnimations.end())
+            {
+                const Gaf::FAnimation& Animation = Objects->Animations[Placed->SheetIndex][Placed->Animation];
+                const uint32_t Frame = Placed->Playback.bEnded ? 0 : Placed->Playback.Frame;
+                return Frame >= 1 && Frame <= Animation.Frames.size() ? std::optional(std::pair(Placed->SheetIndex, Animation.Frames[Frame - 1])) : std::nullopt;
+            }
+
+            const auto Sprite = std::ranges::find_if(Objects->Sprites, [&](const FObjectSprite& Part) { return Part.ObjectIndex == ObjectIndex && !Part.bShadow; });
+            return Sprite != Objects->Sprites.end() ? std::optional(std::pair(Sprite->SheetIndex, Sprite->Frame)) : std::nullopt;
+        };
+
+        // FUN_0043a8a0 and FUN_0043b2f0: Escape, Space or Return held, or the screen's action pressed again, closes it; Up or Down held scrolls a row.
+        constexpr uint32_t EscapeCode = 0x01;
+        constexpr uint32_t SpaceCode = 0x20;
+        constexpr uint32_t ReturnCode = 0x21;
+        constexpr uint32_t UpCode = 0xc8;
+        constexpr uint32_t DownCode = 0xd0;
+        const EAction Action = bHelp ? EAction::Help : EAction::Inventory;
+        bool bActionDown = true;
+        bool bActionPressed = false;
+        const auto ReadKeys = [&]
+        {
+            if (IsCodeDown(Window, EscapeCode) || IsCodeDown(Window, SpaceCode) || IsCodeDown(Window, ReturnCode) || std::exchange(bActionPressed, false))
+            {
+                bOpen = false;
+                return true;
+            }
+
+            if (IsCodeDown(Window, UpCode))
+            {
+                Scroll -= Scroll > 0 ? 1 : 0;
+                return true;
+            }
+
+            if (IsCodeDown(Window, DownCode))
+            {
+                Scroll += Scroll < Count - VisibleRows ? 1 : 0;
+                return true;
+            }
+
+            return false;
+        };
+
+        // The keys are read 100 ms after opening, then 100 ms after each key that did something.
+        constexpr int32_t RepeatMilliseconds = 100;
+        int32_t RepeatTimer = RepeatMilliseconds;
+        std::array<FAnimationPlayback, 2> Arrows{ StartAnimation(InfoArt->Arrows[0]), StartAnimation(InfoArt->Arrows[1]) };
+        FFrameClock ScreenClock(FramePeriod);
+        ScreenClock.Poll(ClockMilliseconds());
+        // The frame that closes the screen still shows its window, empty.
+        while (!glfwWindowShouldClose(Window))
+        {
+            PollEvents(Window);
+            const bool bActionNow = ActionDown(Action);
+            bActionPressed = bActionPressed || (bActionNow && !bActionDown);
+            bActionDown = bActionNow;
+            uint32_t Remaining = ScreenClock.Poll(ClockMilliseconds());
+            while (Remaining != 0)
+            {
+                const uint32_t Before = Remaining;
+                const uint32_t Step = NextGameStep(Remaining, FramePeriod, false);
+                if (GameAudio)
+                {
+                    GameAudio->UpdateVoices();
+                }
+
+                if (RepeatTimer < 1)
+                {
+                    RepeatTimer = ReadKeys() ? RepeatMilliseconds : RepeatTimer;
+                }
+                else
+                {
+                    // The inventory counts down by the time still to step, the help screen by the step.
+                    RepeatTimer -= int32_t(bHelp ? Step : Before);
+                }
+
+                // The update pass plays the icons of the rows below the scroll and the arrows.
+                const FInfoLayout Layout = LayOut();
+                Count = Layout.Count;
+                for (const FInfoRow& Row : Layout.Rows)
+                {
+                    if (Row.Icon == EInfoIcon::Weapon)
+                    {
+                        Panel->StepIcon(Row.IconIndex, int32_t(Step));
+                    }
+                    else if (const auto Placed = Row.Icon == EInfoIcon::Item ? FindPlaced(Row.IconIndex) : PlacedAnimations.end(); Placed != PlacedAnimations.end())
+                    {
+                        UpdateAnimation(Placed->Playback, Objects->Animations[Placed->SheetIndex][Placed->Animation], int32_t(Step));
+                    }
+                }
+
+                for (size_t Arrow = 0; Arrow < Arrows.size(); ++Arrow)
+                {
+                    UpdateAnimation(Arrows[Arrow], InfoArt->Arrows[Arrow], int32_t(Step));
+                }
+            }
+
+            if (!Renderer.BeginFrame())
+            {
+                glfwWaitEventsTimeout(0.1);
+                continue;
+            }
+
+            if (bBackdrop)
+            {
+                Renderer.DrawSprite(*BackdropSheet, 0, 0.f, 0.f);
+            }
+
+            // FUN_0043a980: the tiles in draw mode 13, whose specular 0xc8c8c8 (DAT_00516fd0) darkens what lies under each opaque pixel to 0x37/0xff of it,
+            // then the window's edges in mode 10, adding blue 100 (DAT_00516fd4) along the top and left and 50 along the bottom and right.
+            constexpr uint32_t TileShade = 0xc8c8c8;
+            constexpr uint32_t BrightEdge = 100;
+            constexpr uint32_t DimEdge = 50;
+            constexpr uint32_t NoDiffuse = 0;
+            for (int32_t Y = Top; Y + TileHeight <= Top + Height; Y += TileHeight)
+            {
+                for (int32_t X = Left; X + TileWidth <= Left + Width; X += TileWidth)
+                {
+                    Renderer.DrawSprite(InfoArt->Sheet, Tile.BitmapIndex - 1, float(X + Tile.OffsetX), float(Y + Tile.OffsetY), false, false, ESpriteBlend::InverseSourceColor, 1.f,
+                        1.f, UINT32_MAX, NoDiffuse, TileShade);
+                }
+            }
+
+            const auto Edge = [&](const int32_t X, const int32_t Y, const int32_t EdgeWidth, const int32_t EdgeHeight, const uint32_t Blue)
+            {
+                Renderer.DrawSprite(*WhiteSheet, 0, float(X), float(Y), false, false, ESpriteBlend::Additive, float(EdgeWidth), float(EdgeHeight), UINT32_MAX, NoDiffuse, Blue);
+            };
+            Edge(Left, Top, Width, 1, BrightEdge);
+            Edge(Left, Top + 1, 1, Height - 1, BrightEdge);
+            Edge(Left + 1, Top + Height - 1, Width - 1, 1, DimEdge);
+            Edge(Left + Width - 1, Top + 1, 1, Height - 2, DimEdge);
+
+            // The draw pass: each shown row's icon, then its text.
+            const FInfoLayout Layout = LayOut();
+            Count = Layout.Count;
+            std::vector<FHudSprite> Glyphs;
+            for (const FInfoRow& Row : Layout.Rows)
+            {
+                if (!Row.bDrawn)
+                {
+                    continue;
+                }
+
+                const float IconX = float(Left + RowX);
+                const float IconY = float(Row.Y + IconDropY);
+                if (const std::optional<FHudSprite> Icon = Row.Icon == EInfoIcon::Weapon ? Panel->DrawIcon(Row.IconIndex, IconX, IconY) : std::nullopt)
+                {
+                    DrawHudSprite(Renderer, IconSheet, *Icon);
+                }
+                else if (const auto Item = Row.Icon == EInfoIcon::Item ? ItemIcon(Row.IconIndex) : std::nullopt)
+                {
+                    DrawHudSprite(Renderer, Objects->Sheets[Item->first], { .Frame = Item->second, .X = IconX, .Y = IconY });
+                }
+
+                Glyphs.clear();
+                AppendText(Glyphs, EHudSheet::Panel, InfoArt->Font, InfoArt->Bitmaps, InfoArt->BitmapWidths, Left + RowX + TextX, Row.Y, Row.Text);
+                for (const FHudSprite& Glyph : Glyphs)
+                {
+                    DrawHudSprite(Renderer, InfoArt->Sheet, Glyph);
+                }
+            }
+
+            // The arrows, 16 pixels in from the window's right and from its top or bottom.
+            constexpr int32_t ArrowInset = 16;
+            const auto DrawArrow = [&](const size_t Arrow, const int32_t Y)
+            {
+                const uint32_t Frame = Arrows[Arrow].bEnded ? 0 : Arrows[Arrow].Frame;
+                if (Frame >= 1 && Frame <= InfoArt->Arrows[Arrow].Frames.size())
+                {
+                    DrawHudSprite(Renderer, BonusSheet, { .Frame = InfoArt->Arrows[Arrow].Frames[Frame - 1], .X = float(Left + Width - ArrowInset), .Y = float(Y) });
+                }
+            };
+            if (Scroll > 0)
+            {
+                DrawArrow(0, Top + ArrowInset);
+            }
+
+            if (Scroll < Count - VisibleRows)
+            {
+                DrawArrow(1, Top + Height - ArrowInset);
+            }
+
+            Renderer.EndFrame();
+            if (!bOpen)
+            {
+                break;
+            }
+        }
+    };
     const auto Current = std::ranges::find(DebugLevels, LevelPath);
     const size_t CurrentIndex = Current == DebugLevels.end() ? DebugLevels.size() : size_t(Current - DebugLevels.begin());
     while (!glfwWindowShouldClose(Window))
@@ -4521,6 +4896,35 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             {
                 ToggleMap();
                 QueueVoice(EVoice::Map, 0, VoiceDuration, VoiceHold);
+            }
+
+            // EngineReadActionKeys: action-help (F1) sets session +0x20d0 bit 0x400 and says Help, action-panel-help (F2) flips bit 0x800 and says Help as it sets it, and action-inventory (I) sets bit 0x200 and says Inventory.
+            const bool bHelpPressed = ActionDown(EAction::Help) && !bHelpKeyDown;
+            bHelpKeyDown = ActionDown(EAction::Help);
+            const bool bPanelHelpPressed = ActionDown(EAction::PanelHelp) && !bPanelHelpKeyDown;
+            bPanelHelpKeyDown = ActionDown(EAction::PanelHelp);
+            const bool bInventoryPressed = ActionDown(EAction::Inventory) && !bInventoryKeyDown;
+            bInventoryKeyDown = ActionDown(EAction::Inventory);
+            if (Player && !Demo && !bFinaleStarted)
+            {
+                constexpr uint32_t InventoryVoiceHold = 2000;
+                if (bHelpPressed)
+                {
+                    bHelpPending = true;
+                    QueueVoice(EVoice::Help, 0, VoiceDuration, VoiceHold);
+                }
+
+                bPanelHelp = bPanelHelp != bPanelHelpPressed;
+                if (bPanelHelpPressed && bPanelHelp)
+                {
+                    QueueVoice(EVoice::Help, 0, VoiceDuration, VoiceHold);
+                }
+
+                if (bInventoryPressed)
+                {
+                    bInventoryPending = true;
+                    QueueVoice(EVoice::Inventory, 0, VoiceDuration, InventoryVoiceHold);
+                }
             }
 
             std::array<bool, WeaponKeyCount> WeaponKeysNow{};
@@ -5661,8 +6065,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         };
 
-        // The messages' draw pass comes after the objects and before the panel, with the last step.
-        if (Panel)
+        // The messages' draw pass comes after the objects and before the panel, with the last step; the frame that opens the inventory or the help skips it.
+        if (Panel && !bInventoryPending && !bHelpPending)
         {
             std::vector<FHudSprite> MessageSprites;
             const FMessages::FDraw DrawMessage = [&](const FMessage& Message, const int32_t X, const int32_t Y, const std::string_view Text)
@@ -5782,6 +6186,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             {
                 DrawHudSprite(Renderer, *SightSheet, { .Frame = Sight->Frames[Frame - 1], .X = float(SightPosition->first), .Y = float(SightPosition->second) });
             }
+        }
+
+        // EngineRunLevel draws the panel help last.
+        if (bPanelHelp && Panel)
+        {
+            DrawHud(Panel->DrawHelp(int(ScreenWidth), int(ScreenHeight)));
         }
 
         if (bPaused && PauseGaf && !PauseGaf->Animations.empty() && !PauseGaf->Animations.front().Frames.empty())
@@ -5905,12 +6315,41 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
+        // The next frame shows an opened screen over this one; a save's thumbnail takes the copy first.
+        const bool bScreenCapture = (bInventoryPending || bHelpPending) && !PendingSave;
+        if (bScreenCapture)
+        {
+            Renderer.RequestCapture(uint32_t(ScreenWidth), uint32_t(ScreenHeight));
+        }
+
         Renderer.EndFrame();
         if (PendingSave)
         {
             const std::optional<std::vector<uint16_t>> Thumbnail = Renderer.TakeCapture();
             WriteCurrentSession(false, *PendingSave, Thumbnail ? std::span<const uint16_t>(*Thumbnail) : std::span<const uint16_t>());
             PendingSave.reset();
+        }
+
+        if (bScreenCapture)
+        {
+            // EngineRunLevel takes the inventory first; its loop leaves the bit set until it closes.
+            const std::optional<std::vector<uint16_t>> Backdrop = Renderer.TakeCapture();
+            if (std::exchange(bInventoryPending, false))
+            {
+                RunInfoScreen(false, Backdrop);
+            }
+
+            if (std::exchange(bHelpPending, false))
+            {
+                RunInfoScreen(true, Backdrop);
+            }
+
+            // PgPoll(0x1e000) as a screen closes: its time is not game time, and the keys it took start over.
+            bEscapeDown = ActionDown(EAction::Menu);
+            bHelpKeyDown = ActionDown(EAction::Help);
+            bInventoryKeyDown = ActionDown(EAction::Inventory);
+            Clock = FFrameClock(FramePeriod);
+            Clock.Poll(ClockMilliseconds());
         }
 
         ++FpsFrames;
@@ -6151,9 +6590,11 @@ int main(const int ArgCount, char** const Args)
         std::printf("Scores: %s\n", bScores ? "passed" : "failed");
         const bool bBoundKeys = VerifyBoundKeys();
         std::printf("Bound keys page: %s\n", bBoundKeys ? "passed" : "failed");
+        const std::expected<std::string, std::string> InfoScreens = VerifyInfoScreens(Archive);
+        std::printf("Inventory and help: %s\n", InfoScreens ? InfoScreens->c_str() : InfoScreens.error().c_str());
         std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
             Collision ? "passed" : Collision.error().c_str(), Movement ? "passed" : Movement.error().c_str());
-        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols && Doors && SessionCheck && bScores && bBoundKeys ? 0 : 1;
+        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols && Doors && SessionCheck && bScores && bBoundKeys && InfoScreens ? 0 : 1;
     }
 
     if (!glfwInit())

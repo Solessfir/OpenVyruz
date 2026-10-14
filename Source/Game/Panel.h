@@ -124,6 +124,11 @@ public:
     // FUN_004282a0's text, typed one character at a time: the first Typed characters of Text in v-bonus font Font, lines starting at 64, 80 and 25 pixels apart (for a 640x480 view).
     // A tab first moves the cursor to the next multiple of 64, then prints like any tab.
     std::vector<FHudSprite> DrawTypedPage(size_t Font, std::string_view Text, size_t Typed, int ViewWidth, int ViewHeight) const;
+    // FUN_00434130, while action-panel-help (F2) holds session +0x20d0 bit 0x800: the panel's parts named in panel font 3, each with a green leader line ending in a dot.
+    std::vector<FHudSprite> DrawHelp(int ViewWidth, int ViewHeight) const;
+    // A weapon slot's icon (session +0x22b8, 1-based slot), which the inventory and help screens play and draw too.
+    std::optional<FHudSprite> DrawIcon(size_t Slot, float X, float Y) const;
+    void StepIcon(size_t Slot, int32_t StepMilliseconds);
 
     const std::vector<Gaf::FFrame>& GetBitmaps(EHudSheet Sheet) const;
 
@@ -140,7 +145,7 @@ private:
 
     void DrawSlot(std::vector<FHudSprite>& Out, size_t Slot, float X, float Y, uint32_t Frame, uint32_t VisibleColumns = UINT32_MAX) const;
     void DrawText(std::vector<FHudSprite>& Out, EHudSheet Sheet, size_t Font, int32_t X, int32_t Y, std::string_view Text, const Font::FColor& Color = {},
-        std::optional<int32_t> WrapRight = std::nullopt) const;
+        std::optional<int32_t> WrapRight = std::nullopt, int32_t* EndCursor = nullptr) const;
 
     std::vector<Gaf::FFrame> Bitmaps;
     std::vector<Gaf::FFrame> VBitmaps;
@@ -166,8 +171,9 @@ std::expected<std::pair<std::vector<Gaf::FFrame>, std::vector<Gaf::FAnimation>>,
 std::optional<std::vector<Font::FFont>> LoadGafFonts(FResourceArchive& Archive, std::string_view Path);
 std::vector<uint32_t> BitmapWidthsOf(const std::vector<Gaf::FFrame>& Bitmaps);
 // A text's glyphs in a font (PgFontPrint at 0044bd70), drawn in the font's mode with its colour combined with Color (PgFontSetColor at 0044cc30).
+// EndCursor receives the cursor's X after the text (PgFontGetCursor at 0044da40).
 void AppendText(std::vector<FHudSprite>& Out, EHudSheet Sheet, const Font::FFont& Font, std::span<const Gaf::FFrame> Bitmaps, std::span<const uint32_t> BitmapWidths,
-    int32_t X, int32_t Y, std::string_view Text, const Font::FColor& Color = {}, std::optional<int32_t> WrapRight = std::nullopt);
+    int32_t X, int32_t Y, std::string_view Text, const Font::FColor& Color = {}, std::optional<int32_t> WrapRight = std::nullopt, int32_t* EndCursor = nullptr);
 
 // PanelDrawRadar at 00436080: the objects within 960 pixels of the player as dots in the radar beside the speedometer.
 std::vector<FRadarDot> FindRadarDots(const FLevel& Level, std::span<const FObjectBody> Bodies, FCollisionPoint Player, size_t PlayerIndex, int ViewHeight);

@@ -75,6 +75,8 @@ using FSlots = std::array<std::vector<uint8_t>, SlotCount>;
 
 // Decoded slot streams of the first DATA entry with the given tag (GafParseSlots at 0047bf00). A missing entry yields empty slots.
 std::optional<FSlots> ReadEntrySlots(std::span<const uint8_t> File, uint32_t EntryTag);
+// The size of an entry's slot 0 records, as the HEAD table of contents gives it (GafParseSlot0 at 0047b830 steps by it); older files have shorter records.
+std::optional<uint32_t> ReadEntryRecordSize(std::span<const uint8_t> File, uint32_t EntryTag);
 
 // Parses back-to-back BMP_ chunks, as stored in GOB_ slot 1 and BLK_ slot streams.
 std::optional<std::vector<FFrame>> ParseBitmaps(std::span<const uint8_t> Bitmaps);

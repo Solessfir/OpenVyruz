@@ -5,6 +5,7 @@
 #include "Pg/ResourceArchive.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <format>
 
 namespace
@@ -126,7 +127,7 @@ std::expected<std::pair<std::vector<Gaf::FFrame>, std::vector<Gaf::FAnimation>>,
 
 void AppendText(std::vector<FHudSprite>& Out, const EHudSheet Sheet, const Font::FFont& Font, const std::span<const Gaf::FFrame> Bitmaps,
     const std::span<const uint32_t> BitmapWidths, const int32_t X, const int32_t Y, const std::string_view Text, const Font::FColor& Color,
-    const std::optional<int32_t> WrapRight)
+    const std::optional<int32_t> WrapRight, int32_t* const EndCursor)
 {
     // DrawTexturedPolygon gives modes 4 and 5 a fixed alpha of 0x80.
     constexpr uint32_t HalfAlphaDrawMode = 4;
@@ -134,7 +135,7 @@ void AppendText(std::vector<FHudSprite>& Out, const EHudSheet Sheet, const Font:
     constexpr float HalfAlpha = float(0x80) / 255.f;
     const Font::FColor Combined = Font.Color.Combine(Color);
     const bool bHalfAlpha = (Font.DrawMode & ~ColorKeyBit) == HalfAlphaDrawMode;
-    for (const Font::FPlacedGlyph& Glyph : Font::LayoutText(Font, Text, X, Y, BitmapWidths, WrapRight))
+    for (const Font::FPlacedGlyph& Glyph : Font::LayoutText(Font, Text, X, Y, BitmapWidths, WrapRight, EndCursor))
     {
         if (Glyph.BitmapIndex == 0 || Glyph.BitmapIndex > Bitmaps.size())
         {
@@ -301,6 +302,144 @@ std::optional<FHudSprite> FPanel::DrawAnimation(const size_t Animation, const fl
     return Out.empty() ? std::nullopt : std::optional(Out.front());
 }
 
+std::optional<FHudSprite> FPanel::DrawIcon(const size_t Slot, const float X, const float Y) const
+{
+    if (Slot < 1 || Slot > WeaponIconCount)
+    {
+        return std::nullopt;
+    }
+
+    const FSlot& Icon = Icons[Slot - 1];
+    const uint32_t Frame = Icon.Playback.bEnded ? 0 : Icon.Playback.Frame;
+    if (Frame < 1 || Frame > Icon.Animation.Frames.size())
+    {
+        return std::nullopt;
+    }
+
+    return FHudSprite{ .Sheet = EHudSheet::Icons, .Frame = Icon.Animation.Frames[Frame - 1], .X = X, .Y = Y };
+}
+
+void FPanel::StepIcon(const size_t Slot, const int32_t StepMilliseconds)
+{
+    if (Slot >= 1 && Slot <= WeaponIconCount)
+    {
+        FSlot& Icon = Icons[Slot - 1];
+        UpdateAnimation(Icon.Playback, Icon.Animation, StepMilliseconds);
+    }
+}
+
+namespace HelpLayout
+{
+// Where FUN_00434130 measures a coordinate from: the view's left, centre (width / 2) or right, its top or bottom, or 8 pixels past the label's text (PgFontGetCursor).
+enum class EHelpOrigin : uint8_t
+{
+    Left,
+    Centre,
+    Right,
+    Top,
+    Bottom,
+    Text,
+};
+
+struct FHelpCoordinate
+{
+    EHelpOrigin Origin = EHelpOrigin::Left;
+    int32_t Offset = 0;
+};
+
+struct FHelpPoint
+{
+    FHelpCoordinate X;
+    FHelpCoordinate Y;
+};
+
+// A label and its leader line of three or four points; a leader that starts at the text is drawn after it, the others before.
+struct FHelpLabel
+{
+    std::string_view Text;
+    FHelpPoint At;
+    std::array<FHelpPoint, 4> Leader;
+    size_t LeaderPoints = 4;
+};
+
+constexpr FHelpPoint HelpPoint(const EHelpOrigin OriginX, const int32_t X, const EHelpOrigin OriginY, const int32_t Y)
+{
+    return { .X = { .Origin = OriginX, .Offset = X }, .Y = { .Origin = OriginY, .Offset = Y } };
+}
+
+using enum EHelpOrigin;
+constexpr std::array HelpLabels{
+    FHelpLabel{ "ENERGY", HelpPoint(Centre, -0x48, Top, 0x50), { HelpPoint(Centre, -0x50, Top, 0x50), HelpPoint(Centre, -0x5f, Top, 0x50), HelpPoint(Centre, -0x5f, Top, 0x1e), HelpPoint(Centre, -0x50, Top, 0x1e) } },
+    FHelpLabel{ "SHIELD", HelpPoint(Centre, -0x48, Top, 0x64), { HelpPoint(Centre, -0x50, Top, 0x64), HelpPoint(Centre, -0x69, Top, 0x64), HelpPoint(Centre, -0x69, Top, 0x14), HelpPoint(Centre, -0x50, Top, 0x14) } },
+    FHelpLabel{ "MONEY", HelpPoint(Centre, -0x48, Top, 0x78), { HelpPoint(Centre, -0x50, Top, 0x78), HelpPoint(Left, 0x8c, Top, 0x78), HelpPoint(Left, 0x8c, Top, 0x1c), HelpPoint(Left, 0x78, Top, 0x1c) } },
+    FHelpLabel{ "AMMUNITIONS", HelpPoint(Centre, 0x1e, Top, 0x50), { HelpPoint(Text, 0, Top, 0x50), HelpPoint(Right, -0x8c, Top, 0x50), HelpPoint(Right, -0x8c, Top, 8), HelpPoint(Right, -0x6e, Top, 8) } },
+    FHelpLabel{ "LOW SPEED", HelpPoint(Centre, 0x1e, Top, 0x64), { HelpPoint(Text, 0, Top, 0x64), HelpPoint(Right, -0x82, Top, 0x64), HelpPoint(Right, -0x82, Top, 0x14), HelpPoint(Right, -0x19, Top, 0x14) } },
+    FHelpLabel{ "HIGH SPEED", HelpPoint(Centre, 0x1e, Top, 0x78), { HelpPoint(Text, 0, Top, 0x78), HelpPoint(Right, -0x78, Top, 0x78), HelpPoint(Right, -0x78, Top, 0x23), HelpPoint(Right, -0x19, Top, 0x23) } },
+    FHelpLabel{ "CURRENT WEAPON", HelpPoint(Centre, 0x1e, Top, 0x8c), { HelpPoint(Text, 0, Top, 0x8c), HelpPoint(Right, -0x6e, Top, 0x8c), HelpPoint(Right, -0x6e, Top, 0x37), HelpPoint(Right, -0x46, Top, 0x37) } },
+    FHelpLabel{ "RADAR (RED: ENEMY, YELLOW: KEY/CODE, BLUE: LIFT)", HelpPoint(Left, 0x9e, Bottom, -0xaa),
+        { HelpPoint(Left, 0x96, Bottom, -0xaa), HelpPoint(Left, 0x82, Bottom, -0xaa), HelpPoint(Left, 0x82, Bottom, -0x3c), HelpPoint(Left, 0x5a, Bottom, -0x3c) } },
+    FHelpLabel{ "DANGER WARNING", HelpPoint(Centre, 0x1e, Bottom, -0x82), { HelpPoint(Text, 0, Bottom, -0x82), HelpPoint(Right, -10, Bottom, -0x82), HelpPoint(Right, -10, Bottom, -0x37) }, 3 },
+    FHelpLabel{ "COORDINATES (X/Y)", HelpPoint(Centre, -0x48, Bottom, -0x58), { HelpPoint(Text, 0, Bottom, -0x58), HelpPoint(Right, -0x96, Bottom, -0x58), HelpPoint(Right, -0x96, Bottom, -0x49), HelpPoint(Right, -0x78, Bottom, -0x49) } },
+    FHelpLabel{ "DESTROYED ENEMIES", HelpPoint(Centre, -0x48, Bottom, -0x44), { HelpPoint(Text, 0, Bottom, -0x44), HelpPoint(Right, -0x9b, Bottom, -0x44), HelpPoint(Right, -0x9b, Bottom, -0x3f), HelpPoint(Right, -0x78, Bottom, -0x3f) } },
+    FHelpLabel{ "REMAINING ENEMIES", HelpPoint(Centre, -0x48, Bottom, -0x30), { HelpPoint(Text, 0, Bottom, -0x30), HelpPoint(Right, -0x9b, Bottom, -0x30), HelpPoint(Right, -0x9b, Bottom, -0x35), HelpPoint(Right, -0x78, Bottom, -0x35) } },
+    FHelpLabel{ "ELAPSED TIME", HelpPoint(Centre, -0x48, Bottom, -0x1c), { HelpPoint(Text, 0, Bottom, -0x1c), HelpPoint(Right, -0x96, Bottom, -0x1c), HelpPoint(Right, -0x96, Bottom, -0x2b), HelpPoint(Right, -0x78, Bottom, -0x2b) } },
+};
+}
+
+std::vector<FHudSprite> FPanel::DrawHelp(const int ViewWidth, const int ViewHeight) const
+{
+    using namespace HelpLayout;
+    using enum EHelpOrigin;
+    // Panel font 3 in draw mode 1, its colour combined with an alpha of 0x7f, which mode 1 ignores.
+    constexpr size_t HelpFont = 3;
+    constexpr uint32_t HelpAlpha = 0x7f;
+    constexpr int32_t TextGap = 8;
+    // FUN_00434040 draws in palette colour 0xfa, the radar's green, and FUN_00434100 ends the line with a filled circle of radius 1 in 0x00ff00, which plots a plus.
+    const Gaf::FAnimationFrame Green{ .BitmapIndex = uint32_t(ERadarDot::Player) + 1 };
+    std::vector<FHudSprite> Out;
+    for (const FHelpLabel& Label : HelpLabels)
+    {
+        int32_t TextEnd = 0;
+        const auto Resolve = [&](const FHelpCoordinate Coordinate)
+        {
+            const int32_t Base = Coordinate.Origin == Centre ? ViewWidth >> 1
+                                 : Coordinate.Origin == Right  ? ViewWidth
+                                 : Coordinate.Origin == Bottom ? ViewHeight
+                                 : Coordinate.Origin == Text   ? TextEnd + TextGap
+                                                               : 0;
+            return Base + Coordinate.Offset;
+        };
+        const auto DrawLabel = [&] { DrawText(Out, EHudSheet::Panel, HelpFont, Resolve(Label.At.X), Resolve(Label.At.Y), Localize(Label.Text), { .Alpha = HelpAlpha }, std::nullopt, &TextEnd); };
+        const bool bFromText = Label.Leader.front().X.Origin == Text;
+        if (bFromText)
+        {
+            DrawLabel();
+        }
+
+        for (size_t Point = 1; Point < Label.LeaderPoints; ++Point)
+        {
+            const int32_t X0 = Resolve(Label.Leader[Point - 1].X);
+            const int32_t Y0 = Resolve(Label.Leader[Point - 1].Y);
+            const int32_t X1 = Resolve(Label.Leader[Point].X);
+            const int32_t Y1 = Resolve(Label.Leader[Point].Y);
+            Out.push_back({ .Sheet = EHudSheet::Colors, .Frame = Green, .X = float(std::min(X0, X1)), .Y = float(std::min(Y0, Y1)), .ScaleX = float(std::abs(X1 - X0) + 1),
+                .ScaleY = float(std::abs(Y1 - Y0) + 1) });
+        }
+
+        constexpr float DotSpan = 3.f;
+        const int32_t EndX = Resolve(Label.Leader[Label.LeaderPoints - 1].X);
+        const int32_t EndY = Resolve(Label.Leader[Label.LeaderPoints - 1].Y);
+        Out.push_back({ .Sheet = EHudSheet::Colors, .Frame = Green, .X = float(EndX - 1), .Y = float(EndY), .ScaleX = DotSpan });
+        Out.push_back({ .Sheet = EHudSheet::Colors, .Frame = Green, .X = float(EndX), .Y = float(EndY - 1), .ScaleY = DotSpan });
+        if (!bFromText)
+        {
+            DrawLabel();
+        }
+    }
+
+    return Out;
+}
+
 void FPanel::DrawSlot(std::vector<FHudSprite>& Out, const size_t Slot, const float X, const float Y, const uint32_t Frame, const uint32_t VisibleColumns) const
 {
     const FSlot& Source = Slots[Slot];
@@ -324,13 +463,13 @@ const std::vector<Gaf::FFrame>& FPanel::GetBitmaps(const EHudSheet Sheet) const
 
 // Selecting a font (PgFontSelect at 0044c3c0) takes its draw mode and colour, and PgFontSetColor (0044cc30) combines the caller's colour into that.
 void FPanel::DrawText(std::vector<FHudSprite>& Out, const EHudSheet Sheet, const size_t Font, const int32_t X, const int32_t Y, const std::string_view Text,
-    const Font::FColor& Color, const std::optional<int32_t> WrapRight) const
+    const Font::FColor& Color, const std::optional<int32_t> WrapRight, int32_t* const EndCursor) const
 {
     const bool bBonus = Sheet == EHudSheet::Bonus;
     const std::vector<Font::FFont>& SheetFonts = bBonus ? BonusFonts : Fonts;
     if (Font != 0 && Font <= SheetFonts.size())
     {
-        AppendText(Out, Sheet, SheetFonts[Font - 1], GetBitmaps(Sheet), bBonus ? BonusBitmapWidths : BitmapWidths, X, Y, Text, Color, WrapRight);
+        AppendText(Out, Sheet, SheetFonts[Font - 1], GetBitmaps(Sheet), bBonus ? BonusBitmapWidths : BitmapWidths, X, Y, Text, Color, WrapRight, EndCursor);
     }
 }
 

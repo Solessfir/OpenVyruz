@@ -220,7 +220,20 @@ constexpr uint8_t MouseSetting = 2;
 constexpr uint8_t JoypadSetting = 4;
 constexpr uint8_t AllDevices = KeyboardSetting | MouseSetting | JoypadSetting;
 
+// FUN_0041de20's list: without its third argument it starts with Help, Panel Help and the nine weapons, which the key settings leave out.
+constexpr size_t HelpOnlyActions = 11;
 constexpr std::array Settings{
+    FActionSetting{ EAction::Help, "Help", AllDevices },
+    FActionSetting{ EAction::PanelHelp, "Panel Help", AllDevices },
+    FActionSetting{ EAction::Weapon1, "Weapon #1", KeyboardSetting },
+    FActionSetting{ EAction(size_t(EAction::Weapon1) + 1), "Weapon #2", KeyboardSetting },
+    FActionSetting{ EAction(size_t(EAction::Weapon1) + 2), "Weapon #3", KeyboardSetting },
+    FActionSetting{ EAction(size_t(EAction::Weapon1) + 3), "Weapon #4", KeyboardSetting },
+    FActionSetting{ EAction(size_t(EAction::Weapon1) + 4), "Weapon #5", KeyboardSetting },
+    FActionSetting{ EAction(size_t(EAction::Weapon1) + 5), "Weapon #6", KeyboardSetting },
+    FActionSetting{ EAction(size_t(EAction::Weapon1) + 6), "Weapon #7", KeyboardSetting },
+    FActionSetting{ EAction(size_t(EAction::Weapon1) + 7), "Weapon #8", KeyboardSetting },
+    FActionSetting{ EAction::Weapon9, "Weapon #9", KeyboardSetting },
     FActionSetting{ EAction::Fire, "Fire", AllDevices },
     FActionSetting{ EAction::NextWeapon, "Next Weapon", AllDevices },
     FActionSetting{ EAction::Inventory, "Inventory", AllDevices },
@@ -297,6 +310,11 @@ void FKeyBindings::Bind(const EInputDevice Device, const EAction Action, const F
 }
 
 std::span<const FActionSetting> ActionSettings()
+{
+    return std::span(Settings).subspan(HelpOnlyActions);
+}
+
+std::span<const FActionSetting> HelpActions()
 {
     return Settings;
 }

@@ -306,6 +306,40 @@ std::optional<std::vector<uint8_t>> Gaf::LzssDecode(const std::span<const uint8_
     return Output;
 }
 
+std::optional<uint32_t> Gaf::ReadEntryRecordSize(const std::span<const uint8_t> File, const uint32_t EntryTag)
+{
+    // Each HEAD entry is a record whose payload starts with slot 0's record count and record size.
+    struct FHeadEntry
+    {
+        uint32_t RecordCount;
+        uint32_t RecordSize;
+    };
+    const std::optional<FRecord> Head = ReadRecord(File, sizeof(FRecordHeader));
+    if (!Head || Head->Tag != Gaf::Tag("HEAD"))
+    {
+        return std::nullopt;
+    }
+
+    for (size_t Offset = 0; Offset < Head->Payload.size();)
+    {
+        const std::optional<FRecord> Entry = ReadRecord(Head->Payload, Offset);
+        if (!Entry)
+        {
+            return std::nullopt;
+        }
+
+        if (Entry->Tag == EntryTag)
+        {
+            const std::optional<FHeadEntry> Counts = ReadStruct<FHeadEntry>(Entry->Payload);
+            return Counts ? std::optional(Counts->RecordSize) : std::nullopt;
+        }
+
+        Offset += sizeof(FRecordHeader) + Entry->Payload.size();
+    }
+
+    return std::nullopt;
+}
+
 std::optional<Gaf::FSlots> Gaf::ReadEntrySlots(const std::span<const uint8_t> File, const uint32_t EntryTag)
 {
     const std::optional<FRecord> Entry = FindDataEntry(File, EntryTag);

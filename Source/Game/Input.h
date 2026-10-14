@@ -87,6 +87,8 @@ struct FActionSetting
 };
 
 std::span<const FActionSetting> ActionSettings();
+// The help screen's list (FUN_0041de20 without its third argument): Help, Panel Help and the nine weapons, then the key settings' entries.
+std::span<const FActionSetting> HelpActions();
 // Whether a device lists an action setting.
 bool ListsSetting(const FActionSetting& Setting, EInputDevice Device);
 

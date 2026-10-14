@@ -81,6 +81,7 @@ public:
     // The Vulkan device's name, which the Video menu shows as its device.
     std::string GetDeviceName() const;
     // Copies the next finished frame's 640x480 view for TakeCapture, which shrinks it to Width by Height.
+    // The copy is taken before the gamma, which the original's hardware ramp kept out of its surfaces.
     void RequestCapture(uint32_t Width, uint32_t Height);
     // The requested picture as RGB555 from the top row down once a frame has been drawn; nullopt before then or when the window cannot be read back.
     std::optional<std::vector<uint16_t>> TakeCapture();
@@ -114,6 +115,8 @@ private:
     uint32_t CreateTexture(uint32_t Width, uint32_t Height, const std::vector<uint32_t>& Rgba);
     void UploadTexture(VkImage Image, uint32_t Width, uint32_t Height, std::span<const uint32_t> Rgba, VkImageLayout From);
     void DrawGamma();
+    // Starts drawing into the acquired image, letterboxed; a capture resumes it to add the gamma after the copy.
+    void BeginRendering(VkAttachmentLoadOp LoadOp);
 
     GLFWwindow* Window = nullptr;
     VkInstance Instance = VK_NULL_HANDLE;

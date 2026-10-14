@@ -482,6 +482,8 @@ struct FCarriedKey
     bool bCode = false;
     int PartId = 0;
     int PartCount = 0;
+    // The part's Code-String (key attribute +0x20), which the inventory lists.
+    std::string CodeString;
     // The level object the key was picked up from, which a code's expiry puts back.
     size_t ObjectIndex = 0;
     // The TYPE Item's timeout fields (item attribute +0x28 to +0x7c): a complete code counts down on its first part.
@@ -621,6 +623,8 @@ struct FDoor
 struct FWeaponClass
 {
     std::string Name;
+    // The class as the class library spells it ("Gatling-II"), which the inventory prints.
+    std::string ClassName;
     // The first TYPE Weapon block's ammo, whose block also gives the weapon's other fields (ObjectSetWeaponSlot at 004375f0 keeps the first block).
     std::string Ammo;
     // Every TYPE Weapon block's ammo in order: the player's stock binds to any of them (ObjectBindAmmo at 00437540).
@@ -957,6 +961,10 @@ void ExplodePlayer(FCombat& Combat, FCollisionPoint Position, float Altitude);
 void SelectPlayerWeapon(FCombat& Combat, size_t Slot, const FPlayerInventory& Inventory, FMessages& Messages);
 // The stock that feeds the weapon in hand, if the player carries one.
 const FAmmoStock* PlayerSlotAmmo(const FCombat& Combat, const FPlayerInventory& Inventory);
+// The stock bound to a 1-based slot's weapon, if the slot holds one (ObjectBindAmmo at 00437540).
+const FAmmoStock* SlotAmmo(const FCombat& Combat, size_t Slot, const FPlayerInventory& Inventory);
+// FUN_004375f0 on every slot, as the inventory's weapon list binds them in turn: each ADD Weapon's last shot (entry +0x14) is cleared, the one in hand's too.
+void ClearLastShots(FCombat& Combat);
 std::optional<FPickup> CreatePickup(const FLevel& Level, size_t ObjectIndex);
 // FUN_0041cf40 with the item it comes from: the surprise in effect ends and the new one is carried, announced and waits half a second.
 void CarrySurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Type, const FLevelObject& Item, FMessages& Messages);

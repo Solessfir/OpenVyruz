@@ -59,6 +59,10 @@ While the map is open, every pass of `PanelUpdate` in modes 1 to 5 takes 30 cash
 - A proportional font (flag 1) advances by the bitmap width plus the character spacing; others by the fixed advance.
 - Flag 4 draws a shadow pass first, in the shadow draw mode and colour, shifted by the shadow offset. None of the panel's three fonts uses it.
 
+## Panel help
+
+While `action-pannel-help` (F2, a fixed binding) holds session `+0x20d0` bit `0x800`, which `EngineRunLevel` clears as a level starts, `FUN_00434130` runs last in each frame's draw pass: it names the panel's parts in panel font 3 (draw mode 1), each with a leader line in palette colour 0xfa (the radar's green, `FUN_00434040`) that ends in a filled circle of radius 1 in `0x00ff00` (`FUN_00434100`), which plots a plus. Energy, Shield and Money sit at width / 2 - 72 with their leaders drawn first; Ammunitions, Low Speed, High Speed and Current Weapon at width / 2 + 30, and the Danger Warning, Coordinates, Destroyed and Remaining Enemies and Elapsed Time near the bottom, each leader starting 8 pixels after its text; the radar's legend at 158, height - 170. The port keeps the coordinates as a table (`FPanel::DrawHelp`).
+
 ## Weapon icon
 
 `PanelLoadWeaponIcons` (`00434910`) loads one icon per weapon slot from `Common\Data\Object\Item`: `icon-gatling`, `icon-grenade`, `icon-rocket`, `icon-fire`, `icon-saw`, `icon-missile`, `icon-laser`, `icon-pulsar` and `icon-mine`, each playing its first animation at session `+0x22b8 + 72 * (slot - 1)`. The update pass advances only the icon of the slot in hand, and the draw pass draws it at width - 61, 70 over the weapon block's screen.

@@ -147,7 +147,7 @@ Example sizes: `TURRET-GUN-UDG.GAF` 86,508 bytes on disk → 146,804 bytes decom
 
 A GAF's `FNT_` entry holds its bitmap fonts in two slots. `GafParseSlot0` (`0047b830`) keeps each slot 0 record's first word as the glyph count and copies the rest into the runtime font from `+0x18`.
 
-Slot 0 has one 72-byte record per font:
+Slot 0 has one record per font, of the size the `HEAD` table gives the entry (`GafParseSlot0` steps by it): 72 bytes in most files, 64 in `Common\Data\Menu\v-inventory.gaf`, whose single font stops before the shadow fields and leaves its draw settings unset. Each `HEAD` entry is a record whose payload starts with slot 0's record count and record size.
 
 | Offset | Field |
 |---|---|

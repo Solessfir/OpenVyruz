@@ -1985,6 +1985,7 @@ std::optional<FPickup> CreatePickup(const FLevel& Level, const size_t Index)
                              .bCode = KeyNumber("Is-code") != 0,
                              .PartId = KeyNumber("Code-part-id"),
                              .PartCount = KeyNumber("Code-part-count"),
+                             .CodeString = std::string(Key->Find("Code-String")),
                              .ObjectIndex = Index,
                              .bHasTimeout = Number("Has-timeout") != 0.f,
                              .Timeout = int32_t(Number("Timeout")),
@@ -3109,6 +3110,7 @@ std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Lev
     const FSoundEmitter Channels = MakeSoundEmitter(Class->Find("Sample-channel-range"), Class->Find("Sample-channel-priority"), 0.f, 0.f, 0.f);
     Combat.Weapons.push_back({
         .Name = LowerName,
+        .ClassName = std::string(Class->Find("Name")),
         .Ammo = AmmoName,
         .AmmoChoices = std::move(AmmoChoices),
         .Delay = uint32_t(ClassNumber(*Block, "Delay")),
@@ -4664,6 +4666,9 @@ auto BoundAmmo(const FWeaponClass& Weapon, FInventory& Inventory) -> decltype(&I
     return Any == Inventory.Ammo.end() ? nullptr : &*Any;
 }
 
+constexpr size_t WeaponSlotCount = 9;
+}
+
 const FAmmoStock* SlotAmmo(const FCombat& Combat, const size_t Slot, const FPlayerInventory& Inventory)
 {
     if (Slot == 0 || Slot > Combat.PlayerWeapons.size())
@@ -4674,7 +4679,13 @@ const FAmmoStock* SlotAmmo(const FCombat& Combat, const size_t Slot, const FPlay
     return BoundAmmo(Combat.Weapons[Combat.PlayerWeapons[Slot - 1]], Inventory);
 }
 
-constexpr size_t WeaponSlotCount = 9;
+void ClearLastShots(FCombat& Combat)
+{
+    Combat.PlayerWeapon.LastFireTime = 0;
+    for (FWeaponState& State : Combat.PlayerSlotStates)
+    {
+        State.LastFireTime = 0;
+    }
 }
 
 void ExplodePlayer(FCombat& Combat, const FCollisionPoint Position, const float Altitude)

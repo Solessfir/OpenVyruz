@@ -4,6 +4,8 @@
 #include "Pg/Gaf.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstring>
 
 namespace
 {
@@ -49,16 +51,20 @@ constexpr size_t MaxGlyphs = 256;
 std::optional<std::vector<Font::FFont>> Font::LoadFonts(const std::span<const uint8_t> File)
 {
     const std::optional<Gaf::FSlots> Slots = Gaf::ReadEntrySlots(File, Gaf::Tag("FNT_"));
-    if (!Slots || (*Slots)[FontRecordSlot].size() % sizeof(FFontRecord) != 0)
+    // v-inventory.gaf's single font has a 64-byte record, without the shadow fields; the exe leaves what a short record lacks undefined, so it reads as zero here.
+    const uint32_t RecordSize = Gaf::ReadEntryRecordSize(File, Gaf::Tag("FNT_")).value_or(sizeof(FFontRecord));
+    constexpr uint32_t ShortestRecord = offsetof(FFontRecord, DrawMode);
+    if (!Slots || RecordSize < ShortestRecord || (*Slots)[FontRecordSlot].size() % RecordSize != 0)
     {
         return std::nullopt;
     }
 
     std::vector<FFont> Fonts;
     size_t GlyphOffset = 0;
-    for (size_t Offset = 0; Offset < (*Slots)[FontRecordSlot].size(); Offset += sizeof(FFontRecord))
+    for (size_t Offset = 0; Offset < (*Slots)[FontRecordSlot].size(); Offset += RecordSize)
     {
-        const FFontRecord Record = *ReadStruct<FFontRecord>((*Slots)[FontRecordSlot], Offset);
+        FFontRecord Record{};
+        std::memcpy(&Record, (*Slots)[FontRecordSlot].data() + Offset, std::min<size_t>(RecordSize, sizeof(FFontRecord)));
         if (Record.GlyphCount > MaxGlyphs)
         {
             return std::nullopt;

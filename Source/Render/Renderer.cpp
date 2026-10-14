@@ -766,12 +766,18 @@ bool FRenderer::BeginFrame()
     vkBeginCommandBuffer(Cmd, &BeginInfo);
     TransitionImage(Cmd, SwapchainImages[ImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    BeginRendering(VK_ATTACHMENT_LOAD_OP_CLEAR);
+    return true;
+}
 
+void FRenderer::BeginRendering(const VkAttachmentLoadOp LoadOp)
+{
+    const VkCommandBuffer Cmd = Frames[FrameIndex].CommandBuffer;
     const VkRenderingAttachmentInfo ColorAttachment{
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView = SwapchainViews[ImageIndex],
         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .loadOp = LoadOp,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue = { .color = { { 0.0f, 0.0f, 0.0f, 1.0f } } },
     };
@@ -802,7 +808,6 @@ bool FRenderer::BeginFrame()
     };
     vkCmdSetViewport(Cmd, 0, 1, &Viewport);
     vkCmdSetScissor(Cmd, 0, 1, &Scissor);
-    return true;
 }
 
 void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInSheet, const float X, const float Y, const bool bMirrorX, const bool bMirrorY,
@@ -985,13 +990,12 @@ std::optional<std::vector<uint16_t>> FRenderer::TakeCapture()
 
 void FRenderer::EndFrame()
 {
-    DrawGamma();
     FFrame& Frame = Frames[FrameIndex];
     const VkCommandBuffer Cmd = Frame.CommandBuffer;
-    vkCmdEndRendering(Cmd);
     const VkImage Image = SwapchainImages[ImageIndex];
     if (CaptureSize && bCanCapture && CaptureBuffer == VK_NULL_HANDLE)
     {
+        vkCmdEndRendering(Cmd);
         // The letterboxed view, as BeginFrame placed it.
         const float Scale = std::min(SwapchainExtent.width / ScreenWidth, SwapchainExtent.height / ScreenHeight);
         CaptureRegion = { std::max(1u, uint32_t(ScreenWidth * Scale)), std::max(1u, uint32_t(ScreenHeight * Scale)) };
@@ -1022,14 +1026,15 @@ void FRenderer::EndFrame()
             .imageExtent = { CaptureRegion.width, CaptureRegion.height, 1 },
         };
         vkCmdCopyImageToBuffer(Cmd, Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, CaptureBuffer, 1, &Region);
-        TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-            VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
+        TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        BeginRendering(VK_ATTACHMENT_LOAD_OP_LOAD);
     }
-    else
-    {
-        TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
-    }
+
+    DrawGamma();
+    vkCmdEndRendering(Cmd);
+    TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
 
     vkEndCommandBuffer(Cmd);
 
