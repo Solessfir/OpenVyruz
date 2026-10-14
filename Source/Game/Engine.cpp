@@ -1363,6 +1363,34 @@ std::expected<std::vector<FDemoRecord>, std::string> LoadDemo(FResourceArchive& 
     return Records;
 }
 
+std::vector<uint32_t> DemoStepLengths(const std::span<const FDemoRecord> Records)
+{
+    // Record times are clock readings at each step start.
+    // Recording caps steps at 10 ms, so a frame whose poll measured E ms produced ceil(E / 10) records with steps of 10 ms and a remainder; E is the gap since the previous frame's first record. ponytail: the 1 ms clock can misplace E by one millisecond, which accounts for most remaining coasting mismatches.
+    std::vector<uint32_t> StepLengths(Records.size(), DemoStepMilliseconds);
+    if (Records.empty())
+    {
+        return StepLengths;
+    }
+
+    uint32_t PreviousFrameTime = Records.front().Time - DemoStepMilliseconds;
+    for (size_t First = 0; First < Records.size();)
+    {
+        const uint32_t Elapsed = Records[First].Time - PreviousFrameTime;
+        const size_t FrameSteps = std::max<size_t>(1, (Elapsed + DemoStepMilliseconds - 1) / DemoStepMilliseconds);
+        for (size_t Offset = 0; Offset < FrameSteps && First + Offset < Records.size(); ++Offset)
+        {
+            const uint32_t Consumed = uint32_t(Offset) * DemoStepMilliseconds;
+            StepLengths[First + Offset] = Elapsed > Consumed ? std::min(DemoStepMilliseconds, Elapsed - Consumed) : 0;
+        }
+
+        PreviousFrameTime = Records[First].Time;
+        First += FrameSteps;
+    }
+
+    return StepLengths;
+}
+
 std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archive)
 {
     // The check ignores the floating messages it raises.
@@ -1398,23 +1426,7 @@ std::expected<std::string, std::string> VerifyDemoReplay(FResourceArchive& Archi
     constexpr float RecordingFrictionThreshold = 0.001f;
     Class->FrictionThreshold = { .X = RecordingFrictionThreshold, .Y = RecordingFrictionThreshold };
 
-    // Record times are clock readings at each step start.
-    // Recording caps steps at 10 ms, so a frame whose poll measured E ms produced ceil(E / 10) records with steps of 10 ms and a remainder; E is the gap since the previous frame's first record. ponytail: the 1 ms clock can misplace E by one millisecond, which accounts for most remaining coasting mismatches.
-    std::vector<uint32_t> StepLengths(Records.size(), DemoStepMilliseconds);
-    uint32_t PreviousFrameTime = Records.front().Time - DemoStepMilliseconds;
-    for (size_t First = 0; First < Records.size();)
-    {
-        const uint32_t Elapsed = Records[First].Time - PreviousFrameTime;
-        const size_t FrameSteps = std::max<size_t>(1, (Elapsed + DemoStepMilliseconds - 1) / DemoStepMilliseconds);
-        for (size_t Offset = 0; Offset < FrameSteps && First + Offset < Records.size(); ++Offset)
-        {
-            const uint32_t Consumed = uint32_t(Offset) * DemoStepMilliseconds;
-            StepLengths[First + Offset] = Elapsed > Consumed ? std::min(DemoStepMilliseconds, Elapsed - Consumed) : 0;
-        }
-
-        PreviousFrameTime = Records[First].Time;
-        First += FrameSteps;
-    }
+    const std::vector<uint32_t> StepLengths = DemoStepLengths(Records);
 
     constexpr float ExactTolerance = 0.001f;
     constexpr float CloseTolerance = 0.5f;

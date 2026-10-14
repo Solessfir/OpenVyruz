@@ -974,14 +974,13 @@ void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std
     std::stable_sort(Sprites.Sprites.begin(), Sprites.Sprites.end(), [](const FObjectSprite& A, const FObjectSprite& B) { return SpriteDrawsBefore(A.Depth, B.Depth); });
 }
 
-// The original took the mouse for itself through DirectInput, so the cursor never left the game.
-// The port keeps it inside the window (GLFW lets go while the window is unfocused) and hides it with a blank image while the game draws its own.
+// The original took the mouse for itself through DirectInput, so the system cursor never showed and never left the game; it draws its own where it wants one.
+// The port keeps the cursor inside the window (GLFW lets go while the window is unfocused) and hides it with a blank image.
 GLFWcursor* BlankCursor = nullptr;
-bool bSystemCursorShown = true;
 // Windows can drop the confinement on some focus changes, so it is applied again whenever the game becomes active.
 bool bCursorToCapture = true;
 
-void ShowSystemCursor(GLFWwindow* const Window, const bool bShown)
+void CaptureCursor(GLFWwindow* const Window)
 {
     if (!BlankCursor)
     {
@@ -990,15 +989,10 @@ void ShowSystemCursor(GLFWwindow* const Window, const bool bShown)
         BlankCursor = glfwCreateCursor(&Image, 0, 0);
     }
 
-    if (bCursorToCapture)
-    {
-        glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-        bCursorToCapture = false;
-    }
-
+    glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_CAPTURED);
-    glfwSetCursor(Window, bShown ? nullptr : BlankCursor);
-    bSystemCursorShown = bShown;
+    glfwSetCursor(Window, BlankCursor);
+    bCursorToCapture = false;
 }
 
 uint32_t ClockMilliseconds()
@@ -1017,7 +1011,7 @@ void PollEvents(GLFWwindow* const Window)
     {
         if (bCursorToCapture)
         {
-            ShowSystemCursor(Window, bSystemCursorShown);
+            CaptureCursor(Window);
         }
 
         return;
@@ -1327,7 +1321,6 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
     }
 
     SetScreenCursor(Window, State.CursorX, State.CursorY);
-    ShowSystemCursor(Window, false);
     // PgPoll reports presses, so a key held from before the menu does nothing.
     // Escape and Backspace choose the default item, Space and Return the selected one, and the left button the one under the cursor.
     static constexpr std::array<int, 7> Keys = { GLFW_KEY_ESCAPE, GLFW_KEY_BACKSPACE, GLFW_KEY_SPACE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_UP, GLFW_KEY_DOWN };
@@ -1411,7 +1404,6 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
         }
     }
 
-    ShowSystemCursor(Window, true);
     Cursor = std::pair(State.CursorX, State.CursorY);
     if (GameAudio && State.Result)
     {
@@ -1559,7 +1551,7 @@ void ShowCredits(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive
         {
             if (Frame.BitmapIndex != 0)
             {
-                Renderer.DrawSprite(PictureSheet, Frame.BitmapIndex - 1, float(Frame.OffsetX), float(Frame.OffsetY));
+                Renderer.DrawSprite(PictureSheet, Frame.BitmapIndex - 1, float(int32_t(ScreenWidth) / 2 + Frame.OffsetX), float(int32_t(ScreenHeight) / 2 + Frame.OffsetY));
             }
 
             for (FHudSprite Glyph : Lines)
@@ -1839,7 +1831,7 @@ void ShowScores(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive&
             if (Picture && !Picture->Animations.empty() && !Picture->Animations.front().Frames.empty() && Picture->Animations.front().Frames.front().BitmapIndex != 0)
             {
                 const Gaf::FAnimationFrame& Frame = Picture->Animations.front().Frames.front();
-                Renderer.DrawSprite(PictureSheet, Frame.BitmapIndex - 1, float(Frame.OffsetX), float(Frame.OffsetY));
+                Renderer.DrawSprite(PictureSheet, Frame.BitmapIndex - 1, float(int32_t(ScreenWidth) / 2 + Frame.OffsetX), float(int32_t(ScreenHeight) / 2 + Frame.OffsetY));
             }
 
             for (const FHudSprite& Sprite : Sprites)
@@ -2624,6 +2616,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     constexpr size_t WeaponKeyCount = 10;
     // g_DemoReplayCursor.
     size_t DemoCursor = 0;
+    // The original replays a recording made on a 60 Hz display, one record per step; a display of another rate would run steps without records.
+    // So the port plays the recording's own steps as real time allows, then 10 ms steps once they run out.
+    const std::vector<uint32_t> DemoSteps = Demo ? DemoStepLengths(*Demo) : std::vector<uint32_t>();
+    size_t DemoStep = 0;
+    uint32_t DemoBudget = 0;
     bool bTabDown = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
     bool bMapKeyDown = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS;
     std::array<bool, WeaponKeyCount> WeaponKeysDown{};
@@ -2718,11 +2715,6 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     while (!glfwWindowShouldClose(Window))
     {
         PollEvents(Window);
-        if (bSystemCursorShown)
-        {
-            ShowSystemCursor(Window, false);
-        }
-
         // EnginePause (0043b8d0): action-pause (P) closes an open map, or freezes the game (session +0x20 bit 0x1000000) under pause.gaf until P again; meanwhile only P is read and the clock's time is dropped.
         const bool bPausePressed = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS && !bPauseKeyDown;
         bPauseKeyDown = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS;
@@ -2891,9 +2883,30 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             RemainingMilliseconds = 0;
         }
 
-        while (RemainingMilliseconds != 0)
+        if (DemoStep < DemoSteps.size())
         {
-            const uint32_t StepMilliseconds = NextGameStep(RemainingMilliseconds, FramePeriod, Demo != nullptr);
+            DemoBudget += RemainingMilliseconds;
+            RemainingMilliseconds = 0;
+        }
+
+        const auto NextStep = [&]() -> std::optional<uint32_t>
+        {
+            if (DemoStep < DemoSteps.size())
+            {
+                if (DemoBudget < DemoSteps[DemoStep])
+                {
+                    return std::nullopt;
+                }
+
+                DemoBudget -= DemoSteps[DemoStep];
+                return DemoSteps[DemoStep++];
+            }
+
+            return RemainingMilliseconds != 0 ? std::optional(NextGameStep(RemainingMilliseconds, FramePeriod, Demo != nullptr)) : std::nullopt;
+        };
+        while (const std::optional<uint32_t> NextStepMilliseconds = NextStep())
+        {
+            const uint32_t StepMilliseconds = *NextStepMilliseconds;
             // DemoReplayStep (004291d0) takes the next record's input once the game clock reaches its time, staying on the last record; then EngineReplayActionKeys (0043bb00) replays its actions, of which 0x8000 (action-menu) ends the demo.
             uint32_t DemoInput = 0;
             if (Demo && Combat && Player)

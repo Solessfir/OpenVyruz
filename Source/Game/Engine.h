@@ -787,6 +787,8 @@ static_assert(sizeof(FDemoRecord) == 20);
 
 // DemoLoad at 004292b0: VzMenuLoop plays CAVE\DEMO.3DR, the one recording, on the CAVE\DEMO level.
 std::expected<std::vector<FDemoRecord>, std::string> LoadDemo(FResourceArchive& Archive);
+// The step length of each record, as the recording machine's frames split their time: playing the steps in this order gives every step its own record.
+std::vector<uint32_t> DemoStepLengths(std::span<const FDemoRecord> Records);
 // Demo semantics of ReplayPlayerInput (00438800): strafing cancels turning.
 FPlayerCommand PlayerCommandFromInput(uint32_t InputBits);
 // With the mouse as input device, the turn of InputReadDirection (0041d7e0) toward the sight, given the screen vector from the player to it: the short way round (DirectionTurnCommand at 00436600), none when the sight lies straight behind or, while the player moves, within one direction of its facing.
