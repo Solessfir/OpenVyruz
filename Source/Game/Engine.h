@@ -846,6 +846,8 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level);
 std::optional<FObjectBody> CreateObjectBody(const FLevel& Level, size_t Index);
 // Every generator's birth cycle for one step; new products join Bodies and Combat.CreatedObjects.
 void StepGenerators(FCombat& Combat, FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTarget& Player, uint32_t StepMilliseconds);
+// EngineActivateObject (0043c150) for each placed StaticGen as the level starts: with something solid on it the generator opens and waits; otherwise a birth is under way at once and it stands closed.
+void ActivateGenerators(const FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTarget& Player);
 std::vector<FPickup> CreatePickups(const FLevel& Level);
 // The 1-based slot "next weapon" moves to (FUN_004376a0): the first after the one in hand, wrapping after slot 9, whose ammo stock is not empty, or the one in hand when none is.
 size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inventory);

@@ -122,7 +122,7 @@ A StaticGen (kind 0x17, the `Generator-*` classes of tower 3) carries a `TYPE Ge
 4. An open generator closes: the timer becomes the birth duration and flag 2 is set.
 5. A closed one creates its product on itself (`FUN_00433ff0`), links it back at product `+0x2b0` and `+0x2b4`, gives it weapon slot 1, counts the birth, opens and restarts the timer with the birth delay. A product that hunts the player adds to the enemy count.
 
-`Active = 1` makes the first birth come at the first update. With `Stable-population`, `ObjectDropContents` takes a dead product off its generator's births, so it makes another.
+`Active = 1` makes the first birth come at the first update. As the level starts, `EngineActivateObject` (`0043c150`) sets up every placed generator whatever its `Active`: with something solid on it (`ObjectOverlapsSolid`) the generator opens (object `+0x5c` bit 1) and its flag 2 clears, so it waits; otherwise flag 2 is set and it stands closed, so its first birth comes at the first update. With `Stable-population`, `ObjectDropContents` takes a dead product off its generator's births, so it makes another.
 
 ## Wrecks
 

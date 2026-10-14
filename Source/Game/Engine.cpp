@@ -3878,6 +3878,22 @@ void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
     }
 }
 
+void ActivateGenerators(const FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTarget& Player)
+{
+    for (FObjectBody& Body : Bodies)
+    {
+        if (!Body.Generator)
+        {
+            continue;
+        }
+
+        // The test runs with the generator as it stands, then sets flag 2 and the open bit (object +0x5c bit 1) one way or the other.
+        const bool bBlocked = ObjectOverlapsSolid(Level, BodiesByObject(Level, Bodies), Player, Body);
+        Body.Generator->bBirthing = !bBlocked;
+        Body.bPassable = bBlocked;
+    }
+}
+
 void StepGenerators(FCombat& Combat, FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTarget& Player, const uint32_t StepMilliseconds)
 {
     // Bodies grows while the loop runs, so the generators are found by index.
@@ -6513,6 +6529,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         const FPlayerState Waiting = SpawnPlayer(*PlayerObject, *Class);
         const FPlayerTarget Target{ .State = Waiting, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
         Generators += size_t(std::ranges::count_if(Bodies, [&](const FObjectBody& Body) { return Body.Generator && !Level->Objects[Body.ObjectIndex].bRemoved; }));
+        ActivateGenerators(*Level, Bodies, Target);
         for (uint32_t Time = 0; Time < GeneratorMilliseconds; Time += StepMilliseconds)
         {
             StepGenerators(*Combat, *Level, Bodies, Target, StepMilliseconds);

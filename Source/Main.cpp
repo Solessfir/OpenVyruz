@@ -3713,6 +3713,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 Combat->Details = Settings.Details;
                 // EngineActivateObjects applies the difficulty (FUN_0043c4a0) to the player and every hunter as the level starts.
                 ApplyDifficulty(Settings.Difficulty(), *Combat, Bodies, Inventory);
+                ActivateGenerators(*Level, Bodies, { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex });
                 // The carried player object brings its weapons, loaded first and in the same order, and the game clock runs on.
                 if (Carried)
                 {
