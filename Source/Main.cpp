@@ -395,6 +395,8 @@ constexpr size_t NoObjectIndex = SIZE_MAX;
 
 struct FObjectSprite
 {
+    // Added to the bitmap as 0xRRGGBB.
+    uint32_t Specular = 0;
     size_t SheetIndex = 0;
     size_t ObjectIndex = 0;
     bool bShadow = false;
@@ -2327,6 +2329,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     std::optional<FCombat> Combat;
     // Session +0x101c: the last step, which the draw pass plays again.
     uint32_t LastStepMilliseconds = 0;
+    std::optional<uint32_t> PlayerHitClock;
     // The smaller side of the player's current frame, which AnimUpdateBounds makes the body's bounds.
     float PlayerSpriteSize = 0.f;
     std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
@@ -3778,6 +3781,39 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         const float PlayerAlpha = std::max(MinPlayerAlpha, float(PlayerFade) * FadeAlphaStep);
+        // ObjectDraw at 00431ae0, for the player: the hit mark starts a red glow (session +0x2588 keeps the game clock of the hit) that fades from 125 to nothing over half a second,
+        // and while the shield builds up (Shield-up-step, object +0xe4) a green glow pulses once a second up to 50, both added to the body as specular colour.
+        if (Player && Combat)
+        {
+            constexpr uint32_t HitGlowMilliseconds = 500;
+            constexpr uint32_t HitGlowShift = 2;
+            constexpr double PulseRadiansPerMillisecond = double(6.2831855f) * double(0.001f);
+            constexpr double PulseStrength = 50.;
+            constexpr uint32_t RedShift = 16;
+            constexpr uint32_t GreenShift = 8;
+            if (std::exchange(Inventory.bHit, false))
+            {
+                PlayerHitClock = Combat->Clock;
+            }
+
+            uint32_t Red = 0;
+            if (PlayerHitClock)
+            {
+                const uint32_t Since = Combat->Clock - *PlayerHitClock;
+                Red = Since < HitGlowMilliseconds ? (HitGlowMilliseconds - Since) >> HitGlowShift : 0;
+                PlayerHitClock = Since < HitGlowMilliseconds ? PlayerHitClock : std::nullopt;
+            }
+
+            const uint32_t Green = Inventory.ShieldUpStep != 0.f ? uint32_t(std::abs(int32_t(std::sin(double(Combat->Clock) * PulseRadiansPerMillisecond) * PulseStrength))) : 0;
+            for (FObjectSprite& Sprite : Sprites)
+            {
+                if (Sprite.ObjectIndex == PlayerIndex && !Sprite.bShadow)
+                {
+                    Sprite.Specular = Red << RedShift | Green << GreenShift;
+                }
+            }
+        }
+
         for (const FObjectBody& Body : Bodies)
         {
             int& Fade = ObjectFades[Body.ObjectIndex];
@@ -3801,6 +3837,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     Sprite.Frame = bShown ? Animations[Animation - 1].Frames[size_t(Player->Pose - 1)] : Gaf::FAnimationFrame{};
                     Sprite.Blend = Blend == ESpriteBlend::Opaque ? FrameBlend(Sprite.Frame) : Blend;
                     Sprite.Diffuse = Diffuse;
+                    // The light layers set their own colour (ColorReset in ObjectDraw), without the body's glow.
+                    Sprite.Specular = 0;
                     return Sprite;
                 };
 
@@ -3865,7 +3903,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             constexpr uint32_t ColorMask = 0xffffff;
             const uint32_t Diffuse = (Frame.EventFlags & DiffuseEventFlag) != 0 ? ModulateColor(uint32_t(Frame.EventValue) & ColorMask, Sprite.Diffuse) : Sprite.Diffuse;
             Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + OffsetX - OriginX, Sprite.Y + OffsetY - OriginY,
-                Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer || bFadingObject ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, Diffuse, 0,
+                Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer || bFadingObject ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, Diffuse, Sprite.Specular,
                 bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : 1.f);
         };
         const auto DrawMapRow = [&](const int64_t Row, const std::optional<int32_t> Depth)

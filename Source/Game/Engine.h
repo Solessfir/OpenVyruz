@@ -471,6 +471,8 @@ struct FPickup
 // The player's Energy, Shield, money and ammo, as the item pickup branch of EngineUpdateObjects (004406e0) changes them.
 struct FPlayerInventory
 {
+    // Object flag 0x200: AreaDamage (0043cb20) marks the player it damages, and ObjectDraw turns the mark into a red glow.
+    bool bHit = false;
     float Energy = 0.f;
     float EnergyMax = 0.f;
     float Shield = 0.f;

@@ -2582,6 +2582,7 @@ void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float
             if (!Player.State.bInvisible && !Player.Inventory.Surprises.bInvulnerable)
             {
                 ApplyDamage(Player.Inventory.Energy, Player.Inventory.Shield, *Amount);
+                Player.Inventory.bHit = true;
             }
 
             // AreaDamage at 0043cb20: a blast of 300 or more flashes the screen (60, or 30 below 1000) and makes a living player cry out three times in eight by the game clock.
