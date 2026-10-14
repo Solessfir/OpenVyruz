@@ -526,38 +526,48 @@ struct FPlacedAnimation
     FAnimationPlayback Playback;
 };
 
-std::vector<FPlacedAnimation> CreatePlacedAnimations(const FObjectSprites& Sprites, const FLevel& Level, const std::span<const std::optional<FActorAnimation>> Actors)
+std::optional<FPlacedAnimation> PlacedAnimationFor(const FObjectSprite& Sprite, const FObjectSprites& Sprites, const FLevel& Level,
+    const std::span<const std::optional<FActorAnimation>> Actors)
 {
     constexpr uint32_t LoopFlag = 2;
+    const FLevelObject& Object = Level.Objects[Sprite.ObjectIndex];
+    // A generator's light plays from its first animation whatever its length; its body holds its first frame.
+    if (Sprite.bGeneratorLight)
+    {
+        const Gaf::FAnimation& Light = Sprites.Animations[Sprite.SheetIndex].front();
+        return FPlacedAnimation{ .ObjectIndex = Sprite.ObjectIndex, .SheetIndex = Sprite.SheetIndex, .bGeneratorLight = true, .Playback = StartAnimation(Light) };
+    }
+
+    if (Sprite.bShadow || Sprite.bTop || Sprite.bTurretBase || Sprite.bDeltaBase || Actors[Sprite.ObjectIndex] || Object.SubType == "lift" || Object.SubType == "gate" ||
+        Object.SubType == TurretKind || Object.SubType == "vyruz" || Object.SubType == GeneratorKind)
+    {
+        return std::nullopt;
+    }
+
+    const size_t Index = ObjectAnimationIndex(Object, false);
+    const Gaf::FAnimation& Animation = Sprites.Animations[Sprite.SheetIndex][Index];
+    if (Animation.Frames.size() <= 1 || (Animation.Flags & LoopFlag) == 0)
+    {
+        return std::nullopt;
+    }
+
+    return FPlacedAnimation{
+        .ObjectIndex = Sprite.ObjectIndex,
+        .SheetIndex = Sprite.SheetIndex,
+        .Animation = Index,
+        .bGraphicUpdate = ParseLevelFloat(Object.Properties.Find("Graphic-update-needed")).value_or(0.f) != 0.f,
+        .Playback = StartAnimation(Animation),
+    };
+}
+
+std::vector<FPlacedAnimation> CreatePlacedAnimations(const FObjectSprites& Sprites, const FLevel& Level, const std::span<const std::optional<FActorAnimation>> Actors)
+{
     std::vector<FPlacedAnimation> Result;
     for (const FObjectSprite& Sprite : Sprites.Sprites)
     {
-        const FLevelObject& Object = Level.Objects[Sprite.ObjectIndex];
-        // A generator's light plays from its first animation whatever its length; its body holds its first frame.
-        if (Sprite.bGeneratorLight)
+        if (std::optional<FPlacedAnimation> Placed = PlacedAnimationFor(Sprite, Sprites, Level, Actors))
         {
-            const Gaf::FAnimation& Light = Sprites.Animations[Sprite.SheetIndex].front();
-            Result.push_back({ .ObjectIndex = Sprite.ObjectIndex, .SheetIndex = Sprite.SheetIndex, .bGeneratorLight = true, .Playback = StartAnimation(Light) });
-            continue;
-        }
-
-        if (Sprite.bShadow || Sprite.bTop || Sprite.bTurretBase || Sprite.bDeltaBase || Actors[Sprite.ObjectIndex] || Object.SubType == "lift" || Object.SubType == "gate" ||
-            Object.SubType == TurretKind || Object.SubType == "vyruz" || Object.SubType == GeneratorKind)
-        {
-            continue;
-        }
-
-        const size_t Index = ObjectAnimationIndex(Object, false);
-        const Gaf::FAnimation& Animation = Sprites.Animations[Sprite.SheetIndex][Index];
-        if (Animation.Frames.size() > 1 && (Animation.Flags & LoopFlag) != 0)
-        {
-            Result.push_back({
-                .ObjectIndex = Sprite.ObjectIndex,
-                .SheetIndex = Sprite.SheetIndex,
-                .Animation = Index,
-                .bGraphicUpdate = ParseLevelFloat(Object.Properties.Find("Graphic-update-needed")).value_or(0.f) != 0.f,
-                .Playback = StartAnimation(Animation),
-            });
+            Result.push_back(std::move(*Placed));
         }
     }
 
@@ -5419,6 +5429,18 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     {
                         const auto Body = std::ranges::find(Bodies, Created, &FObjectBody::ObjectIndex);
                         ActorAnimations[Created] = Body == Bodies.end() ? std::nullopt : CreateActorAnimation(*Body, *Level, *Objects);
+                    }
+
+                    // Dropped items, created mines and births play their looping animation like the placed objects.
+                    for (const FObjectSprite& Sprite : Objects->Sprites)
+                    {
+                        if (std::ranges::contains(Combat->CreatedObjects, Sprite.ObjectIndex))
+                        {
+                            if (std::optional<FPlacedAnimation> Placed = PlacedAnimationFor(Sprite, *Objects, *Level, ActorAnimations))
+                            {
+                                PlacedAnimations.push_back(std::move(*Placed));
+                            }
+                        }
                     }
 
                     Combat->CreatedObjects.clear();
