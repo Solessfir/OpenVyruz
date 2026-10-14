@@ -63,6 +63,8 @@ public:
     // SoundSetVolume (0045fe00) and SoundSetPan (0045ff00): the setting stays with the channel for later samples.
     void SetVolume(uint32_t Channel, int Volume);
     void SetPan(uint32_t Channel, int Pan);
+    // Holds every channel where it is and outputs silence, while the game stands still.
+    void SetPaused(bool bInPaused);
 
 private:
     struct FChannel
@@ -85,6 +87,7 @@ private:
     std::array<FChannel, ChannelCount> Channels;
     uint32_t OutputRate = 0;
     uint32_t NextSerial = 1;
+    bool bPaused = false;
     std::unique_ptr<FDevice> Device;
 };
 }

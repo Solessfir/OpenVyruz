@@ -976,8 +976,38 @@ void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std
 
 uint32_t ClockMilliseconds()
 {
-    const auto Elapsed = std::chrono::steady_clock::now().time_since_epoch();
-    return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(Elapsed).count());
+    return uint32_t(ClockNowMilliseconds());
+}
+
+// PgPoll's message pump (004813c0): once the window procedure has found the game inactive (AppActivate at 004814c0) and paused the clock (PgClockPause at 00469730), it blocks in GetMessage until the game is active again, so nothing moves meanwhile.
+// Minimized or without the focus counts as inactive; on Wayland a window on a hidden workspace loses the focus, so nothing is drawn or presented for it.
+void PollEvents(GLFWwindow* const Window)
+{
+    glfwPollEvents();
+    const auto IsInactive = [Window]
+    { return !glfwWindowShouldClose(Window) && (glfwGetWindowAttrib(Window, GLFW_ICONIFIED) != 0 || glfwGetWindowAttrib(Window, GLFW_FOCUSED) == 0); };
+    if (!IsInactive())
+    {
+        return;
+    }
+
+    PauseClock(true);
+    if (GameAudio)
+    {
+        GameAudio->SetPaused(true);
+    }
+
+    while (IsInactive())
+    {
+        glfwWaitEvents();
+    }
+
+    if (GameAudio)
+    {
+        GameAudio->SetPaused(false);
+    }
+
+    PauseClock(false);
 }
 
 // ShowImageWait at 00404950: an image centred on the screen for up to 5 seconds; WaitForInput (00404910) ends the wait early on a key or a mouse button.
@@ -1011,7 +1041,7 @@ void ShowImage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& 
     const uint32_t Start = ClockMilliseconds();
     while (!glfwWindowShouldClose(Window) && ClockMilliseconds() - Start < WaitMilliseconds)
     {
-        glfwPollEvents();
+        PollEvents(Window);
         if (AnyInput())
         {
             break;
@@ -1059,7 +1089,7 @@ void ShowTextPage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchiv
     std::vector<bool> Previous = Inputs();
     while (!glfwWindowShouldClose(Window))
     {
-        glfwPollEvents();
+        PollEvents(Window);
         const std::vector<bool> Now = Inputs();
         bool bPressed = false;
         for (size_t Index = 0; Index < Now.size(); ++Index)
@@ -1148,7 +1178,7 @@ void ShowNetworkFailure(GLFWwindow* const Window, FRenderer& Renderer, const FPa
     size_t Line = 0;
     while (!glfwWindowShouldClose(Window) && Elapsed < ScreenMilliseconds)
     {
-        glfwPollEvents();
+        PollEvents(Window);
         if (Input.Poll())
         {
             break;
@@ -1287,7 +1317,7 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
     int64_t IdleLeft = Menu.IdleMilliseconds;
     while (!glfwWindowShouldClose(Window))
     {
-        glfwPollEvents();
+        PollEvents(Window);
         const bool bAnyInput = AnyInput.Poll();
         const auto Down = ReadDown();
         const auto Pressed = [&](const size_t Index) { return Down[Index] && !Previous[Index]; };
@@ -1477,7 +1507,7 @@ void ShowCredits(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive
     float Top = float(ClipBottom);
     while (!glfwWindowShouldClose(Window) && Top + TextHeight >= 0.f)
     {
-        glfwPollEvents();
+        PollEvents(Window);
         if (Input.Poll())
         {
             break;
@@ -1553,7 +1583,7 @@ void ShowSlides(GLFWwindow* const Window, FRenderer& Renderer, const std::filesy
             const uint32_t Start = ClockMilliseconds();
             while (ClockMilliseconds() - Start < SlideMilliseconds)
             {
-                glfwPollEvents();
+                PollEvents(Window);
                 if (glfwWindowShouldClose(Window) || Input.Poll())
                 {
                     Renderer.ReleaseSpriteSheets();
@@ -1660,7 +1690,7 @@ void PlayIntro(GLFWwindow* const Window, FRenderer& Renderer, const std::filesys
     size_t Decoded = 0;
     while (!glfwWindowShouldClose(Window))
     {
-        glfwPollEvents();
+        PollEvents(Window);
         if (Input.Poll())
         {
             break;
@@ -1767,7 +1797,7 @@ void ShowScores(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive&
     FInputPress Input(Window);
     while (!glfwWindowShouldClose(Window) && !Input.Poll())
     {
-        glfwPollEvents();
+        PollEvents(Window);
         if (Renderer.BeginFrame())
         {
             if (Picture && !Picture->Animations.empty() && !Picture->Animations.front().Frames.empty() && Picture->Animations.front().Frames.front().BitmapIndex != 0)
@@ -2651,7 +2681,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     const size_t CurrentIndex = Current == DebugLevels.end() ? DebugLevels.size() : size_t(Current - DebugLevels.begin());
     while (!glfwWindowShouldClose(Window))
     {
-        glfwPollEvents();
+        PollEvents(Window);
         if (glfwGetInputMode(Window, GLFW_CURSOR) != GLFW_CURSOR_HIDDEN)
         {
             glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);

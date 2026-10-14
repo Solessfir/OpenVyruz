@@ -41,4 +41,9 @@ constexpr uint32_t NextGameStep(uint32_t& RemainingMilliseconds, const uint32_t 
     return Step;
 }
 
+// PgClockNow at 00469680: milliseconds of real time, less the time the clock stood paused.
+uint64_t ClockNowMilliseconds();
+// PgClockPause at 00469730: the window procedure pauses the clock while the game is inactive, and the message pump resumes it.
+void PauseClock(bool bPaused);
+
 bool VerifyFrameLoop();

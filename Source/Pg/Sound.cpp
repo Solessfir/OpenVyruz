@@ -403,10 +403,21 @@ void Sound::FMixer::SetPan(const uint32_t Channel, const int Pan)
     }
 }
 
+void Sound::FMixer::SetPaused(const bool bInPaused)
+{
+    const std::scoped_lock Lock(Mutex);
+    bPaused = bInPaused;
+}
+
 void Sound::FMixer::Mix(FMixer& Mixer, float* const Output, const uint32_t FrameCount)
 {
     std::fill_n(Output, size_t(FrameCount) * StereoChannels, 0.f);
     const std::scoped_lock Lock(Mixer.Mutex);
+    if (Mixer.bPaused)
+    {
+        return;
+    }
+
     for (FChannel& Channel : Mixer.Channels)
     {
         if (!Channel.Sample)

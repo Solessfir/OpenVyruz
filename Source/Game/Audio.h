@@ -132,6 +132,8 @@ public:
     // PlayIntro (004033b0) leaves the intro's sound to MCI, which plays it at full volume while the music is stopped.
     void PlayMovieSound(std::shared_ptr<const Sound::FSample> Sample);
     void StopMovieSound();
+    // The whole game, sound included, stands still while it is inactive.
+    void SetPaused(bool bPaused) { Mixer.SetPaused(bPaused); }
 
     // PlayerUpdateMotorSound (00445c50), every frame of a level: while the player's motor works its loop plays on channel 4, louder with speed, from a third of the sound-fx volume up; a blocked motor tries start-engine.wav when the player thrusts.
     void UpdateMotor(const FPlayerState& Player, float ThrustMax, bool bBlockedMotor, bool bThrusting);

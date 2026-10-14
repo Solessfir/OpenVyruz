@@ -1,9 +1,14 @@
 #include "Game/Loop.h"
 
 #include <array>
+#include <chrono>
 
 namespace
 {
+std::chrono::steady_clock::duration PausedTime{};
+std::chrono::steady_clock::time_point PausedSince{};
+bool bClockPaused = false;
+
 constexpr bool CheckFrameLoop()
 {
     if (FramePeriodMilliseconds(60000) != 16 || FramePeriodMilliseconds(144000) != 6 || FramePeriodMilliseconds(0) != 1000000)
@@ -38,6 +43,32 @@ constexpr bool CheckFrameLoop()
     return true;
 }
 static_assert(CheckFrameLoop());
+}
+
+uint64_t ClockNowMilliseconds()
+{
+    const auto Now = bClockPaused ? PausedSince : std::chrono::steady_clock::now();
+    return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(Now.time_since_epoch() - PausedTime).count());
+}
+
+void PauseClock(const bool bPaused)
+{
+    if (bPaused == bClockPaused)
+    {
+        return;
+    }
+
+    const auto Now = std::chrono::steady_clock::now();
+    if (bPaused)
+    {
+        PausedSince = Now;
+    }
+    else
+    {
+        PausedTime += Now - PausedSince;
+    }
+
+    bClockPaused = bPaused;
 }
 
 bool VerifyFrameLoop()

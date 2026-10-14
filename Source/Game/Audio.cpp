@@ -2,11 +2,11 @@
 
 #include "Game/Animation.h"
 #include "Game/Engine.h"
+#include "Game/Loop.h"
 #include "Pg/ResourceArchive.h"
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <format>
 
 namespace
@@ -26,10 +26,10 @@ constexpr uint32_t HighPriorityBoost = 0x40;
 FAudio* VoiceAudio = nullptr;
 uint32_t VoiceClock = 0;
 
-// PgClockNow: the voice queue runs on real time.
+// The voice queue runs on PgClockNow, which stands still while the game is inactive.
 uint64_t NowMilliseconds()
 {
-    return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    return ClockNowMilliseconds();
 }
 
 constexpr std::array<std::string_view, size_t(EVoice::WantMore) + 1> VoiceNames = {

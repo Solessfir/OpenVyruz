@@ -37,6 +37,12 @@ There is no fixed tick. Each frame:
 
 The port therefore cannot use a fixed tick and stay faithful: it must reproduce the variable millisecond step capped at the display period (or 10 ms for demos).
 
+### Inactive
+
+`PgVideoElapsedMs` reads `PgClockNow` (`00469680`), a clock that `PgClockPause` (`00469730`) can stop. When the game loses the activation, the window procedure's `AppActivate` (`004814c0`) pauses that clock (and in full screen restores the display mode and minimizes the window). The message pump in `PgPoll` (`004813c0`) then waits in `GetMessage` until the game is active again. Everything stands still, menus and level alike, and play resumes with no jump in time.
+
+The port does the same in its event poll: while the window is minimized or has lost the focus it waits for window events, with the clock paused and the mixer silent, so it draws nothing and takes no CPU. The swapchain presents in FIFO mode, so frames are paced by vertical sync on both systems. On Wayland a window on a hidden workspace loses the focus, so it never waits in a present that the compositor would not release.
+
 ## Level start
 
 `EngineRunLevel` reseeds the random generator before a demo is recorded or played back (`DemoStartRecording`, `00428fc0`, and `DemoStartPlayback`), then `EngineActivateObjects` (`0043c700`) visits the grid from its last row and column back to the first, each cell listing its newest object first. `ObjectActivate` (`0043c150`) draws `RandomRange(0, 256)` once per object for its bob phase (`2 pi / draw`; a zero draw gives an infinite phase, and that object never leaves its average altitude) and shows the bob's first altitude. In normal play `LevelStartMapAnimations` (`0041f0b0`) has drawn before that, after `VzLoadLevel`'s reseed: one `RandomRange(1, frames)` start frame per `.3DX` entry, in file order, whose GAF lies two folders below an `Anim` directory (`Level3dxResolveEntry`'s kind 1 of `Anim`, `Bitmap`, `Object`), for the animation the entry names (an exact match, `FUN_0046c710`); an entry whose name the GAF lacks is dropped without a draw. The port makes both sets of draws.
