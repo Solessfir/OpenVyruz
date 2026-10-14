@@ -102,4 +102,4 @@ Every one replaces a message at its position. The lift and gate texts come from 
 
 Not ported yet:
 
-- The map's sounds, and its picture is point-sampled rather than stretched block by block.
+- The map's picture is point-sampled rather than stretched block by block, so a cell edge may round a pixel differently. The map itself plays nothing: `MapToggle` and the icon animations (21, 23 and 25) have no sounds.
