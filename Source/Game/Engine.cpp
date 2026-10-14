@@ -1363,11 +1363,16 @@ std::expected<std::vector<FDemoRecord>, std::string> LoadDemo(FResourceArchive& 
     return Records;
 }
 
-std::vector<uint32_t> DemoStepLengths(const std::span<const FDemoRecord> Records)
+std::vector<uint32_t> DemoStepLengths(const std::span<const FDemoRecord> Records, std::vector<bool>* const FrameEnds)
 {
     // Record times are clock readings at each step start.
     // Recording caps steps at 10 ms, so a frame whose poll measured E ms produced ceil(E / 10) records with steps of 10 ms and a remainder; E is the gap since the previous frame's first record. ponytail: the 1 ms clock can misplace E by one millisecond, which accounts for most remaining coasting mismatches.
     std::vector<uint32_t> StepLengths(Records.size(), DemoStepMilliseconds);
+    if (FrameEnds)
+    {
+        FrameEnds->assign(Records.size(), false);
+    }
+
     if (Records.empty())
     {
         return StepLengths;
@@ -1382,6 +1387,11 @@ std::vector<uint32_t> DemoStepLengths(const std::span<const FDemoRecord> Records
         {
             const uint32_t Consumed = uint32_t(Offset) * DemoStepMilliseconds;
             StepLengths[First + Offset] = Elapsed > Consumed ? std::min(DemoStepMilliseconds, Elapsed - Consumed) : 0;
+        }
+
+        if (FrameEnds)
+        {
+            (*FrameEnds)[std::min(First + FrameSteps, Records.size()) - 1] = true;
         }
 
         PreviousFrameTime = Records[First].Time;

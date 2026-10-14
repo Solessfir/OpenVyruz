@@ -2746,7 +2746,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     size_t DemoCursor = 0;
     // The original replays a recording made on a 60 Hz display, one record per step; a display of another rate would run steps without records.
     // So the port plays the recording's own steps as real time allows, then 10 ms steps once they run out.
-    const std::vector<uint32_t> DemoSteps = Demo ? DemoStepLengths(*Demo) : std::vector<uint32_t>();
+    std::vector<bool> DemoFrameEnds;
+    const std::vector<uint32_t> DemoSteps = Demo ? DemoStepLengths(*Demo, &DemoFrameEnds) : std::vector<uint32_t>();
     size_t DemoStep = 0;
     uint32_t DemoBudget = 0;
     bool bTabDown = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
@@ -3017,6 +3018,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             RemainingMilliseconds = 0;
         }
 
+        // The draw pass advances by the frame's last step (session +0x101c). Playing a recording, that is the last step of each recorded frame that ends this frame, so the draw pass keeps the recording machine's pace; none ending, nothing advances.
+        const bool bRecordedSteps = DemoStep < DemoSteps.size();
+        std::optional<uint32_t> RecordedDrawStep;
         const auto NextStep = [&]() -> std::optional<uint32_t>
         {
             if (DemoStep < DemoSteps.size())
@@ -3027,6 +3031,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
 
                 DemoBudget -= DemoSteps[DemoStep];
+                if (DemoFrameEnds[DemoStep])
+                {
+                    RecordedDrawStep = DemoSteps[DemoStep];
+                }
+
                 return DemoSteps[DemoStep++];
             }
 
@@ -3481,9 +3490,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         };
         CameraX -= StepShake(Inventory.Surprises.ShakeX);
         CameraY -= StepShake(Inventory.Surprises.ShakeY);
+        const uint32_t DrawStepMilliseconds = bRecordedSteps ? RecordedDrawStep.value_or(0) : LastStepMilliseconds;
         AnimateActors(ActorAnimations, Bodies, *Level, *Objects, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level),
-            int32_t(LastStepMilliseconds));
-        StepPlacedAnimations(PlacedAnimations, *Objects, *Level, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level), int32_t(LastStepMilliseconds), true);
+            int32_t(DrawStepMilliseconds));
+        StepPlacedAnimations(PlacedAnimations, *Objects, *Level, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level), int32_t(DrawStepMilliseconds), true);
         UpdateObjectSprites(*Objects, *Level, ActorAnimations, *Doors, PlacedAnimations);
         if (Player)
         {
@@ -3515,7 +3525,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             constexpr int32_t ShieldNoteY = 100;
             constexpr uint32_t ShieldNoteLifeMilliseconds = 2000;
             constexpr uint32_t PanelScreenFont = 3;
-            ShieldAlarmTimer -= int32_t(LastStepMilliseconds);
+            ShieldAlarmTimer -= int32_t(DrawStepMilliseconds);
             if (ShieldAlarmTimer < 1 && Inventory.ShieldMax != 0.f && Inventory.Shield / Inventory.ShieldMax <= AlarmRatio)
             {
                 ShieldAlarmTimer = AlarmPeriodMilliseconds;
@@ -3962,7 +3972,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             {
                 Panel->DrawMessage(MessageSprites, Message, X, Y, Text);
             };
-            Messages.Update(int32_t(LastStepMilliseconds), OriginX, OriginY, &DrawMessage);
+            Messages.Update(int32_t(DrawStepMilliseconds), OriginX, OriginY, &DrawMessage);
             DrawHud(MessageSprites);
         }
 
@@ -4069,7 +4079,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 SightSheet = Renderer.CreateSpriteSheet(SightGaf->Bitmaps);
             }
 
-            UpdateAnimation(SightPlayback, *Sight, int32_t(LastStepMilliseconds));
+            UpdateAnimation(SightPlayback, *Sight, int32_t(DrawStepMilliseconds));
             const uint32_t Frame = SightPlayback.bEnded ? 0 : SightPlayback.Frame;
             if (Frame >= 1 && Frame <= Sight->Frames.size() && SightPosition)
             {
