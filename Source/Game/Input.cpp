@@ -1,5 +1,7 @@
 #include "Game/Input.h"
 
+#include "Game/Language.h"
+
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
@@ -315,16 +317,23 @@ std::string CodeName(const uint32_t Code)
     if (Code < MouseCodeBase)
     {
         const auto Key = std::ranges::find(KeyCodes, Code, &FKeyCode::Code);
-        return Key != KeyCodes.end() ? std::string(Key->Name) : std::format("0x{:02X}", Code);
+        return Key != KeyCodes.end() ? std::string(Localize(Key->Name)) : std::format("0x{:02X}", Code);
     }
 
     if (Code < JoypadCodeBase)
     {
-        return Code - MouseCodeBase < MouseNames.size() ? std::string(MouseNames[Code - MouseCodeBase]) : std::string();
+        return Code - MouseCodeBase < MouseNames.size() ? std::string(Localize(MouseNames[Code - MouseCodeBase])) : std::string();
     }
 
     // ponytail: the joypad's names come from DirectInput's device; the port has no joypad yet.
     return std::format("JOYPAD {}", Code - JoypadCodeBase);
+}
+
+std::string BindingName(const FBinding& Binding)
+{
+    const uint32_t Code = Binding.Code & BindingCodeMask;
+    const uint32_t Modifier = Binding.Modifier & BindingCodeMask;
+    return Modifier == 0 ? CodeName(Code) : std::format("{} + {}", CodeName(Modifier), CodeName(Code));
 }
 
 std::string_view ActionKeyword(const size_t Action)

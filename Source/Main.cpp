@@ -2866,10 +2866,8 @@ std::pair<std::vector<size_t>, size_t> FillKeyPage(FMenu& Menu, const FSettings&
         }
 
         const FBinding& Binding = Settings.Bindings.Table(Settings.Device)[size_t(All[Next].Action)];
-        const uint32_t Code = Binding.Code & BindingCodeMask;
-        const uint32_t Modifier = Binding.Modifier & BindingCodeMask;
         Menu.Items.push_back({
-            .Text = Modifier == 0 ? std::format("{} : {}", All[Next].Name, CodeName(Code)) : std::format("{} : {} + {}", All[Next].Name, CodeName(Modifier), CodeName(Code)),
+            .Text = std::format("{} : {}", Localize(All[Next].Name), BindingName(Binding)),
             .Help = "Modify setting.",
         });
         Shown.push_back(Next);
@@ -3594,6 +3592,87 @@ std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Render
     }
 }
 
+// The first level's page names the default keys to fire and to move, each in a block of three lines (the keyboard's, the mouse's and the joypad's) that name them after " : ".
+// The original prints the page as it is; the port names the keys bound now in each line whose bindings are no longer the defaults, and keeps the page's words otherwise.
+std::string NameBoundKeys(std::string Page, const FKeyBindings& Bindings)
+{
+    constexpr size_t BlockLines = 3;
+    constexpr std::array<EInputDevice, BlockLines> Devices{ EInputDevice::Keyboard, EInputDevice::Mouse, EInputDevice::Joypad };
+    constexpr std::array FireActions{ EAction::Fire };
+    constexpr std::array MoveActions{ EAction::Forward, EAction::Backward, EAction::Left, EAction::Right };
+    const std::array<std::span<const EAction>, 2> BlockActions{ FireActions, MoveActions };
+    constexpr std::string_view Separator = " : ";
+
+    // Each line as its start and end, without the line break.
+    std::vector<std::pair<size_t, size_t>> Lines;
+    for (size_t Start = 0; Start <= Page.size();)
+    {
+        const size_t Break = std::min(Page.find('\n', Start), Page.size());
+        const size_t End = Break > Start && Page[Break - 1] == '\r' ? Break - 1 : Break;
+        Lines.emplace_back(Start, End);
+        Start = Break + 1;
+    }
+
+    const auto Named = [&](const size_t Line) { return Page.substr(Lines[Line].first, Lines[Line].second - Lines[Line].first).find(Separator) != std::string::npos; };
+    std::vector<size_t> Blocks;
+    for (size_t Line = 0; Line + BlockLines <= Lines.size(); ++Line)
+    {
+        if (Named(Line) && Named(Line + 1) && Named(Line + 2) && (Line == 0 || !Named(Line - 1)) && (Line + BlockLines == Lines.size() || !Named(Line + BlockLines)))
+        {
+            Blocks.push_back(Line);
+        }
+    }
+
+    if (Blocks.size() != BlockActions.size())
+    {
+        return Page;
+    }
+
+    // From the last line back, so the earlier lines' offsets hold.
+    for (size_t Block = Blocks.size(); Block-- > 0;)
+    {
+        for (size_t Row = BlockLines; Row-- > 0;)
+        {
+            const FBindingTable& Table = Bindings.Table(Devices[Row]);
+            const FBindingTable& Defaults = FKeyBindings::DefaultTable(Devices[Row]);
+            std::string Keys;
+            bool bChanged = false;
+            for (const EAction Action : BlockActions[Block])
+            {
+                const FBinding& Binding = Table[size_t(Action)];
+                bChanged |= Binding != Defaults[size_t(Action)];
+                if ((Binding.Code & FixedBinding) == 0)
+                {
+                    Keys += (Keys.empty() ? "" : ", ") + BindingName(Binding);
+                }
+            }
+
+            const size_t End = Lines[Blocks[Block] + Row].second;
+            if (bChanged)
+            {
+                const size_t Value = Page.rfind(Separator, End) + Separator.size();
+                Page.replace(Value, End - Value, Keys);
+            }
+        }
+    }
+
+    return Page;
+}
+
+// The first level's page with the defaults stays as it is, and a rebound key replaces only its own line's keys.
+bool VerifyBoundKeys()
+{
+    constexpr std::string_view Page = "Your mission : here.\r\n\r\n    Fire\t\tKeyboard : Space key\r\n\t\tMouse    : Left button\r\n\t\tJoyPad   : Button 1\r\n\r\n"
+                                      "    Move\t\tKeyboard : Arrows\r\n\t\tMouse    : Right Button\r\n\t\tJoyPad   : as usual ...\r\n";
+    FKeyBindings Bindings = FKeyBindings::Defaults();
+    const bool bDefaultsKept = NameBoundKeys(std::string(Page), Bindings) == Page;
+    constexpr uint32_t LeftCtrl = 0x22;
+    Bindings.Keyboard[size_t(EAction::Fire)] = { .Code = LeftCtrl };
+    std::string Expected(Page);
+    Expected.replace(Expected.find("Space key"), std::string_view("Space key").size(), CodeName(LeftCtrl));
+    return bDefaultsKept && NameBoundKeys(std::string(Page), Bindings) == Expected;
+}
+
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a menu ends or restarts the level.
 // A level loaded from a session takes its objects and the player's numbers from Restore; any other becomes the default session, in Session and on disk.
 std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
@@ -4075,7 +4154,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     {
         if (const std::optional<std::vector<uint8_t>> File = Archive.Read(std::format("{}-{}.txt", LevelPath, TextSuffix())))
         {
-            PageText.assign(File->begin(), File->end());
+            PageText = NameBoundKeys(std::string(File->begin(), File->end()), Settings.Bindings);
         }
     }
 
@@ -5913,9 +5992,11 @@ int main(const int ArgCount, char** const Args)
         std::printf("Sessions: %s\n", SessionCheck ? SessionCheck->c_str() : SessionCheck.error().c_str());
         const bool bScores = VerifyScores();
         std::printf("Scores: %s\n", bScores ? "passed" : "failed");
+        const bool bBoundKeys = VerifyBoundKeys();
+        std::printf("Bound keys page: %s\n", bBoundKeys ? "passed" : "failed");
         std::printf("Frame loop: %s, terrain collision: %s, player movement: %s\n", bFrameLoop ? "passed" : "failed",
             Collision ? "passed" : Collision.error().c_str(), Movement ? "passed" : Movement.error().c_str());
-        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols && Doors && SessionCheck && bScores ? 0 : 1;
+        return bFrameLoop && Collision && Movement && Paths && Demo && Combat && Patrols && Doors && SessionCheck && bScores && bBoundKeys ? 0 : 1;
     }
 
     if (!glfwInit())

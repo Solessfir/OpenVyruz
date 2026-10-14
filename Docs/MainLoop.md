@@ -56,6 +56,7 @@ Before the game loop `EngineRunLevel` draws the level and the panel once and cal
 - **Backdrop**: the panel's `black_square` (slot 22) tiled over the screen twice, from 32, 16, each row and column stopping a tile short of the edge. The panel is drawn over it.
 - **Text**: v-bonus font 3 from `64 * width / 640`, `80 * height / 480`, lines `25 * height / 480` apart. It types one character per frame. On a tab the cursor first moves to the next multiple of 64, then the tab prints with the font's own tab rule. Each printed character also asks for `bip.wav`, on the channel mask `1 << ((char)(1 << 16) - 2)`, which is bit 30 and names no channel, so it stays silent.
 - **Ending**: fire while it types ends the page at once; once typed, fire or any key does.
+- **Keys**: `t1u1`'s page names the default keys to fire and to move, in two blocks of three lines (keyboard, mouse, joypad), each after ` : `. The original prints them as they are, whatever the bindings; the port puts the bound keys' names in each line whose bindings are no longer the defaults, and keeps the page's words otherwise.
 
 Then, for every level, the level's name (session `+0x1034`) rises from the bottom centre (`width / 2 - 100`, `height`) at one pixel per update for 5 seconds, typed, in v-bonus font 5 and colour `0xffe010`.
 

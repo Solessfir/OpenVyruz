@@ -90,8 +90,10 @@ std::span<const FActionSetting> ActionSettings();
 // Whether a device lists an action setting.
 bool ListsSetting(const FActionSetting& Setting, EInputDevice Device);
 
-// FUN_00469580: a code's name, empty for none.
+// FUN_00469580: a code's name in the language in use, empty for none.
 std::string CodeName(uint32_t Code);
+// A binding's code with its modifier first, as the key settings list it.
+std::string BindingName(const FBinding& Binding);
 // The vzconf.txt name of an action (action-fire and so on).
 std::string_view ActionKeyword(size_t Action);
 // The section header of a device's bindings in vzconf.txt (Keyboard-Settings, Mouse-Settings, Joypad-Settings).
