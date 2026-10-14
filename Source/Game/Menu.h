@@ -113,6 +113,8 @@ public:
     std::optional<std::pair<int32_t, int32_t>> Step(const FMenu& Menu, FMenuState& State, const FMenuInput& Input, FRandom& Random, int32_t StepMilliseconds) const;
     // The draw pass of MenuStep at 00421780.
     std::vector<FHudSprite> Draw(const FMenu& Menu, FMenuState& State) const;
+    // The menu's background alone (DAT_00523628), which MenuGame fades out as it closes.
+    std::vector<FHudSprite> DrawBackground() const;
     // A text in a v-menu.gaf font with word wrap from Left to Right, its cursor at Left, Top, as the credits print it.
     std::vector<FHudSprite> DrawPage(size_t Font, std::string_view Text, int32_t Left, int32_t Top, int32_t Right) const;
     // One line in a v-menu.gaf font from its cursor at X, Y, the font's colour combined with Color.

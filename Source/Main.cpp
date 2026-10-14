@@ -3467,6 +3467,58 @@ struct FLevelEnd
     std::string NextLevel;
 };
 
+// FUN_0041e5a0 fading the game menu's backdrop out as MenuGame closes: its background alone, in five steps from 4 down to 0, with fade.wav while the game goes on.
+// With Gamma FX the ramp is (step - 4) * 255 / 4 on its own, 50 ms apart; without, the rows at or past the step in every four turn black, 25 ms apart.
+void FadeMenuBackdrop(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, const bool bGammaFx, const bool bSound)
+{
+    constexpr int FadeQuarters = 4;
+    constexpr uint32_t GammaFadeStepMilliseconds = 50;
+    constexpr uint32_t LineFadeStepMilliseconds = 25;
+    if (bSound && GameAudio)
+    {
+        GameAudio->PlayFade();
+    }
+
+    constexpr uint16_t White = 0x7fff;
+    const FSpriteSheet Line = Renderer.CreateSpriteSheet({ Gaf::FFrame{ .Width = 1, .Height = 1, .Pixels = { White } } });
+    for (int Step = FadeQuarters; Step >= 0 && !glfwWindowShouldClose(Window); --Step)
+    {
+        PollEvents(Window);
+        if (Renderer.BeginFrame())
+        {
+            for (const FHudSprite& Sprite : Art.DrawBackground())
+            {
+                DrawHudSprite(Renderer, Sheets.Menu, Sprite);
+            }
+
+            if (bGammaFx)
+            {
+                const int32_t Level = (Step - FadeQuarters) * 0xff / FadeQuarters;
+                Renderer.SetGamma({ Level, Level, Level });
+            }
+            else
+            {
+                constexpr uint32_t Black = 0;
+                for (int Row = 0; Row < int(ScreenHeight); ++Row)
+                {
+                    if (Row % FadeQuarters >= Step)
+                    {
+                        Renderer.DrawSprite(Line, 0, 0.f, float(Row), false, false, ESpriteBlend::Opaque, float(ScreenWidth), 1.f, UINT32_MAX, Black);
+                    }
+                }
+            }
+
+            Renderer.EndFrame();
+        }
+
+        const uint32_t Start = ClockMilliseconds();
+        while (ClockMilliseconds() - Start < (bGammaFx ? GammaFadeStepMilliseconds : LineFadeStepMilliseconds) && !glfwWindowShouldClose(Window))
+        {
+            PollEvents(Window);
+        }
+    }
+}
+
 // MenuGame at 004223e0, the menu Escape opens during a level: Resume Game, Options, Retry Level (shown while there is a default session, which a running level always has) and End Game.
 std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
 {
@@ -3802,6 +3854,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
     // A saving plot's session waits for the frame after it, whose picture (FUN_0042b360) becomes the thumbnail.
     std::optional<std::pair<FSession, std::string>> PendingSave;
+    // DAT_00522c58: the ramp Darken found, which its end puts back.
+    bool bWasDark = false;
+    std::optional<std::array<int32_t, 3>> DarkenRamp;
 
     // Session +0x1ff0: the map (action-map), whose picture is made once per level.
     bool bMapShown = false;
@@ -4252,6 +4307,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                 FRandom MenuRandom;
                 const std::optional<ELevelEnd> End = RunGameMenu(Window, Renderer, *MenuArt, *MenuSheets, Combat ? Combat->Random : MenuRandom, Settings);
+                // MenuGame fades its backdrop out however it closes, with fade.wav unless the game ends, and only a resumed game fades back in.
+                if (End != ELevelEnd::Quit)
+                {
+                    FadeMenuBackdrop(Window, Renderer, *MenuArt, *MenuSheets, Settings.Details.bGammaFx, !End);
+                }
+
                 if (End)
                 {
                     return FLevelEnd{ .Kind = *End };
@@ -4275,13 +4336,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                 LoadSight();
 
-                // MenuGame fades the menu out with fade.wav, then the level in. ponytail: the menu's own fade to black is left out; it closes at once.
+                // Then FUN_0041e5a0 fades the level in, without a sound.
                 MenuFadeStep = 0;
                 MenuFadeTime = ClockMilliseconds();
-                if (GameAudio)
-                {
-                    GameAudio->PlayFade();
-                }
 
                 bEscapeDown = ActionDown(EAction::Menu);
                 Clock = FFrameClock(FramePeriod);
@@ -5500,15 +5557,15 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
-        // EngineRunLevel with Gamma FX, each frame unless a lift is taking the player: the gamma ramp takes the offsets (FUN_0045ffc0), a positive one lifting a channel toward white by offset / 256 of the way and a negative one scaling it by (offset + 255) / 256.
-        // While the player lives each offset then steps one toward zero; the dead player's red stays.
+        // The level's fade in after the game menu: each step darkens by a quarter less, the ramp (step - 4) * 255 / 4 on its own, or without Gamma FX the rows at or past the step in every four turned black.
+        // MenuGame then gives the ramp the user's gamma back (FUN_00420990).
         if (MenuFadeStep < MenuFadeSteps)
         {
-            // Each step darkens by a quarter less: the gamma offset (step - 4) * 255 / 4, or without Gamma FX the rows at or past the step in every four turned black.
             constexpr int FadeQuarters = 4;
             if (Settings.Details.bGammaFx)
             {
-                Inventory.Surprises.Gamma.fill((MenuFadeStep - FadeQuarters) * 0xff / FadeQuarters);
+                const int32_t Ramp = (MenuFadeStep - FadeQuarters) * 0xff / FadeQuarters;
+                Renderer.SetGamma({ Ramp, Ramp, Ramp });
             }
             else
             {
@@ -5535,18 +5592,35 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             if (ClockMilliseconds() - MenuFadeTime >= FadeStepMilliseconds)
             {
                 MenuFadeTime = ClockMilliseconds();
-                ++MenuFadeStep;
+                if (++MenuFadeStep == MenuFadeSteps)
+                {
+                    Renderer.ResetGamma();
+                }
             }
         }
 
-        // During the finale the gamma ramp goes white for each flash and stays at the base otherwise; for the last 2.5 seconds FUN_00446060 fades it from white to black along ln(e - t (e - 1) / 2500).
+        // SurpriseStart (0041c390) with Gamma FX keeps the ramp and sets the user's gamma as Darken starts; SurpriseEnd (0041cd10) puts the kept ramp back.
+        if (const bool bDark = Inventory.Surprises.Active == ESurprise::Darken; bDark != bWasDark && Settings.Details.bGammaFx)
+        {
+            if (bDark)
+            {
+                DarkenRamp = Renderer.GetGamma();
+                Renderer.SetGamma(Renderer.GetUserGamma());
+            }
+            else if (DarkenRamp)
+            {
+                Renderer.SetGamma(*DarkenRamp);
+            }
+        }
+
+        bWasDark = Inventory.Surprises.Active == ESurprise::Darken;
+        // During the finale (FUN_00445dd0) the ramp goes white for each flash and back to the user's gamma; for the last 2.5 seconds FUN_00446060 fades it from white to black along ln(e - t (e - 1) / 2500).
         if (Settings.Details.bGammaFx && FinaleTimer > 0)
         {
-            std::array<int32_t, 3>& Gamma = Inventory.Surprises.Gamma;
             if (FinaleTimer >= FinaleFadeMilliseconds)
             {
                 constexpr int32_t White = 0xff;
-                Gamma.fill(bFinaleFlash ? White : 0);
+                Renderer.SetGamma(bFinaleFlash ? std::array{ White, White, White } : Renderer.GetUserGamma());
                 bFinaleFlash = false;
             }
             else
@@ -5556,20 +5630,31 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 constexpr double FadeSpan = 0x1fe;
                 constexpr int32_t FadeOffset = 0xff;
                 const double Elapsed = double(FinaleFadeMilliseconds - FinaleTimer);
-                Gamma.fill(TruncateLow(FadeSpan * std::log(E - Elapsed * (E - 1.) * FadeRate)) - FadeOffset);
+                const int32_t Ramp = TruncateLow(FadeSpan * std::log(E - Elapsed * (E - 1.) * FadeRate)) - FadeOffset;
+                Renderer.SetGamma({ Ramp, Ramp, Ramp });
             }
         }
-
-        if (Settings.Details.bGammaFx && !NextLevel)
+        // EngineRunLevel with Gamma FX, while no lift takes the player and on a frame with an offset set: a living player's ramp is the user's gamma plus the offsets, which then step one toward zero,
+        // and once all three are zero the ramp is the user's gamma again; Darken leaves both alone. A dead player's ramp is the offsets alone, which stay.
+        else if (std::array<int32_t, 3>& Gamma = Inventory.Surprises.Gamma;
+                 Settings.Details.bGammaFx && !NextLevel && MenuFadeStep == MenuFadeSteps && std::ranges::any_of(Gamma, [](const int32_t Channel) { return Channel != 0; }))
         {
-            std::array<int32_t, 3>& Gamma = Inventory.Surprises.Gamma;
-            const std::array<int32_t, 3>& User = Renderer.GetUserGamma();
-            Renderer.SetGamma({ Gamma[0] + User[0], Gamma[1] + User[1], Gamma[2] + User[2] });
-            if (!DeathTimer)
+            if (Inventory.Energy <= 0.f)
             {
+                Renderer.SetGamma(Gamma);
+            }
+            else if (Inventory.Surprises.Active != ESurprise::Darken)
+            {
+                const std::array<int32_t, 3>& User = Renderer.GetUserGamma();
+                Renderer.SetGamma({ Gamma[0] + User[0], Gamma[1] + User[1], Gamma[2] + User[2] });
                 for (int32_t& Channel : Gamma)
                 {
                     Channel -= Channel > 0 ? 1 : Channel < 0 ? -1 : 0;
+                }
+
+                if (std::ranges::all_of(Gamma, [](const int32_t Channel) { return Channel == 0; }))
+                {
+                    Renderer.ResetGamma();
                 }
             }
         }
