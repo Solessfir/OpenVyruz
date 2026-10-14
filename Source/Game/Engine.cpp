@@ -696,6 +696,26 @@ EPlayerTurn TurnTowardSight(const FPlayerState& Player, const FCollisionPoint Sc
     return Ahead < HalfTurn ? EPlayerTurn::Left : Ahead == HalfTurn ? EPlayerTurn::None : EPlayerTurn::Right;
 }
 
+uint32_t AbsoluteKeyInput(const FPlayerState& Player, const FCollisionPoint ScreenVector)
+{
+    if (ScreenVector.X == 0.f && ScreenVector.Y == 0.f)
+    {
+        return 0;
+    }
+
+    // DirectionTurnCommand gives no turn for the same direction or a missing one, which reads as forward; twelve nodes on reads as backward.
+    const int Target = FindDirection(CollisionFromWorld(ScreenVector));
+    const int Current = Player.Direction;
+    if (Target == Current || Target == NoDirection || Current == NoDirection)
+    {
+        return PlayerInputForward;
+    }
+
+    constexpr int HalfTurn = DirectionCount / 2;
+    const int Ahead = Wrap(Target - Current);
+    return Ahead < HalfTurn ? PlayerInputTurnLeft : Ahead == HalfTurn ? PlayerInputBackward : PlayerInputTurnRight;
+}
+
 FPlayerCommand PlayerCommandFromInput(const uint32_t InputBits)
 {
     const auto Has = [InputBits](const uint32_t Bit) { return (InputBits & Bit) != 0; };

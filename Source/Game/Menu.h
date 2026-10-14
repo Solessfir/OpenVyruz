@@ -33,6 +33,9 @@ struct FMenu
     int32_t StepX = 0;
     int32_t StepY = 0;
     std::string Title;
+    // Menu +0x3c and +0x40: printed after the title in fonts 3 and 4 (menu +0x78 and +0x7c), the path to a submenu ("/Video" then "/Details").
+    std::string Path;
+    std::string SubPath;
     // Menu +0x74, the title's v-menu.gaf font.
     size_t TitleFont = 1;
     // Menu +0x80 and +0x84: the fonts of the item under the cursor and of the others.
@@ -46,6 +49,12 @@ struct FMenu
     // Menu +0x54 and +0x58: after this long without a key, a button or a mouse move the menu returns IdleResult; zero waits for ever.
     uint32_t IdleMilliseconds = 0;
     size_t IdleResult = 0;
+    // Menu +0x68 bit 0: a slider from 0 to 100 (menu +0x64, SliderValue), its label (menu +0x60) and value over the items and its bar 100 pixels lower.
+    bool bSlider = false;
+    std::string SliderLabel;
+    int32_t SliderValue = 0;
+    // A menu.gaf animation's first frame at the screen's bottom left, as the Control menu's own function draws the device in use.
+    std::optional<size_t> Picture;
 };
 
 // The state of a running menu (RunMenu at 00421050).
@@ -67,6 +76,11 @@ struct FMenuState
     uint32_t Flashes = 0;
     FAnimationPlayback CursorPlayback;
     std::optional<size_t> Result;
+    int32_t SliderValue = 0;
+    // State +0x1c: the arrow keys move the slider once every 150 ms while held.
+    int32_t SliderRepeat = 0;
+    // State +0x6c: where the bar's last draw ended, which maps the mouse onto the value.
+    std::optional<int32_t> SliderEnd;
 };
 
 // One frame's menu input, as PgPoll reports it.
@@ -80,6 +94,10 @@ struct FMenuInput
     bool bCancel = false;
     bool bUp = false;
     bool bDown = false;
+    // Held rather than pressed, for the slider.
+    bool bLeftHeld = false;
+    bool bRightHeld = false;
+    bool bButtonHeld = false;
 };
 
 class FMenuArt
@@ -105,13 +123,18 @@ public:
     const std::vector<Gaf::FFrame>& GetBitmaps(EHudSheet Sheet) const;
 
 private:
-    void DrawText(std::vector<FHudSprite>& Out, size_t Font, int32_t X, int32_t Y, std::string_view Text, std::optional<int32_t> WrapRight = std::nullopt,
+    // Returns the cursor's X after the text.
+    int32_t DrawText(std::vector<FHudSprite>& Out, size_t Font, int32_t X, int32_t Y, std::string_view Text, std::optional<int32_t> WrapRight = std::nullopt,
         const Font::FColor& Color = {}) const;
+    int32_t DrawText(std::vector<FHudSprite>& Out, const Font::FFont& Font, int32_t X, int32_t Y, std::string_view Text) const;
+    // FUN_004220e0: the slider's label and bar.
+    void DrawSlider(std::vector<FHudSprite>& Out, const FMenu& Menu, FMenuState& State) const;
 
     std::vector<Gaf::FFrame> Bitmaps;
     std::vector<Gaf::FFrame> VBitmaps;
     std::vector<uint32_t> VBitmapWidths;
     std::vector<Font::FFont> Fonts;
+    std::vector<Gaf::FAnimation> Animations;
     std::optional<Gaf::FAnimation> Background;
     std::optional<Gaf::FAnimation> Flash;
     std::optional<Gaf::FAnimation> Cursor;

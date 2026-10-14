@@ -4,8 +4,11 @@
 
 #include <GLFW/glfw3.h>
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 // The original game renders at 640x480 (VZCONF.TXT video-driver-device-mode); the window letterboxes that space.
@@ -65,7 +68,18 @@ public:
     void DrawSprite(const FSpriteSheet& Sheet, size_t FrameIndex, float X, float Y, bool bMirrorX = false, bool bMirrorY = false,
         ESpriteBlend Blend = ESpriteBlend::Opaque, float ScaleX = 1.f, float ScaleY = 1.f, uint32_t VisibleColumns = UINT32_MAX,
         uint32_t Diffuse = 0xffffff, uint32_t Specular = 0, float Alpha = 1.f);
+    // Draws the gamma ramp over the frame and presents it.
     void EndFrame();
+
+    // The gamma ramp (FUN_0045ffc0): red, green and blue from -255 to 255 over the whole picture, a positive value lifting its channel toward white by value / 256 of the way and a negative one scaling it by (value + 255) / 256.
+    void SetGamma(const std::array<int32_t, 3>& Ramp);
+    // The user's gamma (session +0x27d4), which the menus give the ramp back (FUN_00420990).
+    void SetUserGamma(const std::array<int32_t, 3>& Ramp);
+    void ResetGamma();
+    const std::array<int32_t, 3>& GetGamma() const;
+    const std::array<int32_t, 3>& GetUserGamma() const;
+    // The Vulkan device's name, which the Video menu shows as its device.
+    std::string GetDeviceName() const;
 
 private:
     static constexpr uint32_t FramesInFlight = 2;
@@ -95,6 +109,7 @@ private:
     uint32_t FindMemoryType(uint32_t TypeBits, VkMemoryPropertyFlags Properties) const;
     uint32_t CreateTexture(uint32_t Width, uint32_t Height, const std::vector<uint32_t>& Rgba);
     void UploadTexture(VkImage Image, uint32_t Width, uint32_t Height, std::span<const uint32_t> Rgba, VkImageLayout From);
+    void DrawGamma();
 
     GLFWwindow* Window = nullptr;
     VkInstance Instance = VK_NULL_HANDLE;
@@ -125,4 +140,9 @@ private:
     FFrame Frames[FramesInFlight];
     uint32_t FrameIndex = 0;
     uint32_t ImageIndex = 0;
+
+    std::array<int32_t, 3> Gamma{};
+    std::array<int32_t, 3> UserGamma{};
+    // A white pixel for the gamma pass, made again after ReleaseSpriteSheets.
+    std::optional<FSpriteSheet> GammaSheet;
 };

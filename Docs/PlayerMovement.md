@@ -33,9 +33,13 @@ The new collision centre is converted back to the world, clamped to `[1, extent 
 
 ## Mouse
 
-`ConfigLoad` (`0042f570`) sets the input device (session `+0x165c`) from `vzconf.txt`: 1 for `use-keyboard`, 2 for `use-joypad`, 3 for `use-mouse`, which also turns the absolute command (option flag 1) on. Only the mouse loads `Data\Menu\cursor.gaf` (`EngineApplyDisplayAndCursor`, `0042f2d0`, session `+0x25b8`); every other device hides the cursor. EngineRunLevel plays the sight by the last step and draws it at the mouse after the rest of the frame.
+`ConfigLoad` (`0042f570`) sets the input device (session `+0x165c`) from `vzconf.txt`: 1 for `use-keyboard`, 2 for `use-joystick`, 3 for `use-mouse`, which also turns the absolute command (option flag 1) on. Only the mouse loads `Data\Menu\cursor.gaf` (`EngineApplyDisplayAndCursor`, `0042f2d0`, session `+0x25b8`); every other device hides the cursor. EngineRunLevel plays the sight by the last step and draws it at the mouse after the rest of the frame.
 
 The mouse's default bindings (`DAT_00509368`) fire with the left button (0x103), thrust with the right one (0x104), back off with Down, and strafe with Left and Right; turning has no binding. `InputReadDirection` (`0041d7e0`) instead takes the vector from the player's screen position (its truncated world position plus the scroll) to the mouse, turns it into a direction through collision axes (`DirectionFromScreen`, `00407630`), and lets `DirectionTurnCommand` (`00436600`) walk the player's direction ring: the target within eleven next nodes turns left, exactly twelve away reads as backward and does not turn, and otherwise it turns right. While the player moves, a target within one direction of its facing gives no turn. `InputActionPressed` drops the turn on a side that strafes.
+
+## Absolute keyboard
+
+With the keyboard and the absolute command (Control's `Direction : ABSOLUTE`), `InputReadDirection` makes a screen vector of the movement keys (Left and Right for x, Forward and Backward for y), turns it into a direction the same way, and `DirectionTurnCommand` (with its backward flag) gives the command: the player's own direction (or none) thrusts forward, twelve nodes away backs off, and otherwise the player only turns toward it. The port does the same (`AbsoluteKeyInput`). Without the absolute command the actions drive as they are, Left and Right turning.
 
 ## Verification against DEMO.3DR
 

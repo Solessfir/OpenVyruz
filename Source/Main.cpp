@@ -1,6 +1,7 @@
 #include "Game/Audio.h"
 #include "Game/Collision.h"
 #include "Game/Engine.h"
+#include "Game/Input.h"
 #include "Game/Level.h"
 #include "Game/Menu.h"
 #include "Game/Score.h"
@@ -30,6 +31,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <optional>
@@ -1347,9 +1349,12 @@ FMenuSheets CreateMenuSheets(FRenderer& Renderer, const FMenuArt& Art)
 
 // RunMenu at 00421050: steps and draws a menu until an item is chosen, or nullopt when the window closes.
 // A menu shown again keeps the cursor where its last run left it (menu +0x20).
+// OnStep runs after each step, as the menu's own function (menu +0x6c) does.
 std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, const FMenu& Menu, FRandom& Random,
-    std::optional<std::pair<int32_t, int32_t>>& Cursor)
+    std::optional<std::pair<int32_t, int32_t>>& Cursor, const std::function<void(const FMenuState&)>& OnStep = {})
 {
+    // RunMenu gives the gamma ramp the user's gamma back.
+    Renderer.ResetGamma();
     FMenuState State = Art.Start(Menu);
     if (Cursor)
     {
@@ -1410,7 +1415,15 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
         {
             const uint32_t StepMilliseconds = NextGameStep(Remaining, FramePeriod, false);
             const uint32_t Flashes = State.Flashes;
+            Pending.bLeftHeld = glfwGetKey(Window, GLFW_KEY_LEFT) == GLFW_PRESS;
+            Pending.bRightHeld = glfwGetKey(Window, GLFW_KEY_RIGHT) == GLFW_PRESS;
+            Pending.bButtonHeld = glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
             const std::optional<std::pair<int32_t, int32_t>> Jump = Art.Step(Menu, State, Pending, Random, int32_t(StepMilliseconds));
+            if (OnStep)
+            {
+                OnStep(State);
+            }
+
             if (GameAudio && State.Flashes != Flashes)
             {
                 GameAudio->PlayMenuFlash();
@@ -1457,13 +1470,14 @@ constexpr int32_t MenuStepY = 45;
 
 // MenuAsk at 004228a0: a question with two answers, 30 pixels right of the menu and from 120 down, its title in font 2. True for the first answer.
 // ponytail: MenuExplode at 00421460 sets off explosions over the menu after "Yes, bye.", and the bip sounds wait for audio.
+// Gaps leave that many empty rows above the answers.
 std::optional<bool> Confirm(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, std::string Title,
-    std::string Yes, std::string No, const size_t DefaultItem)
+    std::string Yes, std::string No, const size_t DefaultItem, const size_t Gaps = 0)
 {
     constexpr int32_t Indent = 30;
     constexpr int32_t Top = 120;
     constexpr size_t TitleFont = 2;
-    const FMenu Menu{
+    FMenu Menu{
         .Left = MenuLeft + Indent,
         .Top = Top,
         .Right = int32_t(ScreenWidth),
@@ -1471,22 +1485,21 @@ std::optional<bool> Confirm(GLFWwindow* const Window, FRenderer& Renderer, const
         .StepY = MenuStepY,
         .Title = std::move(Title),
         .TitleFont = TitleFont,
-        .Items = { { .Text = std::move(Yes) }, { .Text = std::move(No) } },
-        .DefaultItem = DefaultItem,
+        .DefaultItem = Gaps + DefaultItem,
     };
+    Menu.Items.resize(Gaps);
+    Menu.Items.push_back({ .Text = std::move(Yes) });
+    Menu.Items.push_back({ .Text = std::move(No) });
     std::optional<std::pair<int32_t, int32_t>> Cursor;
     const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
-    return Item ? std::optional(*Item == 0) : std::nullopt;
+    return Item ? std::optional(*Item == Gaps) : std::nullopt;
 }
 
 constexpr uint32_t MillisecondsPerHour = 3600000;
 constexpr uint32_t MillisecondsPerMinute = 60000;
 
-// The difficulty DifficultyName at 00403310 names; the port plays Normal, the original's default.
-constexpr std::string_view DifficultyText = "Normal";
-
 // SessionDescribeDefault at 00427ad0: the default session's help text.
-std::string SessionHelp(const FSession& Session)
+std::string SessionHelp(const FSession& Session, const std::string_view DifficultyText)
 {
     return std::format("{}   ({}:{}:{})\nEnergy : {}\nShield : {}\nDifficulty : {} ...\n", Session.LevelName, Session.Clock / MillisecondsPerHour,
         Session.Clock % MillisecondsPerHour / MillisecondsPerMinute, Session.Clock % MillisecondsPerMinute / MillisecondsPerSecond, int32_t(Session.Energy),
@@ -1496,7 +1509,7 @@ std::string SessionHelp(const FSession& Session)
 // SessionChoose at 00427c30: up to seven saved sessions with their level and clock, then Back, the default. Returns the chosen session.
 // ponytail: the session's thumbnail (its .tga, drawn at 8, 150 for the item under the cursor) is not written.
 std::optional<size_t> RunSessionMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random,
-    const std::span<const FSession> Settings)
+    const std::span<const FSession> Settings, const std::string_view DifficultyText)
 {
     constexpr int32_t Left = 0x109;
     constexpr int32_t Top = 0x46;
@@ -1956,35 +1969,1257 @@ void ShowScores(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive&
     }
 }
 
-// MenuOptions at 004229a0, the options: Video, Audio, Control, User settings and Language, then Back, the default. ponytail: their own menus wait for the settings they change; the port keeps the highest detail preset, the default keys, Normal difficulty and English.
-void RunOptionsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random)
+// What ConfigLoad (0042f570) reads from vzconf.txt, the Options menus change and ConfigSave (004303f0) writes back.
+struct FSettings
 {
-    const FMenu Menu{
+    const FDifficulty& Difficulty() const { return Difficulties.Levels[DifficultyLevel]; }
+    bool UsesMouse() const { return Device == EInputDevice::Mouse; }
+
+    // The game folder's vzconf.txt, which ConfigSave writes.
+    std::filesystem::path ConfigPath;
+    std::filesystem::path Folder;
+    // session-name: the session folder and the player's name, which the saving plots address.
+    std::string PlayerName;
+    // use-keyboard, use-joystick and use-mouse (session +0x165c), and absolute-command (option flag 1), which the mouse always has.
+    // The mouse makes the ship turn toward the sight, the left button fire, the right one thrust, Down back off and Left and Right strafe.
+    EInputDevice Device = EInputDevice::Keyboard;
+    bool bAbsolute = false;
+    FKeyBindings Bindings = FKeyBindings::Defaults();
+    FVideoDetails Details;
+    FAudioSettings Audio;
+    // gamma = red, green, blue (session +0x27d4): the user's gamma, which every ramp sits on.
+    std::array<int32_t, 3> Gamma{};
+    // difficulty-level (keyword 0x102, SetDifficulty at 004032c0) picks one of COMMON\DIFFICULTY.3DC's levels.
+    FDifficultyTable Difficulties;
+    size_t DifficultyLevel = 1;
+    // language: 1 English, 2 the other language, which ConfigSave names French. The port prints English either way.
+    uint32_t Language = 1;
+    // The display lines, which the port keeps as read: the original's driver, device and mode.
+    std::string VideoDriver;
+    std::string VideoDevice;
+    std::array<int32_t, 3> VideoMode{ 640, 480, 16 };
+    // ConfigSave writes use-extended-movie-player only when the file had it (option flag 0x100 cleared).
+    std::optional<bool> bExtendedMoviePlayer;
+    // The Audio menu's sound format (session +0x1030, 0x2a0000 from VzRun): 16 or 8 bits, 22050 or 11025 Hz, stereo or mono. Never saved.
+    bool bEightBits = false;
+    bool bLowFrequency = false;
+    bool bMono = false;
+};
+
+// DifficultyName at 00403310 and the help texts at 0050d3e8.
+constexpr std::array<std::string_view, DifficultyLevelCount> DifficultyNames{ "Easy", "Normal", "Hard", "Insane" };
+constexpr std::array<std::string_view, DifficultyLevelCount> DifficultyHelps{ "For Beginners Only !!!", "A taste of Hell.", "Hurt me !", "Control Alt Del" };
+
+// FUN_00401060: the names vzconf.txt gives the languages and voice types.
+std::string_view LanguageKeyword(const uint32_t Language)
+{
+    constexpr uint32_t SecondLanguage = 2;
+    return Language == SecondLanguage ? "French" : "English";
+}
+
+// ConfigLoad (0042f570) reads vzconf.txt from the game folder, else the archive's VZCONF.TXT. A line is a keyword, an optional '=' and a value; a flag is set when its value reads as a non-zero number (atoi).
+// Keyboard-Settings, Mouse-Settings and Joypad-Settings start a device's bindings, each line an action keyword and its code and modifier.
+FSettings LoadSettings(FResourceArchive& Archive, const std::filesystem::path& GameFolder)
+{
+    struct FDetailKey
+    {
+        std::string_view Name;
+        bool FVideoDetails::* Field = nullptr;
+        bool bInverted = false;
+    };
+    constexpr std::array DetailKeys{
+        FDetailKey{ .Name = "shadow", .Field = &FVideoDetails::bShadows },
+        FDetailKey{ .Name = "reactor-fx", .Field = &FVideoDetails::bReactorFx },
+        FDetailKey{ .Name = "hud-green-info", .Field = &FVideoDetails::bGreenInfo },
+        FDetailKey{ .Name = "translucent-panel", .Field = &FVideoDetails::bTranslucentPanel },
+        FDetailKey{ .Name = "tv-borders", .Field = &FVideoDetails::bTvBorders },
+        FDetailKey{ .Name = "gamma-fx", .Field = &FVideoDetails::bGammaFx },
+        FDetailKey{ .Name = "low-details", .Field = &FVideoDetails::bLowDetails },
+        FDetailKey{ .Name = "high-details", .Field = &FVideoDetails::bLowDetails, .bInverted = true },
+    };
+    struct FAudioSwitch
+    {
+        std::string_view Name;
+        bool FAudioSettings::* Field = nullptr;
+    };
+    constexpr std::array AudioSwitches{
+        FAudioSwitch{ .Name = "music", .Field = &FAudioSettings::bMusic },
+        FAudioSwitch{ .Name = "sound-fx", .Field = &FAudioSettings::bSoundFx },
+        FAudioSwitch{ .Name = "voices", .Field = &FAudioSettings::bVoices },
+    };
+    struct FAudioVolume
+    {
+        std::string_view Name;
+        int FAudioSettings::* Field = nullptr;
+    };
+    constexpr std::array AudioVolumes{
+        FAudioVolume{ .Name = "music-volume", .Field = &FAudioSettings::MusicVolume },
+        FAudioVolume{ .Name = "sound-fx-volume", .Field = &FAudioSettings::SoundFxVolume },
+        FAudioVolume{ .Name = "voices-volume", .Field = &FAudioSettings::VoicesVolume },
+    };
+    const auto Number = [](const std::string_view Value)
+    {
+        int Result = 0;
+        std::from_chars(Value.data(), Value.data() + Value.size(), Result);
+        return Result;
+    };
+    constexpr std::string_view Blanks = " \t\r";
+    const auto Trim = [&](std::string_view Value)
+    {
+        Value.remove_prefix(std::min(Value.size(), Value.find_first_not_of(Blanks)));
+        return Value.substr(0, Value.find_last_not_of(Blanks) + 1);
+    };
+    // "%d, %d, %d" and the like.
+    const auto Numbers = [&](const std::string_view Value, const std::span<int32_t> Out)
+    {
+        size_t Count = 0;
+        for (const auto Field : std::views::split(Value, ','))
+        {
+            const std::string_view Part = Trim(std::string_view(Field.begin(), Field.end()));
+            if (Count < Out.size() && std::from_chars(Part.data(), Part.data() + Part.size(), Out[Count]).ec == std::errc{})
+            {
+                ++Count;
+            }
+        }
+
+        return Count == Out.size();
+    };
+    const auto Lower = [](std::string_view Text)
+    {
+        std::string Result(Text);
+        std::ranges::transform(Result, Result.begin(), [](const unsigned char Character) { return char(std::tolower(Character)); });
+        return Result;
+    };
+
+    FSettings Settings{ .ConfigPath = GameFolder / "vzconf.txt", .PlayerName = "Player" };
+    const std::optional<std::vector<uint8_t>> DifficultyFile = Archive.Read("common\\difficulty.3dc");
+    Settings.Difficulties = LoadDifficulties(DifficultyFile ? std::string_view(reinterpret_cast<const char*>(DifficultyFile->data()), DifficultyFile->size()) : std::string_view());
+    Settings.DifficultyLevel = Settings.Difficulties.DefaultLevel;
+    const std::optional<std::vector<uint8_t>> Config = Archive.Read("VZCONF.TXT");
+    std::string Text = Config ? std::string(reinterpret_cast<const char*>(Config->data()), Config->size()) : std::string();
+    std::error_code Error;
+    for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(GameFolder, Error))
+    {
+        constexpr std::uintmax_t MaxConfigBytes = 65536;
+        if (Lower(Entry.path().filename().string()) == "vzconf.txt" && Entry.file_size(Error) <= MaxConfigBytes)
+        {
+            Settings.ConfigPath = Entry.path();
+            std::ifstream File(Entry.path(), std::ios::binary);
+            Text.assign(std::istreambuf_iterator<char>(File), std::istreambuf_iterator<char>());
+        }
+    }
+
+    std::optional<EInputDevice> BindingDevice;
+    for (const auto Part : std::views::split(std::string_view(Text), '\n'))
+    {
+        const std::string_view Row = Trim(std::string_view(Part.begin(), Part.end()));
+        if (Row.empty() || Row.starts_with('#'))
+        {
+            continue;
+        }
+
+        constexpr std::string_view KeyEnd = " \t=";
+        const std::string Key = Lower(Row.substr(0, Row.find_first_of(KeyEnd)));
+        std::string_view Value = Trim(Row.substr(std::min(Row.size(), Row.find_first_of(KeyEnd))));
+        if (Value.starts_with('='))
+        {
+            Value = Trim(Value.substr(1));
+        }
+
+        const bool bSet = Number(Value) != 0;
+        if (Key == "session-name" && !Value.empty() && Value.find_first_of("\\/:*?\"<>|.") == std::string_view::npos)
+        {
+            Settings.PlayerName = std::string(Value);
+        }
+        else if (int Level = 0; Key == "difficulty-level" && std::from_chars(Value.data(), Value.data() + Value.size(), Level).ec == std::errc{} && Level >= 0 &&
+            Level < int(DifficultyLevelCount))
+        {
+            Settings.DifficultyLevel = size_t(Level);
+        }
+        else if (Key == "gamma")
+        {
+            Numbers(Value, Settings.Gamma);
+        }
+        else if (Key == "absolute-command" && Settings.Device != EInputDevice::Mouse)
+        {
+            Settings.bAbsolute = bSet;
+        }
+        else if (Key == "use-keyboard" || Key == "use-joystick" || Key == "use-mouse")
+        {
+            if (bSet)
+            {
+                Settings.Device = Key == "use-mouse" ? EInputDevice::Mouse : Key == "use-joystick" ? EInputDevice::Joypad : EInputDevice::Keyboard;
+                Settings.bAbsolute = Settings.bAbsolute || Settings.Device == EInputDevice::Mouse;
+            }
+        }
+        else if (Key == "language" || Key == "voice-type")
+        {
+            constexpr uint32_t SecondLanguage = 2;
+            (Key == "language" ? Settings.Language : Settings.Audio.VoiceType) = Lower(Value) == "french" ? SecondLanguage : 1;
+        }
+        else if (Key == "video-driver" || Key == "video-driver-device")
+        {
+            (Key == "video-driver" ? Settings.VideoDriver : Settings.VideoDevice) = std::string(Value);
+        }
+        else if (std::array<int32_t, 3> Mode{}; Key == "video-driver-device-mode" && Numbers(Value, Mode))
+        {
+            Settings.VideoMode = Mode;
+        }
+        else if (Key == "use-extended-movie-player")
+        {
+            Settings.bExtendedMoviePlayer = bSet;
+        }
+        else if (Key == "keyboard-settings" || Key == "mouse-settings" || Key == "joypad-settings")
+        {
+            BindingDevice = Key == "mouse-settings" ? EInputDevice::Mouse : Key == "joypad-settings" ? EInputDevice::Joypad : EInputDevice::Keyboard;
+        }
+        else if (const auto Detail = std::ranges::find(DetailKeys, Key, &FDetailKey::Name); Detail != DetailKeys.end())
+        {
+            Settings.Details.*Detail->Field = bSet != Detail->bInverted;
+        }
+        else if (const auto Switch = std::ranges::find(AudioSwitches, Key, &FAudioSwitch::Name); Switch != AudioSwitches.end())
+        {
+            Settings.Audio.*Switch->Field = bSet;
+        }
+        else if (const auto Volume = std::ranges::find(AudioVolumes, Key, &FAudioVolume::Name); Volume != AudioVolumes.end())
+        {
+            // ConfigLoad clamps the volumes to 0..0xffff.
+            Settings.Audio.*Volume->Field = std::clamp(Number(Value), 0, Sound::MaxVolume);
+        }
+        else if (BindingDevice)
+        {
+            for (size_t Action = 1; Action < ActionCount; ++Action)
+            {
+                if (std::array<int32_t, 2> Binding{}; Key == ActionKeyword(Action) && Numbers(Value, Binding))
+                {
+                    Settings.Bindings.Bind(*BindingDevice, EAction(Action), { .Code = uint32_t(Binding[0]), .Modifier = uint32_t(Binding[1]) });
+                }
+            }
+        }
+    }
+
+    return Settings;
+}
+
+// ConfigSave at 004303f0, as the Options menu closes, in its order and layout; then the bindings that differ from a device's defaults (FUN_00430240).
+void SaveSettings(const FSettings& Settings)
+{
+    std::string Text = "#\n# Vyruz configuration options.\n#\n\n# * Control\n#\n";
+    const auto Line = [&](const std::string_view Key, const int Value) { Text += std::format("{}\t= {}\n", Key, Value); };
+    const auto Triple = [&](const std::string_view Key, const std::array<int32_t, 3>& Values)
+    {
+        Text += std::format("{}\t = {}, {}, {}\n", Key, Values[0], Values[1], Values[2]);
+    };
+    Line("absolute-command", Settings.bAbsolute);
+    Text += Settings.Device == EInputDevice::Mouse ? "use-mouse = 1\n" : Settings.Device == EInputDevice::Joypad ? "use-joystick = 1\n" : "use-keyboard = 1\n";
+    Text += "\n# * Audio\n#\n";
+    Line("music", Settings.Audio.bMusic);
+    Line("sound-fx", Settings.Audio.bSoundFx);
+    Line("voices", Settings.Audio.bVoices);
+    Line("music-volume", Settings.Audio.MusicVolume);
+    Line("sound-fx-volume", Settings.Audio.SoundFxVolume);
+    Line("voices-volume", Settings.Audio.VoicesVolume);
+    Text += "\n# * Video, Graphic display\n#\n";
+    Line("shadow", Settings.Details.bShadows);
+    Line("reactor-fx", Settings.Details.bReactorFx);
+    Line("hud-green-info", Settings.Details.bGreenInfo);
+    Line("translucent-panel", Settings.Details.bTranslucentPanel);
+    Line("tv-borders", Settings.Details.bTvBorders);
+    Line("low-details", Settings.Details.bLowDetails);
+    Line("gamma-fx", Settings.Details.bGammaFx);
+    Triple("gamma", Settings.Gamma);
+    Text += std::format("video-driver\t= {}\nvideo-driver-device\t= {}\n", Settings.VideoDriver, Settings.VideoDevice);
+    Triple("video-driver-device-mode", Settings.VideoMode);
+    if (Settings.bExtendedMoviePlayer)
+    {
+        Line("use-extended-movie-player", *Settings.bExtendedMoviePlayer);
+    }
+
+    Line("difficulty-level", int(Settings.DifficultyLevel));
+    Text += std::format("session-name\t= {}\nlanguage\t= {}\nvoice-type\t= {}\n", Settings.PlayerName, LanguageKeyword(Settings.Language),
+        LanguageKeyword(Settings.Audio.VoiceType));
+    for (const EInputDevice Device : { EInputDevice::Keyboard, EInputDevice::Mouse, EInputDevice::Joypad })
+    {
+        bool bHeader = false;
+        for (size_t Action = 0; Action < ActionCount; ++Action)
+        {
+            const FBinding& Binding = Settings.Bindings.Table(Device)[Action];
+            const FBinding& Default = FKeyBindings::DefaultTable(Device)[Action];
+            if ((Binding.Code & BindingCodeMask) == (Default.Code & BindingCodeMask) && (Binding.Modifier & BindingCodeMask) == (Default.Modifier & BindingCodeMask))
+            {
+                continue;
+            }
+
+            if (!std::exchange(bHeader, true))
+            {
+                Text += std::format("{}\n", DeviceKeyword(Device));
+            }
+
+            Text += std::format("{}\t = {}, {}\n", ActionKeyword(Action), Binding.Code & BindingCodeMask, Binding.Modifier & BindingCodeMask);
+        }
+    }
+
+    std::ofstream File(Settings.ConfigPath, std::ios::binary);
+    File << Text;
+    if (!File)
+    {
+        std::fprintf(stderr, "Cannot write %s\n", Settings.ConfigPath.string().c_str());
+    }
+}
+
+// The menus behind Options (MenuOptions at 004229a0 and the menus it opens): each over the main menus' rectangle, titled Options with the path to it after.
+FMenu OptionsMenu(std::string Path, std::string SubPath)
+{
+    return {
         .Left = MenuLeft,
         .Top = MenuTop,
         .Right = int32_t(ScreenWidth),
         .Bottom = int32_t(ScreenHeight),
         .StepY = MenuStepY,
         .Title = "Options",
-        .Items = {
-            { .Text = "Video", .Help = "Details, Device, Video Mode, Gamma." },
-            { .Text = "Audio", .Help = "Sound driver (DirectSound) is unavalaible." },
-            { .Text = "Control", .Help = "Input device, Key settings." },
-            { .Text = "User settings", .Help = "User name, Game difficulty level." },
-            { .Text = "Language", .Help = "English." },
-            { .Text = "Back" },
-        },
-        .DefaultItem = 5,
+        .Path = std::move(Path),
+        .SubPath = std::move(SubPath),
     };
+}
+
+// The lists among them: 50 pixels right of and 16 above the menu, items 35 apart in fonts 4 and 3.
+FMenu OptionsList(std::string Path, std::string SubPath)
+{
+    constexpr int32_t ListIndent = 0x32;
+    constexpr int32_t ListRise = 0x10;
+    constexpr int32_t ListStepY = 0x23;
+    constexpr size_t ListHighlightFont = 4;
+    constexpr size_t ListItemFont = 3;
+    FMenu Menu = OptionsMenu(std::move(Path), std::move(SubPath));
+    Menu.Left += ListIndent;
+    Menu.Top -= ListRise;
+    Menu.StepY = ListStepY;
+    Menu.HighlightFont = ListHighlightFont;
+    Menu.ItemFont = ListItemFont;
+    return Menu;
+}
+
+// FUN_00420d10: Back ends every one of these menus and is what Escape chooses.
+void AddBack(FMenu& Menu, std::string Help = {})
+{
+    Menu.Items.push_back({ .Text = "Back", .Help = std::move(Help) });
+    Menu.DefaultItem = Menu.Items.size() - 1;
+}
+
+bool IsBack(const std::optional<size_t> Item, const FMenu& Menu)
+{
+    return !Item || Item == Menu.DefaultItem;
+}
+
+// FUN_00423b20: a Video Details Custom item.
+std::string OnOffText(const std::string_view Name, const bool bOn)
+{
+    return std::format("{} : {}", Name, bOn ? "ON" : "OFF");
+}
+
+// Steps and draws a menu without taking its input until Done says so, as the key settings' wait (FUN_00425860) and the text editor (FUN_00425f60) run MenuStep. False when the window closes.
+bool ShowMenuUntil(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, const FMenu& Menu, FRandom& Random,
+    const std::function<bool(uint32_t)>& Done)
+{
+    FMenuState State = Art.Start(Menu);
+    const uint32_t FramePeriod = DisplayFramePeriod();
+    FFrameClock Clock(FramePeriod);
+    while (!glfwWindowShouldClose(Window))
+    {
+        PollEvents(Window);
+        const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window);
+        const uint32_t Elapsed = Clock.Poll(ClockMilliseconds());
+        for (uint32_t Remaining = Elapsed; Remaining != 0;)
+        {
+            const uint32_t StepMilliseconds = NextGameStep(Remaining, FramePeriod, false);
+            Art.Step(Menu, State, { .MouseX = Mouse.first, .MouseY = Mouse.second }, Random, int32_t(StepMilliseconds));
+        }
+
+        if (Done(Elapsed))
+        {
+            return true;
+        }
+
+        if (Renderer.BeginFrame())
+        {
+            for (const FHudSprite& Sprite : Art.Draw(Menu, State))
+            {
+                DrawHudSprite(Renderer, Sprite.Sheet == EHudSheet::VMenu ? Sheets.VMenu : Sheets.Menu, Sprite);
+            }
+
+            Renderer.EndFrame();
+        }
+    }
+
+    return false;
+}
+
+// The characters typed since the editor last looked, from GLFW's character callback.
+std::string TypedCharacters;
+
+// FUN_00425f60 edits an item's text after Prefix, at most MaxLength characters, behind a caret that blinks between | and . every half second.
+// Return accepts a text with a letter or digit, its trailing blanks dropped; Escape leaves the old one. Returns the new text when it differs from the old.
+std::optional<std::string> EditText(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FMenu Menu, FRandom& Random,
+    const size_t Item, const std::string_view Prefix, const std::string_view Old, const size_t MaxLength)
+{
+    // The item shows 20 characters, prefix included, scrolling to keep the caret in view.
+    constexpr size_t VisibleCharacters = 0x14;
+    constexpr int32_t BlinkMilliseconds = 500;
+    std::string Text(Old);
+    size_t Caret = Text.size();
+    size_t Scroll = 0;
+    char CaretGlyph = '|';
+    int32_t Blink = BlinkMilliseconds;
+    bool bTyped = false;
+    std::optional<std::string> Result;
+    bool bCancelled = false;
+    static constexpr std::array<int, 8> EditKeys{ GLFW_KEY_ESCAPE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_BACKSPACE, GLFW_KEY_DELETE, GLFW_KEY_HOME, GLFW_KEY_END, GLFW_KEY_LEFT };
+    std::array<bool, EditKeys.size() + 1> WasDown{};
+    const auto KeysDown = [&]
+    {
+        std::array<bool, EditKeys.size() + 1> Down{};
+        for (size_t Index = 0; Index < EditKeys.size(); ++Index)
+        {
+            Down[Index] = glfwGetKey(Window, EditKeys[Index]) == GLFW_PRESS;
+        }
+
+        Down.back() = glfwGetKey(Window, GLFW_KEY_RIGHT) == GLFW_PRESS;
+        return Down;
+    };
+    WasDown = KeysDown();
+    TypedCharacters.clear();
+    const GLFWcharfun PreviousChar = glfwSetCharCallback(Window, [](GLFWwindow*, const unsigned int Character)
+    {
+        constexpr unsigned int FirstPrintable = 0x20;
+        constexpr unsigned int LastPrintable = 0x7e;
+        if (Character >= FirstPrintable && Character <= LastPrintable)
+        {
+            TypedCharacters += char(Character);
+        }
+    });
+    const auto Refresh = [&]
+    {
+        const std::string Shown = std::string(Prefix) + Text.substr(0, Caret) + CaretGlyph + Text.substr(Caret);
+        const size_t CaretAt = Prefix.size() + Caret;
+        Scroll = CaretAt >= Scroll + VisibleCharacters ? CaretAt + 1 - VisibleCharacters : std::min(Scroll, CaretAt);
+        Menu.Items[Item].Text = Shown.substr(Scroll, VisibleCharacters);
+        Menu.Items[Item].Help = bTyped ? "Press ENTER to validate : " + Text : "Edit your string.";
+    };
+    Refresh();
+    const bool bOpen = ShowMenuUntil(Window, Renderer, Art, Sheets, Menu, Random, [&](const uint32_t Elapsed)
+    {
+        const auto Down = KeysDown();
+        const auto Pressed = [&](const size_t Index) { return Down[Index] && !WasDown[Index]; };
+        bool bEdited = !TypedCharacters.empty();
+        for (const char Character : std::exchange(TypedCharacters, {}))
+        {
+            if (Text.size() < MaxLength && std::string_view("\\/:*?\"<>|.").find(Character) == std::string_view::npos)
+            {
+                Text.insert(Caret++, 1, Character);
+            }
+        }
+
+        constexpr size_t EscapeKey = 0;
+        constexpr size_t ReturnKey = 1;
+        constexpr size_t PadReturnKey = 2;
+        constexpr size_t BackspaceKey = 3;
+        constexpr size_t DeleteKey = 4;
+        constexpr size_t HomeKey = 5;
+        constexpr size_t EndKey = 6;
+        constexpr size_t LeftKey = 7;
+        const size_t RightKey = Down.size() - 1;
+        if (Pressed(EscapeKey))
+        {
+            bCancelled = true;
+        }
+        else if (Pressed(ReturnKey) || Pressed(PadReturnKey))
+        {
+            if (std::ranges::any_of(Text, [](const unsigned char Character) { return std::isalnum(Character) != 0; }))
+            {
+                Text.erase(Text.find_last_not_of(" \t") + 1);
+                Result = Text;
+            }
+        }
+        else if (Pressed(BackspaceKey) && Caret > 0)
+        {
+            Text.erase(--Caret, 1);
+        }
+        else if (Pressed(DeleteKey) && Caret < Text.size())
+        {
+            Text.erase(Caret, 1);
+        }
+        else if (Pressed(HomeKey))
+        {
+            Caret = 0;
+        }
+        else if (Pressed(EndKey))
+        {
+            Caret = Text.size();
+        }
+        else if (Pressed(LeftKey) && Caret > 0)
+        {
+            --Caret;
+        }
+        else if (Pressed(RightKey) && Caret < Text.size())
+        {
+            ++Caret;
+        }
+
+        bEdited = bEdited || std::ranges::any_of(std::views::iota(size_t(0), Down.size()), Pressed);
+        WasDown = Down;
+        bTyped = bTyped || bEdited;
+        Blink -= int32_t(Elapsed);
+        if (Blink < 0)
+        {
+            Blink += BlinkMilliseconds;
+            CaretGlyph = CaretGlyph == '|' ? '.' : '|';
+        }
+
+        Refresh();
+        return bCancelled || Result.has_value();
+    });
+    glfwSetCharCallback(Window, PreviousChar);
+    return bOpen && Result && *Result != Old ? Result : std::nullopt;
+}
+
+// A slider menu (the gamma and the volumes): a label over five gaps and Back; Apply takes the value at every step and once more as it closes.
+// Returns the last value.
+std::optional<int32_t> RunSlider(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, std::string Path,
+    std::string SubPath, std::string Label, const int32_t Value, const std::function<void(int32_t)>& Apply)
+{
+    constexpr size_t SliderGaps = 5;
+    FMenu Menu = OptionsMenu(std::move(Path), std::move(SubPath));
+    Menu.Items.resize(SliderGaps);
+    AddBack(Menu);
+    Menu.bSlider = true;
+    Menu.SliderLabel = std::move(Label);
+    Menu.SliderValue = Value;
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    int32_t Last = Value;
+    std::optional<size_t> Item;
+    do
+    {
+        Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor, [&](const FMenuState& State)
+        {
+            Last = State.SliderValue;
+            Apply(Last);
+        });
+        Menu.SliderValue = Last;
+    } while (Item && !IsBack(Item, Menu));
+
+    Apply(Last);
+    return Item ? std::optional(Last) : std::nullopt;
+}
+
+// MenuVideoDetailsCustom at 00423760: each detail flag ON or OFF; Ground/Smoke details shows flag 0x40 inverted.
+void RunDetailsCustomMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+{
+    struct FDetailItem
+    {
+        std::string_view Name;
+        bool FVideoDetails::* Field = nullptr;
+        bool bInverted = false;
+    };
+    constexpr std::array Details{
+        FDetailItem{ .Name = "Shadow", .Field = &FVideoDetails::bShadows },
+        FDetailItem{ .Name = "Ground/Smoke details", .Field = &FVideoDetails::bLowDetails, .bInverted = true },
+        FDetailItem{ .Name = "Reactor FX", .Field = &FVideoDetails::bReactorFx },
+        FDetailItem{ .Name = "HUD Green Info", .Field = &FVideoDetails::bGreenInfo },
+        FDetailItem{ .Name = "Translucent Panel", .Field = &FVideoDetails::bTranslucentPanel },
+        FDetailItem{ .Name = "TV Borders", .Field = &FVideoDetails::bTvBorders },
+        FDetailItem{ .Name = "Gamma FX", .Field = &FVideoDetails::bGammaFx },
+    };
+    FMenu Menu = OptionsList("/Video/Details", "/Custom");
+    for (const FDetailItem& Detail : Details)
+    {
+        Menu.Items.push_back({ .Text = OnOffText(Detail.Name, Settings.Details.*Detail.Field != Detail.bInverted) });
+    }
+
+    AddBack(Menu);
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (std::optional<size_t> Item; !IsBack(Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor), Menu);)
+    {
+        const FDetailItem& Detail = Details[*Item];
+        bool& bFlag = Settings.Details.*Detail.Field;
+        bFlag = !bFlag;
+        Menu.Items[*Item].Text = OnOffText(Detail.Name, bFlag != Detail.bInverted);
+    }
+}
+
+// FUN_00423500: the Details help.
+std::string DetailsHelp(const FSettings& Settings)
+{
+    return std::format("Current Graphic Details : {}", Settings.Details.bLowDetails ? "Low." : "High.");
+}
+
+// MenuVideoDetails at 004235a0: High sets flags 0xbe and clears 0x40, Low clears 0xae and sets 0x40 (Translucent Panel stays), and either closes the menu; Custom opens the flags.
+void RunDetailsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+{
+    enum EItem : size_t
+    {
+        HighItem,
+        LowItem,
+        CustomItem,
+    };
+    FMenu Menu = OptionsMenu("/Video", "/Details");
+    Menu.Items = { { .Text = "High", .Help = DetailsHelp(Settings) }, { .Text = "Low", .Help = DetailsHelp(Settings) }, { .Text = "Custom" }, {}, {} };
+    AddBack(Menu);
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (std::optional<size_t> Item; !IsBack(Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor), Menu);)
+    {
+        if (*Item == CustomItem)
+        {
+            RunDetailsCustomMenu(Window, Renderer, Art, Sheets, Random, Settings);
+            continue;
+        }
+
+        const bool bHigh = *Item == HighItem;
+        FVideoDetails& Details = Settings.Details;
+        Details.bShadows = Details.bReactorFx = Details.bGreenInfo = Details.bTvBorders = Details.bGammaFx = bHigh;
+        Details.bTranslucentPanel = bHigh || Details.bTranslucentPanel;
+        Details.bLowDetails = !bHigh;
+        return;
+    }
+}
+
+// FUN_00422c10, the Video menu: Details, the display's driver, device and mode, and Gamma Correction.
+// ponytail: the driver, device and mode name the port's own display; their lists (FUN_00422e20, FUN_00422fb0, FUN_00423150) have nothing else to offer.
+void RunVideoMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+{
+    enum EItem : size_t
+    {
+        DetailsItem,
+        GammaItem = 4,
+    };
+    FMenu Menu = OptionsMenu({}, "/Video");
+    Menu.Items = {
+        { .Text = "Details Options", .Help = DetailsHelp(Settings) },
+        { .Text = "Vulkan" },
+        { .Text = Renderer.GetDeviceName() },
+        { .Text = std::format("{} x {} x {} bits", int32_t(ScreenWidth), int32_t(ScreenHeight), Settings.VideoMode[2]) },
+        { .Text = "Gamma Correction" },
+    };
+    AddBack(Menu);
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (std::optional<size_t> Item; !IsBack(Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor), Menu);)
+    {
+        if (*Item == DetailsItem)
+        {
+            RunDetailsMenu(Window, Renderer, Art, Sheets, Random, Settings);
+            Menu.Items[DetailsItem].Help = DetailsHelp(Settings);
+        }
+        else if (*Item == GammaItem)
+        {
+            // FUN_00423370: the value maps -255..255 onto 0..100; FUN_004234b0 moves all three channels by the change, and the ramp becomes the user's gamma.
+            constexpr int32_t GammaSpan = 0x1fe;
+            constexpr int32_t GammaOffset = 0xff;
+            constexpr int32_t Percent = 100;
+            const int32_t Value = (Settings.Gamma[0] + GammaOffset) * Percent / GammaSpan;
+            RunSlider(Window, Renderer, Art, Sheets, Random, "/Video", "/Gamma", "Gamma value : ", Value, [&](const int32_t Slider)
+            {
+                const std::array<int32_t, 3>& Ramp = Renderer.GetGamma();
+                if (const int32_t Change = Slider * GammaSpan / Percent - Ramp[0] - GammaOffset; Change != 0)
+                {
+                    Renderer.SetGamma({ Ramp[0] + Change, Ramp[1] + Change, Ramp[2] + Change });
+                }
+            });
+            Settings.Gamma = Renderer.GetGamma();
+            Renderer.SetUserGamma(Settings.Gamma);
+        }
+    }
+}
+
+// FUN_004244e0, FUN_00424ac0 and FUN_00424c50: a volume from 0 to 0xffff as 0 to 100.
+void RunVolumeMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings,
+    std::string Path, int FAudioSettings::* const Volume)
+{
+    constexpr int Percent = 100;
+    RunSlider(Window, Renderer, Art, Sheets, Random, std::move(Path), "/Volume", "Volume : ", Settings.Audio.*Volume * Percent / Sound::MaxVolume, [&](const int32_t Value)
+    {
+        Settings.Audio.*Volume = Value * Sound::MaxVolume / Percent;
+        if (GameAudio)
+        {
+            GameAudio->Apply(Settings.Audio);
+        }
+    });
+}
+
+// FUN_00424280, the music: on or off, and its volume while on.
+void RunMusicMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+{
+    enum EItem : size_t
+    {
+        SwitchItem,
+        VolumeItem,
+    };
+    FMenu Menu = OptionsMenu("/Audio", "/Music");
+    const auto Update = [&]
+    {
+        const bool bOn = Settings.Audio.bMusic;
+        Menu.Items[SwitchItem] = { .Text = bOn ? "Music : ON" : "Music : OFF", .Help = bOn ? "Select to desactivate Music." : "Select to activate Music." };
+        Menu.Items[VolumeItem] = { .Text = "Tune Music Volume", .Help = bOn ? "" : "Music is desactivated." };
+    };
+    Menu.Items.resize(5);
+    AddBack(Menu);
+    Update();
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (std::optional<size_t> Item; !IsBack(Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor), Menu);)
+    {
+        if (*Item == SwitchItem)
+        {
+            Settings.Audio.bMusic = !Settings.Audio.bMusic;
+            if (GameAudio)
+            {
+                GameAudio->Apply(Settings.Audio);
+                GameAudio->SetMusicOn(Settings.Audio.bMusic);
+            }
+
+            Update();
+        }
+        else if (*Item == VolumeItem && Settings.Audio.bMusic)
+        {
+            RunVolumeMenu(Window, Renderer, Art, Sheets, Random, Settings, "/Audio/Music", &FAudioSettings::MusicVolume);
+        }
+    }
+}
+
+// FUN_00424dc0, the voices' language: English or Russian (voice-type, written English or French).
+void RunVoiceTypeMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+{
+    constexpr uint32_t SecondLanguage = 2;
+    const std::string Help = std::format("Current voice type is {}.", Settings.Audio.VoiceType == SecondLanguage ? "Russian" : "English");
+    FMenu Menu = OptionsMenu("/Audio/Voices", "/Type");
+    Menu.Items = { { .Text = "English", .Help = Help }, { .Text = "Russian", .Help = Help }, {}, {}, {} };
+    AddBack(Menu);
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    if (const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor); !IsBack(Item, Menu))
+    {
+        Settings.Audio.VoiceType = uint32_t(*Item) + 1;
+        if (GameAudio)
+        {
+            GameAudio->Apply(Settings.Audio);
+        }
+    }
+}
+
+// FUN_004246b0, the sound effects and the voices: each on or off, their volumes and the voice type while on.
+// Switching the voices sets the help of the second item, not the fourth, as the original does.
+void RunEffectsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+{
+    enum EItem : size_t
+    {
+        EffectsItem,
+        EffectsVolumeItem,
+        VoicesItem,
+        VoicesVolumeItem,
+        VoiceTypeItem,
+    };
+    constexpr std::string_view EffectsRemoved = "Sound FX are removed.";
+    constexpr std::string_view VoicesRemoved = "Voices are removed.";
+    FMenu Menu = OptionsMenu("/Audio", "/FX,Voices");
+    const bool bEffects = Settings.Audio.bSoundFx;
+    const bool bVoices = Settings.Audio.bVoices;
+    Menu.Items = {
+        { .Text = bEffects ? "Sound FX : ON" : "Sound FX : OFF", .Help = bEffects ? "Select to remove Sound FX." : "Select to activate Sound FX." },
+        { .Text = "Tune Sound FX Volume", .Help = bEffects ? "" : std::string(EffectsRemoved) },
+        { .Text = bVoices ? "Voices : ON" : "Voices : OFF", .Help = bVoices ? "Select to remove Voices." : "Select to activate Voices." },
+        { .Text = "Tune Voices Volume", .Help = bVoices ? "" : std::string(VoicesRemoved) },
+        { .Text = "Voice type", .Help = bVoices ? "" : std::string(VoicesRemoved) },
+    };
+    AddBack(Menu);
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (std::optional<size_t> Item; !IsBack(Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor), Menu);)
+    {
+        if (*Item == EffectsItem)
+        {
+            bool& bOn = Settings.Audio.bSoundFx;
+            bOn = !bOn;
+            Menu.Items[EffectsItem] = { .Text = bOn ? "Sound FX : ON" : "Sound FX : OFF", .Help = bOn ? "Select to remove Sound FX." : "Select to activate Sound FX." };
+            Menu.Items[EffectsVolumeItem].Help = bOn ? "" : std::string(EffectsRemoved);
+        }
+        else if (*Item == VoicesItem)
+        {
+            bool& bOn = Settings.Audio.bVoices;
+            bOn = !bOn;
+            Menu.Items[VoicesItem] = { .Text = bOn ? "Voices : ON" : "Voices : OFF", .Help = bOn ? "Select to remove Voices." : "Select to activate Voices." };
+            Menu.Items[EffectsVolumeItem].Help = bOn ? "" : std::string(VoicesRemoved);
+        }
+        else if (*Item == EffectsVolumeItem && Settings.Audio.bSoundFx)
+        {
+            RunVolumeMenu(Window, Renderer, Art, Sheets, Random, Settings, "/Audio/FX", &FAudioSettings::SoundFxVolume);
+        }
+        else if (*Item == VoicesVolumeItem && Settings.Audio.bVoices)
+        {
+            RunVolumeMenu(Window, Renderer, Art, Sheets, Random, Settings, "/Audio/Voices", &FAudioSettings::VoicesVolume);
+        }
+        else if (*Item == VoiceTypeItem && Settings.Audio.bVoices)
+        {
+            RunVoiceTypeMenu(Window, Renderer, Art, Sheets, Random, Settings);
+        }
+
+        if (GameAudio)
+        {
+            GameAudio->Apply(Settings.Audio);
+        }
+    }
+}
+
+// FUN_00423e20, the Audio menu: music, effects and voices, and the sound format's quality, frequency and channels.
+// ponytail: the port's mixer keeps its own output format; the three format items only switch what they show.
+void RunAudioMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+{
+    enum EItem : size_t
+    {
+        MusicItem,
+        EffectsItem,
+        QualityItem,
+        FrequencyItem,
+        ChannelsItem,
+    };
+    constexpr int EightBits = 8;
+    constexpr int SixteenBits = 16;
+    constexpr int LowFrequency = 0x2b11;
+    constexpr int HighFrequency = 0x5622;
+    FMenu Menu = OptionsMenu({}, "/Audio");
+    const auto Update = [&]
+    {
+        Menu.Items[QualityItem].Text = std::format("Quality : {} bits", Settings.bEightBits ? EightBits : SixteenBits);
+        Menu.Items[FrequencyItem].Text = std::format("Frequency : {} Hz", Settings.bLowFrequency ? LowFrequency : HighFrequency);
+        Menu.Items[ChannelsItem].Text = Settings.bMono ? "Channels : Mono" : "Channels : Stereo";
+    };
+    Menu.Items = { { .Text = "Music" }, { .Text = "Sound FX, Voices" }, {}, {}, {} };
+    AddBack(Menu);
+    Update();
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (std::optional<size_t> Item; !IsBack(Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor), Menu);)
+    {
+        if (*Item == MusicItem)
+        {
+            RunMusicMenu(Window, Renderer, Art, Sheets, Random, Settings);
+        }
+        else if (*Item == EffectsItem)
+        {
+            RunEffectsMenu(Window, Renderer, Art, Sheets, Random, Settings);
+        }
+        else if (*Item == QualityItem)
+        {
+            Settings.bEightBits = !Settings.bEightBits;
+        }
+        else if (*Item == FrequencyItem)
+        {
+            Settings.bLowFrequency = !Settings.bLowFrequency;
+        }
+        else if (*Item == ChannelsItem)
+        {
+            Settings.bMono = !Settings.bMono;
+        }
+
+        Update();
+    }
+}
+
+// FUN_00425650: one page of the key settings, from the action setting at First: six of those the device lists, then [Next ...] while more follow, then Back.
+// Returns the settings shown and where the next page starts.
+std::pair<std::vector<size_t>, size_t> FillKeyPage(FMenu& Menu, const FSettings& Settings, const size_t First)
+{
+    constexpr size_t PageSize = 6;
+    const std::span<const FActionSetting> All = ActionSettings();
+    Menu.Items.clear();
+    std::vector<size_t> Shown;
+    size_t Next = First;
+    for (; Next < All.size() && Shown.size() < PageSize; ++Next)
+    {
+        if (!ListsSetting(All[Next], Settings.Device))
+        {
+            continue;
+        }
+
+        const FBinding& Binding = Settings.Bindings.Table(Settings.Device)[size_t(All[Next].Action)];
+        const uint32_t Code = Binding.Code & BindingCodeMask;
+        const uint32_t Modifier = Binding.Modifier & BindingCodeMask;
+        Menu.Items.push_back({
+            .Text = Modifier == 0 ? std::format("{} : {}", All[Next].Name, CodeName(Code)) : std::format("{} : {} + {}", All[Next].Name, CodeName(Modifier), CodeName(Code)),
+            .Help = "Modify setting.",
+        });
+        Shown.push_back(Next);
+    }
+
+    while (Next < All.size() && !ListsSetting(All[Next], Settings.Device))
+    {
+        ++Next;
+    }
+
+    if (Next < All.size())
+    {
+        Menu.Items.push_back({ .Text = "[Next ...]", .Help = "Other settings ..." });
+    }
+
+    AddBack(Menu);
+    return { Shown, Next };
+}
+
+// FUN_004253f0, the key settings of the device in use: choosing one waits for a key or button and binds it alone (a fixed binding stays); [Next ...] pages on and Back pages back, then leaves.
+void RunKeySettingsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+{
+    FMenu Menu = OptionsList("/Control", "/Settings");
+    std::vector<size_t> Pages{ 0 };
+    auto [Shown, Next] = FillKeyPage(Menu, Settings, Pages.back());
     std::optional<std::pair<int32_t, int32_t>> Cursor;
     for (;;)
     {
         const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
-        if (!Item || *Item == *Menu.DefaultItem)
+        if (!Item)
         {
             return;
         }
+
+        if (Item == Menu.DefaultItem)
+        {
+            if (Pages.size() == 1)
+            {
+                return;
+            }
+
+            Pages.pop_back();
+        }
+        else if (*Item >= Shown.size())
+        {
+            Pages.push_back(Next);
+        }
+        else
+        {
+            const FActionSetting& Setting = ActionSettings()[Shown[*Item]];
+            Menu.Items[*Item] = { .Text = std::format("{} : ", Setting.Name), .Help = "Waiting key or button event ..." };
+            // FUN_00425860 waits for every key and button to be up, then for one to go down.
+            bool bReleased = false;
+            std::optional<uint32_t> Code;
+            if (!ShowMenuUntil(Window, Renderer, Art, Sheets, Menu, Random, [&](uint32_t)
+            {
+                Code = FirstCodeDown(Window);
+                bReleased = bReleased || !Code;
+                return bReleased && Code.has_value();
+            }))
+            {
+                return;
+            }
+
+            Settings.Bindings.Bind(Settings.Device, Setting.Action, { .Code = *Code });
+        }
+
+        std::tie(Shown, Next) = FillKeyPage(Menu, Settings, Pages.back());
     }
+}
+
+// FUN_00424f30, the Control menu: the device, the direction (absolute or relative, which the mouse keeps absolute), the key settings and their defaults.
+// It shows the device's picture from menu.gaf (animations 2, 3 and 7) at the screen's bottom left.
+// ponytail: the port has no joypad yet; Use JoyPad still makes it the device, as the original does.
+void RunControlMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+{
+    enum EItem : size_t
+    {
+        KeyboardItem,
+        MouseItem,
+        JoypadItem,
+        DirectionItem,
+        KeySettingsItem,
+        DefaultsItem,
+    };
+    constexpr int32_t ControlRise = 8;
+    constexpr int32_t ControlStepY = 0x28;
+    FMenu Menu = OptionsMenu({}, "/Control");
+    Menu.Top -= ControlRise;
+    Menu.StepY = ControlStepY;
+    Menu.Items = {
+        { .Text = "Use Keyboard", .Help = "Select to play with Keyboard." },
+        { .Text = "Use Mouse", .Help = "Select to play with Mouse." },
+        { .Text = "Use JoyPad", .Help = "Select to play with Joypad." },
+        {},
+        { .Text = "Key settings" },
+        { .Text = "Restore default settings" },
+    };
+    AddBack(Menu);
+    // The direction the joypad returns to; the keyboard always starts relative.
+    bool bChosenAbsolute = Settings.bAbsolute;
+    const auto Update = [&]
+    {
+        Menu.Items[DirectionItem] = Settings.bAbsolute ? FMenuItem{ .Text = "Direction : ABSOLUTE" }
+                                                       : FMenuItem{ .Text = "Direction : RELATIVE", .Help = "Turning left or right is relative to the Vyruz direction." };
+        constexpr size_t KeyboardPicture = 2;
+        constexpr size_t MousePicture = 3;
+        constexpr size_t JoypadPicture = 7;
+        Menu.Picture = Settings.Device == EInputDevice::Mouse ? MousePicture : Settings.Device == EInputDevice::Joypad ? JoypadPicture : KeyboardPicture;
+    };
+    Update();
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (std::optional<size_t> Item; !IsBack(Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor), Menu);)
+    {
+        if (*Item == KeyboardItem || *Item == JoypadItem)
+        {
+            Settings.Device = *Item == KeyboardItem ? EInputDevice::Keyboard : EInputDevice::Joypad;
+            Settings.bAbsolute = *Item == JoypadItem && bChosenAbsolute;
+        }
+        else if (*Item == MouseItem)
+        {
+            Settings.Device = EInputDevice::Mouse;
+            Settings.bAbsolute = true;
+        }
+        else if (*Item == DirectionItem && Settings.Device != EInputDevice::Mouse)
+        {
+            Settings.bAbsolute = !Settings.bAbsolute;
+            bChosenAbsolute = Settings.bAbsolute;
+        }
+        else if (*Item == KeySettingsItem)
+        {
+            RunKeySettingsMenu(Window, Renderer, Art, Sheets, Random, Settings);
+        }
+        else if (*Item == DefaultsItem)
+        {
+            constexpr size_t No = 1;
+            const std::optional<bool> Restore = Confirm(Window, Renderer, Art, Sheets, Random, "Restore default key settings ?", "Yes", "No", No);
+            if (Restore && *Restore)
+            {
+                Settings.Bindings.Table(Settings.Device) = FKeyBindings::DefaultTable(Settings.Device);
+            }
+        }
+
+        Update();
+    }
+}
+
+// The session folders, each a player name (FUN_0042b540 lists session\*).
+std::vector<std::string> SessionNames(const FSettings& Settings)
+{
+    std::vector<std::string> Names;
+    std::error_code Error;
+    for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(Settings.Folder.parent_path(), Error))
+    {
+        if (Entry.is_directory(Error))
+        {
+            Names.push_back(Entry.path().filename().string());
+        }
+    }
+
+    return Names;
+}
+
+void SetPlayerName(FSettings& Settings, std::string Name)
+{
+    Settings.Folder = Settings.Folder.parent_path() / Name;
+    Settings.PlayerName = std::move(Name);
+}
+
+// FUN_00426cd0: the names to choose one from, or to delete one with its sessions after asking.
+void RunNameListMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings,
+    std::vector<std::string>& Names, const bool bDelete)
+{
+    constexpr size_t MaxNames = 7;
+    FMenu Menu = OptionsList("/Session/Name", "/Select");
+    const std::string Help = std::format("Current name : {}", Settings.PlayerName);
+    for (const std::string& Name : Names | std::views::take(MaxNames))
+    {
+        Menu.Items.push_back({ .Text = Name, .Help = Help });
+    }
+
+    if (Menu.Items.size() < MaxNames && !Names.empty())
+    {
+        Menu.Items.emplace_back();
+    }
+
+    AddBack(Menu, Names.empty() ? "No name to select." : "");
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (std::optional<size_t> Item; !IsBack(Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor), Menu);)
+    {
+        if (*Item >= Names.size())
+        {
+            continue;
+        }
+
+        if (!bDelete)
+        {
+            SetPlayerName(Settings, Names[*Item]);
+            return;
+        }
+
+        constexpr size_t No = 1;
+        const std::optional<bool> Delete = Confirm(Window, Renderer, Art, Sheets, Random, std::format("Delete '{}' saved sessions ?", Names[*Item]), "Yes", "No", No);
+        if (Delete && *Delete)
+        {
+            std::error_code Error;
+            std::filesystem::remove_all(Settings.Folder.parent_path() / Names[*Item], Error);
+            Names.erase(Names.begin() + std::ptrdiff_t(*Item));
+            Menu.Items.erase(Menu.Items.begin() + std::ptrdiff_t(*Item));
+            Menu.Items.insert(Menu.Items.begin() + std::ptrdiff_t(Names.size()), FMenuItem{});
+            Menu.DefaultItem = Menu.Items.size() - 1;
+        }
+    }
+}
+
+// FUN_004268c0, the player names: select one, add one (up to seven) or delete one.
+void RunNameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+{
+    enum EItem : size_t
+    {
+        SelectItem,
+        AddItem,
+        DeleteItem,
+    };
+    constexpr size_t MaxNames = 7;
+    // The name's buffer holds 16 bytes with the caret and the terminator.
+    constexpr size_t MaxNameLength = 14;
+    std::vector<std::string> Names = SessionNames(Settings);
+    FMenu Menu = OptionsMenu("/Session", "/Name");
+    const auto Update = [&]
+    {
+        const std::string Help = std::format("Current name : {}", Settings.PlayerName);
+        Menu.Items = { { .Text = "Select player name", .Help = Help }, { .Text = "Add new name", .Help = Help }, { .Text = "Delete name", .Help = Help }, {}, {} };
+        AddBack(Menu);
+    };
+    Update();
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (std::optional<size_t> Item; !IsBack(Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor), Menu);)
+    {
+        if (*Item == SelectItem || *Item == DeleteItem)
+        {
+            RunNameListMenu(Window, Renderer, Art, Sheets, Random, Settings, Names, *Item == DeleteItem);
+            Update();
+        }
+        else if (*Item == AddItem && Names.size() >= MaxNames)
+        {
+            Menu.Items[AddItem].Help = "Cannot add more name.";
+        }
+        else if (*Item == AddItem)
+        {
+            const std::optional<std::string> Name = EditText(Window, Renderer, Art, Sheets, Menu, Random, AddItem, "New name : ", "", MaxNameLength);
+            if (Name && !std::ranges::contains(Names, *Name))
+            {
+                Names.push_back(*Name);
+                SetPlayerName(Settings, *Name);
+                std::error_code Error;
+                std::filesystem::create_directories(Settings.Folder, Error);
+            }
+
+            Update();
+        }
+    }
+}
+
+// FUN_00426fa0: the four difficulty levels and their help texts.
+void RunDifficultyMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+{
+    FMenu Menu = OptionsMenu("/Session", "/Difficulty");
+    for (size_t Level = 0; Level < DifficultyLevelCount; ++Level)
+    {
+        Menu.Items.push_back({ .Text = std::string(DifficultyNames[Level]), .Help = std::string(DifficultyHelps[Level]) });
+    }
+
+    Menu.Items.emplace_back();
+    AddBack(Menu);
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    if (const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor); !IsBack(Item, Menu) && *Item < DifficultyLevelCount)
+    {
+        Settings.DifficultyLevel = *Item;
+    }
+}
+
+// FUN_00425b40, User settings: the player's name and the difficulty, which a running game cannot change, and the registration key.
+// ponytail: the port needs no registration key; the item says there is none and opens nothing.
+void RunUserMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings, const bool bInGame)
+{
+    enum EItem : size_t
+    {
+        NameItem,
+        DifficultyItem,
+    };
+    constexpr std::string_view InGameHelp = "Cannot change this setting during the game.";
+    FMenu Menu = OptionsMenu({}, "/Session");
+    const auto Update = [&]
+    {
+        Menu.Items = {
+            { .Text = std::format("Name : {}", Settings.PlayerName), .Help = bInGame ? std::string(InGameHelp) : "Add, delete or select player name." },
+            { .Text = std::format("Difficulty : {}", DifficultyNames[Settings.DifficultyLevel]), .Help = bInGame ? std::string(InGameHelp) : "Select to change difficulty level." },
+            { .Text = "Registration key", .Help = "No key." },
+            {},
+            {},
+        };
+        AddBack(Menu);
+    };
+    Update();
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (std::optional<size_t> Item; !IsBack(Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor), Menu);)
+    {
+        if (*Item == NameItem && !bInGame)
+        {
+            RunNameMenu(Window, Renderer, Art, Sheets, Random, Settings);
+        }
+        else if (*Item == DifficultyItem && !bInGame)
+        {
+            RunDifficultyMenu(Window, Renderer, Art, Sheets, Random, Settings);
+        }
+
+        Update();
+    }
+}
+
+// FUN_004259f0, Language: English or Russian. The port prints English whichever is chosen.
+void RunLanguageMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+{
+    const std::string Help = std::format("Current language is {}.", LanguageKeyword(Settings.Language));
+    FMenu Menu = OptionsMenu({}, "/Language");
+    Menu.Items = { { .Text = "English", .Help = Help }, { .Text = "Russian", .Help = Help } };
+    AddBack(Menu);
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    if (const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor); !IsBack(Item, Menu))
+    {
+        Settings.Language = uint32_t(*Item) + 1;
+    }
+}
+
+// MenuOptions at 004229a0: Video, Audio (with a sound driver), Control, User settings and Language, then Back, which writes vzconf.txt (ConfigSave).
+void RunOptionsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings, const bool bInGame)
+{
+    enum EItem : size_t
+    {
+        VideoItem,
+        AudioItem,
+        ControlItem,
+        UserItem,
+        LanguageItem,
+    };
+    FMenu Menu = OptionsMenu({}, {});
+    Menu.Items = {
+        { .Text = "Video", .Help = "Details, Device, Video Mode, Gamma." },
+        { .Text = "Audio", .Help = GameAudio ? "Music, Sound FX, Quality, Frequency, Mono/Stereo." : "Sound driver (DirectSound) is unavalaible." },
+        { .Text = "Control", .Help = "Input device, Key settings." },
+        { .Text = "User settings", .Help = "User name, Game difficulty level." },
+        { .Text = "Language", .Help = "English." },
+    };
+    AddBack(Menu);
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (std::optional<size_t> Item; !IsBack(Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor), Menu);)
+    {
+        if (*Item == VideoItem)
+        {
+            RunVideoMenu(Window, Renderer, Art, Sheets, Random, Settings);
+        }
+        else if (*Item == AudioItem && GameAudio)
+        {
+            RunAudioMenu(Window, Renderer, Art, Sheets, Random, Settings);
+        }
+        else if (*Item == ControlItem)
+        {
+            RunControlMenu(Window, Renderer, Art, Sheets, Random, Settings);
+        }
+        else if (*Item == UserItem)
+        {
+            RunUserMenu(Window, Renderer, Art, Sheets, Random, Settings, bInGame);
+        }
+        else if (*Item == LanguageItem)
+        {
+            RunLanguageMenu(Window, Renderer, Art, Sheets, Random, Settings);
+        }
+    }
+
+    SaveSettings(Settings);
 }
 
 // MenuExtras at 00427820, the extras: Scores, Credits, Intro, Slide Show while vz-slide.rsc is there, and Demo, then Back, the default.
@@ -2070,11 +3305,10 @@ enum class EMenuChoice : uint8_t
     Quit,
 };
 
-// MenuMain at 004271a0, the main menu.
-// Options and Extras open nothing yet.
+// MenuMain at 004271a0, the main menu. Options can change the player, whose default session the menu then offers.
 // RandomNext's draws here do not matter, since every level reseeds the generator.
-EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, const FSession* const Session,
-    const std::filesystem::path& SessionFolder, const std::filesystem::path& DataFolder, FSession& Chosen)
+EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, std::optional<FSession>& Session,
+    FSettings& Settings, const std::filesystem::path& DataFolder, FSession& Chosen)
 {
     enum EItem : size_t
     {
@@ -2087,7 +3321,7 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         // Menu +0x58's result when the menu sat idle, which VzMenuLoop takes for the demo.
         IdleDemo = 10,
     };
-    std::vector<FSession> Saved = ReadSavedSessions(SessionFolder);
+    std::vector<FSession> Saved = ReadSavedSessions(Settings.Folder);
     const auto LoadHelp = [&] { return Saved.empty() ? std::string("No saved session.") : std::format("{} saved session{} available.", Saved.size(), Saved.size() > 1 ? "s" : ""); };
     FMenu Menu{
         .Left = MenuLeft,
@@ -2096,7 +3330,7 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         .Bottom = int32_t(ScreenHeight),
         .StepY = MenuStepY,
         .Items = {
-            Session ? FMenuItem{ .Text = "Restart Level", .Help = SessionHelp(*Session) } : FMenuItem{},
+            Session ? FMenuItem{ .Text = "Restart Level", .Help = SessionHelp(*Session, DifficultyNames[Settings.DifficultyLevel]) } : FMenuItem{},
             { .Text = "Start New Game" },
             { .Text = "Load Game", .Help = LoadHelp() },
             { .Text = "Options", .Help = "Video, Audio, Control, User settings, Language." },
@@ -2152,18 +3386,22 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         else if (*Item == LoadItem)
         {
             // SessionLoad at 0042ba00 in mode 0 chooses a saved session; back in the menu, the list is read again.
-            if (const std::optional<size_t> Index = RunSessionMenu(Window, Renderer, Art, Sheets, Random, Saved))
+            if (const std::optional<size_t> Index = RunSessionMenu(Window, Renderer, Art, Sheets, Random, Saved, DifficultyNames[Settings.DifficultyLevel]))
             {
                 Chosen = Saved[*Index];
                 return EMenuChoice::Session;
             }
 
-            Saved = ReadSavedSessions(SessionFolder);
+            Saved = ReadSavedSessions(Settings.Folder);
             Menu.Items[LoadItem].Help = LoadHelp();
         }
         else if (*Item == OptionsItem)
         {
-            RunOptionsMenu(Window, Renderer, Art, Sheets, Random);
+            RunOptionsMenu(Window, Renderer, Art, Sheets, Random, Settings, false);
+            Session = ReadSessionFile(DefaultSessionPath(Settings.Folder));
+            Saved = ReadSavedSessions(Settings.Folder);
+            Menu.Items[RestartItem] = Session ? FMenuItem{ .Text = "Restart Level", .Help = SessionHelp(*Session, DifficultyNames[Settings.DifficultyLevel]) } : FMenuItem{};
+            Menu.Items[LoadItem].Help = LoadHelp();
         }
         else if (*Item == ExtrasItem)
         {
@@ -2200,8 +3438,7 @@ struct FLevelEnd
 };
 
 // MenuGame at 004223e0, the menu Escape opens during a level: Resume Game, Options, Retry Level (shown while there is a default session, which a running level always has) and End Game.
-// Options opens nothing yet.
-std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random)
+std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
 {
     enum EItem : size_t
     {
@@ -2241,7 +3478,7 @@ std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Render
 
         if (*Item == OptionsItem)
         {
-            RunOptionsMenu(Window, Renderer, Art, Sheets, Random);
+            RunOptionsMenu(Window, Renderer, Art, Sheets, Random, Settings, true);
         }
 
         if (*Item == RetryItem)
@@ -2266,26 +3503,11 @@ std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Render
     }
 }
 
-// What vzconf.txt sets that the port follows: the session folder, the player's name the saving plots address, and the input device.
-struct FSettings
-{
-    std::filesystem::path Folder;
-    std::string PlayerName;
-    // use-mouse (keyword 0x124) makes the mouse the input device (session +0x165c = 3) and turns the absolute command on: the ship turns toward the sight, the left button fires, the right one thrusts, Down backs off and Left and Right strafe.
-    bool bMouse = false;
-    FVideoDetails Details;
-    FAudioSettings Audio;
-    // gamma = red, green, blue (session +0x27d4): the user's gamma, which every ramp with Gamma FX sits on.
-    std::array<int32_t, 3> Gamma{};
-    // difficulty-level (keyword 0x102, SetDifficulty at 004032c0) picks one of COMMON\DIFFICULTY.3DC's levels; DifficultyName names them Easy, Normal, Hard and Insane.
-    FDifficulty Difficulty;
-};
-
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a menu ends or restarts the level.
 // A level loaded from a session takes its objects from Restore; any other becomes the default session, in Session and on disk.
 std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
     const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
-    FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, const FSettings& Settings,
+    FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, FSettings& Settings,
     const std::vector<FDemoRecord>* const Demo)
 {
     std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
@@ -2399,7 +3621,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 Combat = std::move(*Weapons);
                 Combat->Details = Settings.Details;
                 // EngineActivateObjects applies the difficulty (FUN_0043c4a0) to the player and every hunter as the level starts.
-                ApplyDifficulty(Settings.Difficulty, *Combat, Bodies, Inventory);
+                ApplyDifficulty(Settings.Difficulty(), *Combat, Bodies, Inventory);
                 // The carried player object brings its weapons, loaded first and in the same order, and the game clock runs on.
                 if (Carried)
                 {
@@ -2606,7 +3828,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         };
     };
     std::optional<FMenuSheets> MenuSheets;
-    bool bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+    // EngineReadActionKeys (0043b5c0) and InputActionPressed (0041d4c0) read the actions through the device's bindings (InputActionDown at 0041d650).
+    const auto ActionDown = [&](const EAction Action) { return IsActionDown(Window, Settings.Bindings, Settings.Device, Action); };
+    bool bEscapeDown = ActionDown(EAction::Menu);
     double CameraX = PlayerObject != Level->Objects.end() ? PlayerObject->X - ScreenWidth * 0.5 : 0.0;
     double CameraY = PlayerObject != Level->Objects.end() ? PlayerObject->Y - ScreenHeight * 0.5 : 0.0;
     std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
@@ -2628,7 +3852,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // The class's acceleration and turn timeout, which the speed surprises and the speed toggle change.
     const float ClassAcceleration = PlayerClass ? PlayerClass->AccelerationStep : 0.f;
     const int ClassTurnTimeout = PlayerClass ? PlayerClass->TurnTimeout : 0;
-    bool bSpeedKeyDown = glfwGetKey(Window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS;
+    bool bSpeedKeyDown = ActionDown(EAction::ToggleSpeed);
     FRandom NoMiscRandom;
     const auto PanelValues = [&]
     {
@@ -2717,7 +3941,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     {
         AnnounceLevel();
     }
-    bool bPauseKeyDown = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS;
+    bool bPauseKeyDown = ActionDown(EAction::Pause);
     // The forward input of the last step, which a blocked motor answers with start-engine.wav, and the surprise whose tune plays.
     bool bThrustInput = false;
     bool bFireInput = false;
@@ -2728,22 +3952,36 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     int32_t ShieldAlarmTimer = 0;
     // EngineApplyDisplayAndCursor (0042f2d0) loads Data\Menu\cursor.gaf's sight (session +0x25b8) for the mouse; EngineRunLevel plays it by the last step and draws it at the mouse after everything else.
     // Any other device hides the cursor altogether.
-    const std::optional<FObjectGaf> SightGaf = Settings.bMouse ? LoadObjectGaf(Archive, "common\\data\\menu\\cursor.gaf") : std::nullopt;
-    const Gaf::FAnimation* const Sight = SightGaf && !SightGaf->Animations.empty() ? &SightGaf->Animations.front() : nullptr;
-    FAnimationPlayback SightPlayback = Sight ? StartAnimation(*Sight) : FAnimationPlayback{};
+    // Options in the game menu may change the device, so this runs again after it.
+    std::optional<FObjectGaf> SightGaf;
+    const Gaf::FAnimation* Sight = nullptr;
+    FAnimationPlayback SightPlayback;
+    std::optional<FSpriteSheet> SightSheet;
+    const auto LoadSight = [&]
+    {
+        if (Settings.UsesMouse() == SightGaf.has_value())
+        {
+            return;
+        }
+
+        SightGaf = Settings.UsesMouse() ? LoadObjectGaf(Archive, "common\\data\\menu\\cursor.gaf") : std::nullopt;
+        Sight = SightGaf && !SightGaf->Animations.empty() ? &SightGaf->Animations.front() : nullptr;
+        SightPlayback = Sight ? StartAnimation(*Sight) : FAnimationPlayback{};
+        SightSheet.reset();
+    };
+    LoadSight();
     // Session +0x1f9c: only InputReadDirection (0041d7e0), which reads the live mouse, moves the sight, so a demo's replayed input leaves it where it was.
     std::optional<std::pair<int32_t, int32_t>> SightPosition;
-    std::optional<FSpriteSheet> SightSheet;
     // FUN_00403b70 loads Data\Menu\pause.gaf's first animation, which FUN_00403d70 centres on the screen in draw mode 7.
     const std::optional<FObjectGaf> PauseGaf = LoadObjectGaf(Archive, "common\\data\\menu\\pause.gaf");
     // EngineRunLevel shows Data\Extra\failed.gaf's skull when the player dies: animation 2 (its dark outline, mode 8) under animation 1, centred, until the game ends (FUN_004457f0).
     const std::optional<FObjectGaf> FailedGaf = LoadObjectGaf(Archive, "common\\data\\extra\\failed.gaf");
     std::optional<FSpriteSheet> FailedSheet;
-    // A white pixel that the gamma pass stretches over the screen.
+    // A white pixel that the fade without Gamma FX stretches over rows.
     std::optional<FSpriteSheet> WhiteSheet;
     FDeathDrift DeathDrift;
     std::optional<FSpriteSheet> PauseSheet;
-    // Backspace, then the digits 1 to 9.
+    // action-next-weapon, then action-weapon-1 to 9.
     constexpr size_t WeaponKeyCount = 10;
     // g_DemoReplayCursor.
     size_t DemoCursor = 0;
@@ -2753,8 +3991,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     const std::vector<uint32_t> DemoSteps = Demo ? DemoStepLengths(*Demo, &DemoFrameEnds) : std::vector<uint32_t>();
     size_t DemoStep = 0;
     uint32_t DemoBudget = 0;
-    bool bTabDown = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
-    bool bMapKeyDown = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS;
+    bool bTabDown = ActionDown(EAction::CyclePanels);
+    bool bMapKeyDown = ActionDown(EAction::Map);
     std::array<bool, WeaponKeyCount> WeaponKeysDown{};
     // Object +0x170, which 3do::CreateObject starts at 50; ObjectDraw counts it up to 49 for a visible object and draws it opaque from there.
     constexpr int FullFade = 49;
@@ -2848,8 +4086,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     {
         PollEvents(Window);
         // EnginePause (0043b8d0): action-pause (P) closes an open map, or freezes the game (session +0x20 bit 0x1000000) under pause.gaf until P again; meanwhile only P is read and the clock's time is dropped.
-        const bool bPausePressed = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS && !bPauseKeyDown;
-        bPauseKeyDown = glfwGetKey(Window, GLFW_KEY_P) == GLFW_PRESS;
+        const bool bPausePressed = ActionDown(EAction::Pause) && !bPauseKeyDown;
+        bPauseKeyDown = ActionDown(EAction::Pause);
         if (bPausePressed && Player && !Demo && !bFinaleStarted)
         {
             QueueVoice(EVoice::Pause, 0, VoiceDuration, VoiceHold);
@@ -2867,8 +4105,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         if (!PageText.empty())
         {
             const bool bAnyPressed = PageInput.Poll();
-            const bool bFireDown = glfwGetKey(Window, GLFW_KEY_SPACE) == GLFW_PRESS || glfwGetKey(Window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
-                glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            const bool bFireDown = ActionDown(EAction::Fire);
             const bool bFirePressed = bFireDown && !bPageFireDown;
             bPageFireDown = bFireDown;
             if (bFirePressed || (PageTyped >= PageText.size() && bAnyPressed))
@@ -2884,9 +4121,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         if (!bPaused && PageText.empty())
         {
-            // Escape (EngineEscape at 00445b40) opens the game menu, or ends the game at once for a dead player; the menu's steps do not count as game time.
-            const bool bEscapePressed = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS && !bEscapeDown;
-            bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+            // action-menu, Escape (EngineEscape at 00445b40), opens the game menu, or ends the game at once for a dead player; the menu's steps do not count as game time.
+            const bool bEscapePressed = ActionDown(EAction::Menu) && !bEscapeDown;
+            bEscapeDown = ActionDown(EAction::Menu);
             // A playing demo ends on Escape (EngineRunLevel checks the key before DemoReplayStep).
             if (bEscapePressed && Demo)
             {
@@ -2915,11 +4152,29 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
 
                 FRandom MenuRandom;
-                const std::optional<ELevelEnd> End = RunGameMenu(Window, Renderer, *MenuArt, *MenuSheets, Combat ? Combat->Random : MenuRandom);
+                const std::optional<ELevelEnd> End = RunGameMenu(Window, Renderer, *MenuArt, *MenuSheets, Combat ? Combat->Random : MenuRandom, Settings);
                 if (End)
                 {
                     return FLevelEnd{ .Kind = *End };
                 }
+
+                // EngineApplyDisplayAndCursor (0042f2d0) takes what Options changed.
+                if (Panel)
+                {
+                    Panel->SetDetails(Settings.Details);
+                }
+
+                if (Combat)
+                {
+                    Combat->Details = Settings.Details;
+                }
+
+                if (GameAudio)
+                {
+                    GameAudio->Apply(Settings.Audio);
+                }
+
+                LoadSight();
 
                 // MenuGame fades the menu out with fade.wav, then the level in. ponytail: the menu's own fade to black is left out; it closes at once.
                 MenuFadeStep = 0;
@@ -2929,7 +4184,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     GameAudio->PlayFade();
                 }
 
-                bEscapeDown = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+                bEscapeDown = ActionDown(EAction::Menu);
                 Clock = FFrameClock(FramePeriod);
                 Clock.Poll(ClockMilliseconds());
             }
@@ -2944,17 +4199,17 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 return FLevelEnd{ .Kind = ELevelEnd::Lift, .NextLevel = DebugLevels[Next] };
             }
 
-            // EngineReadActionKeys (0043b5c0) with the default keys of DAT_00509298: Backspace is action-next-weapon and 1 to 9 are action-weapon-1 to 9 (FUN_0043bad0 skips the slot in hand); Tab is action-cycle-panels, Left Shift stepping back, and M is action-map.
-            const bool bTabPressed = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS && !bTabDown;
-            bTabDown = glfwGetKey(Window, GLFW_KEY_TAB) == GLFW_PRESS;
+            // EngineReadActionKeys (0043b5c0): action-next-weapon, action-weapon-1 to 9 (FUN_0043bad0 skips the slot in hand), action-cycle-panels (Left Shift stepping back) and action-map.
+            const bool bTabPressed = ActionDown(EAction::CyclePanels) && !bTabDown;
+            bTabDown = ActionDown(EAction::CyclePanels);
             if (bTabPressed && Panel && !Demo && !bFinaleStarted)
             {
                 Panel->CyclePanels(glfwGetKey(Window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS);
             }
 
-            // action-toggle-hilo-speed (Page Down, DIK_NEXT in DAT_00509298), FUN_0043b830: at full acceleration or more the player drops to a third of the class's and turns 1.5 times slower ("low speed"); otherwise both return to the class's ("high speed").
-            const bool bSpeedPressed = glfwGetKey(Window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS && !bSpeedKeyDown;
-            bSpeedKeyDown = glfwGetKey(Window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS;
+            // action-toggle-hilo-speed (Page Down by default), FUN_0043b830: at full acceleration or more the player drops to a third of the class's and turns 1.5 times slower ("low speed"); otherwise both return to the class's ("high speed").
+            const bool bSpeedPressed = ActionDown(EAction::ToggleSpeed) && !bSpeedKeyDown;
+            bSpeedKeyDown = ActionDown(EAction::ToggleSpeed);
             if (bSpeedPressed && Player && PlayerClass && !Demo && !bFinaleStarted)
             {
                 constexpr float LowSpeedScale = 1.f / 3.f;
@@ -2975,8 +4230,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
             }
 
-            const bool bMapPressed = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS && !bMapKeyDown;
-            bMapKeyDown = glfwGetKey(Window, GLFW_KEY_M) == GLFW_PRESS;
+            const bool bMapPressed = ActionDown(EAction::Map) && !bMapKeyDown;
+            bMapKeyDown = ActionDown(EAction::Map);
             if (bMapPressed && Player && !Demo && !bFinaleStarted)
             {
                 ToggleMap();
@@ -2984,10 +4239,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
 
             std::array<bool, WeaponKeyCount> WeaponKeysNow{};
-            WeaponKeysNow[0] = glfwGetKey(Window, GLFW_KEY_BACKSPACE) == GLFW_PRESS;
+            WeaponKeysNow[0] = ActionDown(EAction::NextWeapon);
             for (size_t Slot = 1; Slot < WeaponKeyCount; ++Slot)
             {
-                WeaponKeysNow[Slot] = glfwGetKey(Window, GLFW_KEY_0 + int(Slot)) == GLFW_PRESS;
+                WeaponKeysNow[Slot] = ActionDown(EAction(size_t(EAction::Weapon1) + Slot - 1));
             }
 
             if (Combat && !Demo)
@@ -3127,18 +4382,34 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                     StepCodeTimeouts(Inventory, *Level, Messages, StepMilliseconds);
 
-                    // ReadPlayerInput: Reversed-commands swaps left with right and the two strafes; Blocked-motor ignores every command.
-                    // The default strafes are Left Shift with an arrow, which then does not turn (InputActionPressed at 0041d4c0); A and D strafe too.
-                    // With the mouse as device (DAT_00509368's defaults) Left and Right strafe on their own, the right button thrusts (Up too), and the turn comes from the sight unless that side strafes.
+                    // ReadPlayerInput through InputActionPressed (0041d4c0): Reversed-commands swaps left with right and the two strafes; Blocked-motor ignores every command.
+                    // A held strafe drops the turn on its side; the keyboard's default strafes are Left Shift with an arrow.
+                    // The mouse turns toward the sight (InputReadDirection at 0041d7e0); with the absolute command the keyboard's movement keys give a direction, and the player turns toward it and thrusts once facing it.
                     const FSurpriseState& Surprises = Inventory.Surprises;
-                    const bool bShift = Pressed(GLFW_KEY_LEFT_SHIFT) || Settings.bMouse;
-                    const bool bLeftKey = Pressed(GLFW_KEY_LEFT);
-                    const bool bRightKey = Pressed(GLFW_KEY_RIGHT);
-                    const bool bSideLeft = (bLeftKey && bShift) || Pressed(GLFW_KEY_A);
-                    const bool bSideRight = (bRightKey && bShift) || Pressed(GLFW_KEY_D);
-                    bool bTurnLeft = bLeftKey && !bShift;
-                    bool bTurnRight = bRightKey && !bShift;
-                    if (Settings.bMouse)
+                    const bool bSideLeft = ActionDown(EAction::StrafeLeft);
+                    const bool bSideRight = ActionDown(EAction::StrafeRight);
+                    bool bTurnLeft = false;
+                    bool bTurnRight = false;
+                    bool bForwardKey = ActionDown(EAction::Forward);
+                    bool bBackwardKey = ActionDown(EAction::Backward);
+                    if (!Settings.UsesMouse() && Settings.bAbsolute)
+                    {
+                        const FCollisionPoint Keys{
+                            .X = float(ActionDown(EAction::Right)) - float(ActionDown(EAction::Left)),
+                            .Y = float(bBackwardKey) - float(bForwardKey),
+                        };
+                        const uint32_t Input = AbsoluteKeyInput(*Player, Keys);
+                        bTurnLeft = (Input & PlayerInputTurnLeft) != 0 && !bSideLeft;
+                        bTurnRight = (Input & PlayerInputTurnRight) != 0 && !bSideRight;
+                        bForwardKey = (Input & PlayerInputForward) != 0;
+                        bBackwardKey = (Input & PlayerInputBackward) != 0;
+                    }
+                    else if (!Settings.UsesMouse())
+                    {
+                        bTurnLeft = ActionDown(EAction::Left) && !bSideLeft;
+                        bTurnRight = ActionDown(EAction::Right) && !bSideRight;
+                    }
+                    else
                     {
                         const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window);
                         if (!Demo)
@@ -3156,15 +4427,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
 
                     // Extasy (object flag 0x1000000) holds the thrust full forward whatever the keys say.
-                    const bool bForward = Surprises.Active == ESurprise::Extasy || Pressed(GLFW_KEY_UP) ||
-                        (Settings.bMouse && glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
+                    const bool bForward = Surprises.Active == ESurprise::Extasy || bForwardKey;
                     bThrustInput = bForward;
                     const bool bLeft = Surprises.bReversed ? bTurnRight : bTurnLeft;
                     const bool bRight = Surprises.bReversed ? bTurnLeft : bTurnRight;
                     const bool bStrafeLeft = Surprises.bReversed ? bSideRight : bSideLeft;
                     const bool bStrafeRight = Surprises.bReversed ? bSideLeft : bSideRight;
                     FPlayerCommand Command = Surprises.bBlockedMotor ? FPlayerCommand{}
-                                                                      : PlayerCommandFromKeys(bForward, Pressed(GLFW_KEY_DOWN) && Surprises.Active != ESurprise::Extasy, bLeft, bRight,
+                                                                      : PlayerCommandFromKeys(bForward, bBackwardKey && Surprises.Active != ESurprise::Extasy, bLeft, bRight,
                                                                           bStrafeLeft, bStrafeRight);
                     // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its velocity in collision units, and drives with the replayed input.
                     if (Demo && DemoCursor >= 1)
@@ -3230,8 +4500,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     const float ShieldBefore = Inventory.Shield;
                     StepGenerators(*Combat, *Level, Bodies, Rider, StepMilliseconds);
                     constexpr uint32_t FireBit = 0x2;
-                    const bool bMouseFire = Settings.bMouse && glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-                    const bool bLiveFire = Demo ? (DemoInput & FireBit) != 0 : bAutoFire || bMouseFire || Pressed(GLFW_KEY_SPACE) || Pressed(GLFW_KEY_LEFT_CONTROL);
+                    const bool bLiveFire = Demo ? (DemoInput & FireBit) != 0 : bAutoFire || ActionDown(EAction::Fire);
                     bFireInput = bLiveFire;
                     const bool bFire = !Inventory.Surprises.bBlockedMotor && bLiveFire;
                     if (!DeathTimer)
@@ -4207,38 +5476,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         if (Settings.Details.bGammaFx && !NextLevel)
         {
             std::array<int32_t, 3>& Gamma = Inventory.Surprises.Gamma;
-            constexpr int32_t GammaLimit = 0xff;
-            const std::array<int32_t, 3> Shown = { std::clamp(Gamma[0] + Settings.Gamma[0], -GammaLimit, GammaLimit),
-                std::clamp(Gamma[1] + Settings.Gamma[1], -GammaLimit, GammaLimit), std::clamp(Gamma[2] + Settings.Gamma[2], -GammaLimit, GammaLimit) };
+            const std::array<int32_t, 3>& User = Renderer.GetUserGamma();
+            Renderer.SetGamma({ Gamma[0] + User[0], Gamma[1] + User[1], Gamma[2] + User[2] });
             if (!DeathTimer)
             {
                 for (int32_t& Channel : Gamma)
                 {
                     Channel -= Channel > 0 ? 1 : Channel < 0 ? -1 : 0;
-                }
-            }
-
-            const auto Pack = [&](const auto Part) { return uint32_t(Part(Shown[0])) << 16 | uint32_t(Part(Shown[1])) << 8 | uint32_t(Part(Shown[2])); };
-            const uint32_t Lift = Pack([](const int32_t Offset) { return std::max(Offset, 0); });
-            const uint32_t Darken = Pack([](const int32_t Offset) { return Offset < 0 ? 1 - Offset : 0; });
-            if (Lift != 0 || Darken != 0)
-            {
-                if (!WhiteSheet)
-                {
-                    constexpr uint16_t White = 0x7fff;
-                    WhiteSheet = Renderer.CreateSpriteSheet({ Gaf::FFrame{ .Width = 1, .Height = 1, .Pixels = { White } } });
-                }
-
-                const float Width = float(ScreenWidth);
-                const float Height = float(ScreenHeight);
-                if (Lift != 0)
-                {
-                    Renderer.DrawSprite(*WhiteSheet, 0, 0.f, 0.f, false, false, ESpriteBlend::Screen, Width, Height, UINT32_MAX, Lift);
-                }
-
-                if (Darken != 0)
-                {
-                    Renderer.DrawSprite(*WhiteSheet, 0, 0.f, 0.f, false, false, ESpriteBlend::InverseSourceColor, Width, Height, UINT32_MAX, Darken);
                 }
             }
         }
@@ -4515,132 +5759,8 @@ int main(const int ArgCount, char** const Args)
         std::fprintf(stderr, "No menus: %s\n", MenuArt.error().c_str());
     }
 
-    // ConfigLoad (0042f570) reads vzconf.txt from the game folder, else the archive's VZCONF.TXT: session-name names the session folder and the player, use-keyboard, use-joypad and use-mouse choose the input device, the last set one winning, and the detail keywords set the Video Details options.
-    // A flag is set when its value reads as a non-zero number (atoi).
-    FSettings Settings{ .PlayerName = "Player" };
-    {
-        struct FDetailKey
-        {
-            std::string_view Name;
-            bool FVideoDetails::* Field = nullptr;
-            bool bInverted = false;
-        };
-        constexpr std::array DetailKeys{
-            FDetailKey{ .Name = "shadow", .Field = &FVideoDetails::bShadows },
-            FDetailKey{ .Name = "reactor-fx", .Field = &FVideoDetails::bReactorFx },
-            FDetailKey{ .Name = "hud-green-info", .Field = &FVideoDetails::bGreenInfo },
-            FDetailKey{ .Name = "translucent-panel", .Field = &FVideoDetails::bTranslucentPanel },
-            FDetailKey{ .Name = "tv-borders", .Field = &FVideoDetails::bTvBorders },
-            FDetailKey{ .Name = "gamma-fx", .Field = &FVideoDetails::bGammaFx },
-            FDetailKey{ .Name = "low-details", .Field = &FVideoDetails::bLowDetails },
-            FDetailKey{ .Name = "high-details", .Field = &FVideoDetails::bLowDetails, .bInverted = true },
-        };
-        struct FAudioSwitch
-        {
-            std::string_view Name;
-            bool FAudioSettings::* Field = nullptr;
-        };
-        constexpr std::array AudioSwitches{
-            FAudioSwitch{ .Name = "music", .Field = &FAudioSettings::bMusic },
-            FAudioSwitch{ .Name = "sound-fx", .Field = &FAudioSettings::bSoundFx },
-            FAudioSwitch{ .Name = "voices", .Field = &FAudioSettings::bVoices },
-        };
-        struct FAudioVolume
-        {
-            std::string_view Name;
-            int FAudioSettings::* Field = nullptr;
-        };
-        constexpr std::array AudioVolumes{
-            FAudioVolume{ .Name = "music-volume", .Field = &FAudioSettings::MusicVolume },
-            FAudioVolume{ .Name = "sound-fx-volume", .Field = &FAudioSettings::SoundFxVolume },
-            FAudioVolume{ .Name = "voices-volume", .Field = &FAudioSettings::VoicesVolume },
-        };
-        const auto IsSet = [](const std::string_view Value)
-        {
-            int Number = 0;
-            std::from_chars(Value.data(), Value.data() + Value.size(), Number);
-            return Number != 0;
-        };
-
-        const std::optional<std::vector<uint8_t>> DifficultyFile = Archive.Read("common\\difficulty.3dc");
-        const FDifficultyTable Difficulties = LoadDifficulties(DifficultyFile ? std::string_view(reinterpret_cast<const char*>(DifficultyFile->data()), DifficultyFile->size()) : std::string_view());
-        size_t DifficultyLevel = Difficulties.DefaultLevel;
-        std::string Text(reinterpret_cast<const char*>(Config->data()), Config->size());
-        std::error_code Error;
-        for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(DataPath->parent_path(), Error))
-        {
-            std::string Name = Entry.path().filename().string();
-            std::ranges::transform(Name, Name.begin(), [](const unsigned char Character) { return char(std::tolower(Character)); });
-            constexpr std::uintmax_t MaxConfigBytes = 65536;
-            if (Name == "vzconf.txt" && Entry.file_size(Error) <= MaxConfigBytes)
-            {
-                std::ifstream File(Entry.path(), std::ios::binary);
-                Text.assign(std::istreambuf_iterator<char>(File), std::istreambuf_iterator<char>());
-            }
-        }
-
-        for (const auto Part : std::views::split(std::string_view(Text), '\n'))
-        {
-            const std::string_view Row(Part.begin(), Part.end());
-            const size_t Equals = Row.find('=');
-            if (Row.starts_with('#') || Equals == std::string_view::npos)
-            {
-                continue;
-            }
-
-            constexpr std::string_view Blanks = " \t\r";
-            const auto Trim = [&](std::string_view Value)
-            {
-                Value.remove_prefix(std::min(Value.size(), Value.find_first_not_of(Blanks)));
-                return Value.substr(0, Value.find_last_not_of(Blanks) + 1);
-            };
-            const std::string_view Key = Trim(Row.substr(0, Equals));
-            const std::string_view Value = Trim(Row.substr(Equals + 1));
-            if (Key == "session-name" && !Value.empty() && Value.find_first_of("\\/:*?\"<>|.") == std::string_view::npos)
-            {
-                Settings.PlayerName = std::string(Value);
-            }
-            else if (int Level = 0; Key == "difficulty-level" && std::from_chars(Value.data(), Value.data() + Value.size(), Level).ec == std::errc{} && Level >= 0 &&
-                Level < int(DifficultyLevelCount))
-            {
-                DifficultyLevel = size_t(Level);
-            }
-            else if (Key == "gamma")
-            {
-                size_t Channel = 0;
-                for (const auto Field : std::views::split(Value, ','))
-                {
-                    const std::string_view Number = Trim(std::string_view(Field.begin(), Field.end()));
-                    if (Channel < Settings.Gamma.size())
-                    {
-                        std::from_chars(Number.data(), Number.data() + Number.size(), Settings.Gamma[Channel++]);
-                    }
-                }
-            }
-            else if ((Key == "use-mouse" || Key == "use-keyboard" || Key == "use-joypad") && IsSet(Value))
-            {
-                Settings.bMouse = Key == "use-mouse";
-            }
-            else if (const auto Detail = std::ranges::find(DetailKeys, Key, &FDetailKey::Name); Detail != DetailKeys.end())
-            {
-                Settings.Details.*Detail->Field = IsSet(Value) != Detail->bInverted;
-            }
-            else if (const auto Switch = std::ranges::find(AudioSwitches, Key, &FAudioSwitch::Name); Switch != AudioSwitches.end())
-            {
-                Settings.Audio.*Switch->Field = IsSet(Value);
-            }
-            else if (const auto Volume = std::ranges::find(AudioVolumes, Key, &FAudioVolume::Name); Volume != AudioVolumes.end())
-            {
-                // ConfigLoad clamps the volumes to 0..0xffff.
-                int Number = 0;
-                std::from_chars(Value.data(), Value.data() + Value.size(), Number);
-                Settings.Audio.*Volume->Field = std::clamp(Number, 0, Sound::MaxVolume);
-            }
-        }
-
-        Settings.Difficulty = Difficulties.Levels[DifficultyLevel];
-    }
-
+    FSettings Settings = LoadSettings(Archive, DataPath->parent_path());
+    Renderer.SetUserGamma(Settings.Gamma);
     if (Panel)
     {
         Panel->SetDetails(Settings.Details);
@@ -4714,7 +5834,7 @@ int main(const int ArgCount, char** const Args)
         if (bMenu)
         {
             FSession Chosen;
-            const EMenuChoice Choice = RunMainMenu(Window, Renderer, Archive, *MenuArt, Session ? &*Session : nullptr, Settings.Folder, DataPath->parent_path(), Chosen);
+            const EMenuChoice Choice = RunMainMenu(Window, Renderer, Archive, *MenuArt, Session, Settings, DataPath->parent_path(), Chosen);
             Renderer.ReleaseSpriteSheets();
             if (Choice == EMenuChoice::Quit)
             {

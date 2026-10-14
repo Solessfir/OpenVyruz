@@ -24,6 +24,8 @@ struct FAudioSettings
     int MusicVolume = Sound::MaxVolume;
     int SoundFxVolume = Sound::MaxVolume / 2;
     int VoicesVolume = Sound::MaxVolume;
+    // voice-type (session +0x280c): 1 the English lines, 2 the other language's, which this build keeps under french.
+    uint32_t VoiceType = 1;
 };
 
 // The voice lines of VoiceLoad (00411cb0), in the order of its table (session +0x208c), each Data\Sound\<language>\v-<name>.wav.
@@ -119,6 +121,8 @@ public:
     void SwitchMusic(int Track);
     // MusicRestore (0042ed00): goes back to the remembered tune.
     void RestoreMusic();
+    // The Music menu's switch: on loops the first tune, off stops the music.
+    void SetMusicOn(bool bOn);
     int GetMusicTrack() const { return Track; }
 
     // RunMenu at 00421050 plays bip.wav when it returns, centred, at priority 0xbf.
@@ -171,6 +175,8 @@ public:
     void DropVoices();
 
 private:
+    // VoiceLoad (00411cb0) takes the lines from the voice type's folder.
+    std::string_view VoiceFolder() const;
     // SoundBankLoad (00403a40): a sound by file name from Data\Sound, loaded once.
     std::shared_ptr<const Sound::FSample> Load(std::string_view Name);
     // SoundPlayOnChannel (00403f80): restarts a channel with the sample.

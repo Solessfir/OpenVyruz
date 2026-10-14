@@ -224,6 +224,22 @@ void FAudio::StartMusic()
     }
 }
 
+std::string_view FAudio::VoiceFolder() const
+{
+    constexpr uint32_t SecondLanguage = 2;
+    return Settings.VoiceType == SecondLanguage ? "french" : "english";
+}
+
+void FAudio::SetMusicOn(const bool bOn)
+{
+    Mixer.Stop(ChannelBit(MusicChannel));
+    Track = 0;
+    if (bOn)
+    {
+        StartMusic();
+    }
+}
+
 void FAudio::SwitchMusic(const int NewTrack)
 {
     if (NewTrack == Track)
@@ -470,7 +486,7 @@ bool FAudio::AddVoice(const EVoice Voice, const uint32_t Delay, const uint32_t D
 {
     // VoiceLoad loads the lines only with voices on (EngineApplyDisplayAndCursor), in the voice-type language.
     const std::string_view Name = VoiceNames[size_t(Voice)];
-    if (!Settings.bVoices || Name.empty() || std::ranges::contains(Voices, Voice, &FQueuedVoice::Voice) || !Load(std::format("english\\v-{}.wav", Name)))
+    if (!Settings.bVoices || Name.empty() || std::ranges::contains(Voices, Voice, &FQueuedVoice::Voice) || !Load(std::format("{}\\v-{}.wav", VoiceFolder(), Name)))
     {
         return false;
     }
@@ -503,7 +519,7 @@ void FAudio::UpdateVoices()
                     Mixer.Stop(ChannelBit(VoiceChannel));
                 }
 
-                Mixer.Play(Load(std::format("english\\v-{}.wav", VoiceNames[size_t(Queued.Voice)])), false, VoicePriority, ChannelBit(VoiceChannel));
+                Mixer.Play(Load(std::format("{}\\v-{}.wav", VoiceFolder(), VoiceNames[size_t(Queued.Voice)])), false, VoicePriority, ChannelBit(VoiceChannel));
             }
         }
 

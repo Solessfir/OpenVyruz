@@ -842,8 +842,75 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
     vkCmdDraw(Cmd, 4, 1, 0, 0);
 }
 
+void FRenderer::SetGamma(const std::array<int32_t, 3>& Ramp)
+{
+    constexpr int32_t Limit = 0xff;
+    for (size_t Channel = 0; Channel < Gamma.size(); ++Channel)
+    {
+        Gamma[Channel] = std::clamp(Ramp[Channel], -Limit, Limit);
+    }
+}
+
+void FRenderer::SetUserGamma(const std::array<int32_t, 3>& Ramp)
+{
+    SetGamma(Ramp);
+    UserGamma = Gamma;
+}
+
+void FRenderer::ResetGamma()
+{
+    Gamma = UserGamma;
+}
+
+const std::array<int32_t, 3>& FRenderer::GetGamma() const
+{
+    return Gamma;
+}
+
+const std::array<int32_t, 3>& FRenderer::GetUserGamma() const
+{
+    return UserGamma;
+}
+
+std::string FRenderer::GetDeviceName() const
+{
+    VkPhysicalDeviceProperties Properties{};
+    vkGetPhysicalDeviceProperties(PhysicalDevice, &Properties);
+    return Properties.deviceName;
+}
+
+// The swapchain is UNORM, so the blends work on display values as the ramp did: a screen blend lifts, an inverse-source blend darkens.
+void FRenderer::DrawGamma()
+{
+    const auto Pack = [&](const auto Part) { return uint32_t(Part(Gamma[0])) << 16 | uint32_t(Part(Gamma[1])) << 8 | uint32_t(Part(Gamma[2])); };
+    static constexpr int32_t ChannelMax = 0xff;
+    const uint32_t Lift = Pack([](const int32_t Value) { return std::max(Value, 0); });
+    const uint32_t Darken = Pack([](const int32_t Value) { return Value < 0 ? std::min(1 - Value, ChannelMax) : 0; });
+    if (Lift == 0 && Darken == 0)
+    {
+        return;
+    }
+
+    if (!GammaSheet)
+    {
+        constexpr uint16_t White = 0x7fff;
+        GammaSheet = CreateSpriteSheet({ Gaf::FFrame{ .Width = 1, .Height = 1, .Pixels = { White } } });
+    }
+
+    if (Lift != 0)
+    {
+        DrawSprite(*GammaSheet, 0, 0.f, 0.f, false, false, ESpriteBlend::Screen, ScreenWidth, ScreenHeight, UINT32_MAX, Lift);
+    }
+
+    if (Darken != 0)
+    {
+        DrawSprite(*GammaSheet, 0, 0.f, 0.f, false, false, ESpriteBlend::InverseSourceColor, ScreenWidth, ScreenHeight, UINT32_MAX, Darken);
+    }
+}
+
 void FRenderer::EndFrame()
 {
+    DrawGamma();
     FFrame& Frame = Frames[FrameIndex];
     const VkCommandBuffer Cmd = Frame.CommandBuffer;
     vkCmdEndRendering(Cmd);
@@ -904,6 +971,7 @@ void FRenderer::ReleaseSpriteSheets()
         vkFreeMemory(Device, Texture.Memory, nullptr);
     }
     Textures.clear();
+    GammaSheet.reset();
     Check(vkResetDescriptorPool(Device, DescriptorPool, 0), "vkResetDescriptorPool");
 }
 
