@@ -25,6 +25,8 @@ struct FSample
 std::optional<FSample> DecodeWav(std::span<const uint8_t> File);
 // The SND_ records of a GAF's SMP_ entry, which animation frame events play by 1-based index. A GAF without one yields none.
 std::optional<std::vector<FSample>> DecodeGafSamples(std::span<const uint8_t> File);
+// An MPEG audio layer III stream, such as the intro's sound.
+std::optional<FSample> DecodeMp3(std::span<const uint8_t> File);
 
 // The original's channel volume runs from 0 to 0xffff and its pan from -0x7fff (left) to 0x7fff (right).
 inline constexpr int MaxVolume = 0xffff;

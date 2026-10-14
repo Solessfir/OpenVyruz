@@ -7,7 +7,9 @@
 #include <cmath>
 #include <cstring>
 
-#define MA_NO_DECODING
+// Decoding stays for the intro's MP3 sound alone.
+#define MA_NO_WAV
+#define MA_NO_FLAC
 #define MA_NO_ENCODING
 #define MA_NO_GENERATION
 #define MA_NO_RESOURCE_MANAGER
@@ -209,6 +211,38 @@ std::optional<std::vector<Sound::FSample>> Sound::DecodeGafSamples(const std::sp
     }
 
     return Samples;
+}
+
+std::optional<Sound::FSample> Sound::DecodeMp3(const std::span<const uint8_t> File)
+{
+    const ma_decoder_config Config = ma_decoder_config_init(ma_format_f32, 0, 0);
+    ma_decoder Decoder;
+    if (ma_decoder_init_memory(File.data(), File.size(), &Config, &Decoder) != MA_SUCCESS)
+    {
+        return std::nullopt;
+    }
+
+    FSample Sample{ .Rate = Decoder.outputSampleRate, .ChannelCount = Decoder.outputChannels };
+    constexpr ma_uint64 ChunkFrames = 4096;
+    for (ma_uint64 Read = ChunkFrames; Read == ChunkFrames && Sample.ChannelCount != 0;)
+    {
+        const size_t Start = Sample.Data.size();
+        Sample.Data.resize(Start + ChunkFrames * Sample.ChannelCount);
+        if (ma_decoder_read_pcm_frames(&Decoder, Sample.Data.data() + Start, ChunkFrames, &Read) != MA_SUCCESS)
+        {
+            Read = 0;
+        }
+
+        Sample.Data.resize(Start + Read * Sample.ChannelCount);
+    }
+
+    ma_decoder_uninit(&Decoder);
+    if (Sample.Data.empty())
+    {
+        return std::nullopt;
+    }
+
+    return Sample;
 }
 
 struct Sound::FMixer::FDevice

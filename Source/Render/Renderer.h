@@ -5,6 +5,7 @@
 #include <GLFW/glfw3.h>
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 // The original game renders at 640x480 (VZCONF.TXT video-driver-device-mode); the window letterboxes that space.
@@ -51,6 +52,10 @@ public:
     FSpriteSheet CreateSpriteSheet(const std::vector<Gaf::FFrame>& Frames);
     // Frees every sprite sheet, as a level change does; earlier sheets must not be drawn again.
     void ReleaseSpriteSheets();
+    // A sheet of one Width by Height frame whose pixels UpdateVideoSheet replaces, for video.
+    FSpriteSheet CreateVideoSheet(uint32_t Width, uint32_t Height);
+    // Rgba is R, G, B and A bytes for each of the sheet's pixels.
+    void UpdateVideoSheet(const FSpriteSheet& Sheet, std::span<const uint32_t> Rgba);
 
     // Returns false when nothing can be drawn this frame (minimized or swapchain being rebuilt).
     bool BeginFrame();
@@ -78,6 +83,8 @@ private:
         VkDeviceMemory Memory = VK_NULL_HANDLE;
         VkImageView View = VK_NULL_HANDLE;
         VkDescriptorSet DescriptorSet = VK_NULL_HANDLE;
+        uint32_t Width = 0;
+        uint32_t Height = 0;
     };
 
     void CreateInstance();
@@ -87,6 +94,7 @@ private:
     void DestroySwapchainResources();
     uint32_t FindMemoryType(uint32_t TypeBits, VkMemoryPropertyFlags Properties) const;
     uint32_t CreateTexture(uint32_t Width, uint32_t Height, const std::vector<uint32_t>& Rgba);
+    void UploadTexture(VkImage Image, uint32_t Width, uint32_t Height, std::span<const uint32_t> Rgba, VkImageLayout From);
 
     GLFWwindow* Window = nullptr;
     VkInstance Instance = VK_NULL_HANDLE;

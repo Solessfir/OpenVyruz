@@ -1,6 +1,6 @@
 # Audio
 
-The original plays everything through its own channel mixer (`pgaudio.cpp`) on top of DirectSound. The port keeps that mixer's rules in `Source/Pg/Sound` and plays the result through miniaudio; `Source/Game/Audio` holds the game's use of it.
+The original plays everything through its own channel mixer (`pgaudio.cpp`) on top of DirectSound. The port keeps that mixer's rules in `Source/Pg/Sound` and plays the result through miniaudio, whose MP3 decoder also reads the intro's sound; `Source/Game/Audio` holds the game's use of it.
 
 ## Samples
 

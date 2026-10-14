@@ -129,6 +129,9 @@ public:
     void PlayFinaleFlash();
     // LoadFadeSound (0041e560) loads fade.wav, which the menu's closing fade and the game's end play at priority 0xbf.
     void PlayFade();
+    // PlayIntro (004033b0) leaves the intro's sound to MCI, which plays it at full volume while the music is stopped.
+    void PlayMovieSound(std::shared_ptr<const Sound::FSample> Sample);
+    void StopMovieSound();
 
     // PlayerUpdateMotorSound (00445c50), every frame of a level: while the player's motor works its loop plays on channel 4, louder with speed, from a third of the sound-fx volume up; a blocked motor tries start-engine.wav when the player thrusts.
     void UpdateMotor(const FPlayerState& Player, float ThrustMax, bool bBlockedMotor, bool bThrusting);

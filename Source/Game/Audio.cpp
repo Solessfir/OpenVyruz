@@ -267,6 +267,17 @@ void FAudio::PlayFade()
     Mixer.Play(Load("fade.wav"), false, MenuPriority, Sound::FMixer::AllChannels, std::nullopt, 0);
 }
 
+void FAudio::PlayMovieSound(std::shared_ptr<const Sound::FSample> Sample)
+{
+    Mixer.Play(std::move(Sample), false, MusicPriority, ChannelBit(MusicChannel), Sound::MaxVolume, 0);
+}
+
+void FAudio::StopMovieSound()
+{
+    Mixer.Stop(ChannelBit(MusicChannel));
+    Mixer.SetVolume(MusicChannel, Settings.MusicVolume);
+}
+
 void FAudio::PlayFinaleFlash()
 {
     Mixer.Play(Load("electric.wav"), false, MenuPriority, Sound::FMixer::AllChannels, std::nullopt, 0);

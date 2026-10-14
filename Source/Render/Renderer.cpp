@@ -501,41 +501,10 @@ uint32_t FRenderer::FindMemoryType(const uint32_t TypeBits, const VkMemoryProper
     std::exit(1);
 }
 
-uint32_t FRenderer::CreateTexture(const uint32_t Width, const uint32_t Height, const std::vector<uint32_t>& Rgba)
+// Staging copy through a one-off command buffer that waits for the queue: textures are uploaded while loading, and video frames 30 times a second.
+void FRenderer::UploadTexture(const VkImage Image, const uint32_t Width, const uint32_t Height, const std::span<const uint32_t> Rgba, const VkImageLayout From)
 {
-    if (Textures.size() >= MaxTextures)
-    {
-        std::fprintf(stderr, "Texture limit (%u) reached\n", MaxTextures);
-        std::exit(1);
-    }
-
-    FTexture Texture;
-    const VkImageCreateInfo ImageInfo{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_UNORM,
-        .extent = { Width, Height, 1 },
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    };
-    Check(vkCreateImage(Device, &ImageInfo, nullptr, &Texture.Image), "vkCreateImage");
-
-    VkMemoryRequirements ImageRequirements;
-    vkGetImageMemoryRequirements(Device, Texture.Image, &ImageRequirements);
-    const VkMemoryAllocateInfo ImageAlloc{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = ImageRequirements.size,
-        .memoryTypeIndex = FindMemoryType(ImageRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-    };
-    Check(vkAllocateMemory(Device, &ImageAlloc, nullptr, &Texture.Memory), "vkAllocateMemory");
-    vkBindImageMemory(Device, Texture.Image, Texture.Memory, 0);
-
-    // Staging copy through a one-off command buffer; texture uploads only happen while loading.
-    const VkDeviceSize ByteSize = Rgba.size() * sizeof(uint32_t);
+    const VkDeviceSize ByteSize = Rgba.size_bytes();
     VkBuffer Staging;
     VkDeviceMemory StagingMemory;
     const VkBufferCreateInfo BufferInfo{
@@ -571,14 +540,15 @@ uint32_t FRenderer::CreateTexture(const uint32_t Width, const uint32_t Height, c
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
     vkBeginCommandBuffer(Cmd, &BeginInfo);
-    TransitionImage(Cmd, Texture.Image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    const bool bSampled = From == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    TransitionImage(Cmd, Image, From, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, bSampled ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_2_NONE,
+        bSampled ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     const VkBufferImageCopy Region{
         .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
         .imageExtent = { Width, Height, 1 },
     };
-    vkCmdCopyBufferToImage(Cmd, Staging, Texture.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &Region);
-    TransitionImage(Cmd, Texture.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    vkCmdCopyBufferToImage(Cmd, Staging, Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &Region);
+    TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     vkEndCommandBuffer(Cmd);
     const VkSubmitInfo SubmitInfo{
@@ -591,6 +561,44 @@ uint32_t FRenderer::CreateTexture(const uint32_t Width, const uint32_t Height, c
     vkFreeCommandBuffers(Device, CommandPool, 1, &Cmd);
     vkDestroyBuffer(Device, Staging, nullptr);
     vkFreeMemory(Device, StagingMemory, nullptr);
+}
+
+uint32_t FRenderer::CreateTexture(const uint32_t Width, const uint32_t Height, const std::vector<uint32_t>& Rgba)
+{
+    if (Textures.size() >= MaxTextures)
+    {
+        std::fprintf(stderr, "Texture limit (%u) reached\n", MaxTextures);
+        std::exit(1);
+    }
+
+    FTexture Texture;
+    const VkImageCreateInfo ImageInfo{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .extent = { Width, Height, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    Check(vkCreateImage(Device, &ImageInfo, nullptr, &Texture.Image), "vkCreateImage");
+
+    VkMemoryRequirements ImageRequirements;
+    vkGetImageMemoryRequirements(Device, Texture.Image, &ImageRequirements);
+    const VkMemoryAllocateInfo ImageAlloc{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = ImageRequirements.size,
+        .memoryTypeIndex = FindMemoryType(ImageRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+    };
+    Check(vkAllocateMemory(Device, &ImageAlloc, nullptr, &Texture.Memory), "vkAllocateMemory");
+    vkBindImageMemory(Device, Texture.Image, Texture.Memory, 0);
+
+    UploadTexture(Texture.Image, Width, Height, Rgba, VK_IMAGE_LAYOUT_UNDEFINED);
+    Texture.Width = Width;
+    Texture.Height = Height;
 
     const VkImageViewCreateInfo ViewInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -690,6 +698,32 @@ FSpriteSheet FRenderer::CreateSpriteSheet(const std::vector<Gaf::FFrame>& Frames
     }
     Sheet.Texture = CreateTexture(SheetWidth, SheetHeight, Rgba);
     return Sheet;
+}
+
+FSpriteSheet FRenderer::CreateVideoSheet(const uint32_t Width, const uint32_t Height)
+{
+    FSpriteSheet Sheet;
+    Sheet.Texture = CreateTexture(Width, Height, std::vector<uint32_t>(size_t{ Width } * Height, 0));
+    Sheet.Frames.push_back({ .U0 = 0.f, .V0 = 0.f, .U1 = 1.f, .V1 = 1.f, .Width = Width, .Height = Height });
+    return Sheet;
+}
+
+void FRenderer::UpdateVideoSheet(const FSpriteSheet& Sheet, const std::span<const uint32_t> Rgba)
+{
+    if (Sheet.Texture >= Textures.size())
+    {
+        return;
+    }
+
+    const FTexture& Texture = Textures[Sheet.Texture];
+    if (Rgba.size() != size_t{ Texture.Width } * Texture.Height)
+    {
+        return;
+    }
+
+    // ponytail: waits for the frames in flight to let go of the texture; a texture per frame in flight if this ever shows.
+    vkDeviceWaitIdle(Device);
+    UploadTexture(Texture.Image, Texture.Width, Texture.Height, Rgba, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
 bool FRenderer::BeginFrame()

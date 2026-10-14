@@ -7,10 +7,12 @@
 #include "Game/Session.h"
 #include "Game/Loop.h"
 #include "Game/Panel.h"
+#include "Pg/Avi.h"
 #include "Pg/File.h"
 #include "Pg/Font.h"
 #include "Pg/Tga.h"
 #include "Pg/Gaf.h"
+#include "Pg/Indeo5.h"
 #include "Pg/ResourceArchive.h"
 #include "Pg/Sound.h"
 #include "Render/Renderer.h"
@@ -1570,6 +1572,182 @@ void ShowSlides(GLFWwindow* const Window, FRenderer& Renderer, const std::filesy
     Renderer.ReleaseSpriteSheets();
 }
 
+// Intro.avi beside the archive, whatever its case (IntroPresent at 00403370).
+std::optional<std::filesystem::path> FindIntro(const std::filesystem::path& DataFolder)
+{
+    std::error_code Error;
+    for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(DataFolder, Error))
+    {
+        std::string Name = Entry.path().filename().string();
+        std::ranges::transform(Name, Name.begin(), [](const unsigned char Character) { return char(std::tolower(Character)); });
+        if (Name == "intro.avi")
+        {
+            return Entry.path();
+        }
+    }
+
+    return std::nullopt;
+}
+
+// The intro's file and its container, whose frames point into the file.
+struct FIntro
+{
+    std::vector<uint8_t> File;
+    Avi::FMovie Movie;
+};
+
+std::unique_ptr<FIntro> LoadIntro(const std::filesystem::path& DataFolder)
+{
+    const std::optional<std::filesystem::path> Path = FindIntro(DataFolder);
+    std::ifstream Stream = Path ? std::ifstream(*Path, std::ios::binary) : std::ifstream();
+    if (!Stream)
+    {
+        return nullptr;
+    }
+
+    auto Intro = std::make_unique<FIntro>();
+    Intro->File.assign(std::istreambuf_iterator<char>(Stream), {});
+    std::optional<Avi::FMovie> Movie = Avi::Read(Intro->File);
+    if (!Movie || Movie->VideoCompression != Avi::FourCc("IV50") || Movie->Frames.empty() || Movie->Width == 0 || Movie->Height == 0)
+    {
+        return nullptr;
+    }
+
+    Intro->Movie = std::move(*Movie);
+    return Intro;
+}
+
+// WAVE_FORMAT_MPEGLAYER3, the intro's sound.
+constexpr uint16_t Mp3Format = 0x55;
+
+// PlayIntro at 004033b0: Intro.avi through MCI's avivideo device (AviOpen at 0047c6f0) with the music stopped, until it ends or a key goes down.
+// AviOpen fits the video to the screen with its aspect kept and centres it, but puts the right edge at left + width - 5, so it shows 4 pixels narrower: 636x360 at (0, 60).
+void PlayIntro(GLFWwindow* const Window, FRenderer& Renderer, const std::filesystem::path& DataFolder)
+{
+    const std::unique_ptr<FIntro> Intro = LoadIntro(DataFolder);
+    if (!Intro)
+    {
+        std::fprintf(stderr, "Cannot play the intro.\n");
+        return;
+    }
+
+    const Avi::FMovie& Movie = Intro->Movie;
+    const bool bMusic = GameAudio && GameAudio->GetMusicTrack() != 0;
+    if (GameAudio)
+    {
+        GameAudio->RestoreMusic();
+        if (std::optional<Sound::FSample> Sound = Movie.SoundFormat == Mp3Format ? Sound::DecodeMp3(Movie.Sound) : std::nullopt)
+        {
+            GameAudio->PlayMovieSound(std::make_shared<const Sound::FSample>(std::move(*Sound)));
+        }
+    }
+
+    constexpr int32_t RightEdgeShortfall = 4;
+    const bool bFitHeight = ScreenHeight / float(Movie.Height) < ScreenWidth / float(Movie.Width);
+    const int32_t FitWidth = bFitHeight ? int32_t(ScreenHeight * float(Movie.Width) / float(Movie.Height)) : int32_t(ScreenWidth);
+    const int32_t FitHeight = bFitHeight ? int32_t(ScreenHeight) : int32_t(ScreenWidth * float(Movie.Height) / float(Movie.Width));
+    const float Left = float((int32_t(ScreenWidth) - FitWidth) / 2);
+    const float Top = float((int32_t(ScreenHeight) - FitHeight) / 2);
+    const float ScaleX = float(FitWidth - RightEdgeShortfall) / float(Movie.Width);
+    const float ScaleY = float(FitHeight) / float(Movie.Height);
+
+    constexpr uint64_t MicrosecondsPerMillisecond = 1000;
+    Indeo5::FDecoder Decoder;
+    const FSpriteSheet Sheet = Renderer.CreateVideoSheet(Movie.Width, Movie.Height);
+    std::vector<uint32_t> Pixels(size_t{ Movie.Width } * Movie.Height);
+    FInputPress Input(Window);
+    const uint32_t Start = ClockMilliseconds();
+    size_t Decoded = 0;
+    while (!glfwWindowShouldClose(Window))
+    {
+        glfwPollEvents();
+        if (Input.Poll())
+        {
+            break;
+        }
+
+        // MCI keeps the picture on time with the sound, dropping frames behind it.
+        const size_t Due = size_t(uint64_t(ClockMilliseconds() - Start) * MicrosecondsPerMillisecond / Movie.FrameMicroseconds) + 1;
+        if (Due > Movie.Frames.size())
+        {
+            break;
+        }
+
+        bool bNewPicture = false;
+        std::expected<void, std::string> Result;
+        for (; Decoded < Due && Result; ++Decoded)
+        {
+            Result = Decoder.Decode(Movie.Frames[Decoded]);
+            bNewPicture = bNewPicture || !Movie.Frames[Decoded].empty();
+        }
+
+        if (!Result)
+        {
+            std::fprintf(stderr, "Intro frame %zu: %s\n", Decoded - 1, Result.error().c_str());
+            break;
+        }
+
+        if (bNewPicture && Decoder.GetWidth() == Movie.Width && Decoder.GetHeight() == Movie.Height)
+        {
+            Decoder.ConvertToRgba(Pixels);
+            Renderer.UpdateVideoSheet(Sheet, Pixels);
+        }
+
+        if (Renderer.BeginFrame())
+        {
+            Renderer.DrawSprite(Sheet, 0, Left, Top, false, false, ESpriteBlend::Opaque, ScaleX, ScaleY);
+            Renderer.EndFrame();
+        }
+    }
+
+    if (GameAudio)
+    {
+        GameAudio->StopMovieSound();
+        if (bMusic)
+        {
+            GameAudio->StartMusic();
+        }
+    }
+
+    Renderer.ReleaseSpriteSheets();
+}
+
+// Decodes every frame of Intro.avi, checking each band against its checksum, and its sound.
+int VerifyIntro(const std::filesystem::path& DataFolder)
+{
+    const std::unique_ptr<FIntro> Intro = LoadIntro(DataFolder);
+    if (!Intro)
+    {
+        std::printf("Intro: cannot read Intro.avi\n");
+        return 1;
+    }
+
+    Indeo5::FDecoder Decoder;
+    size_t Pictures = 0;
+    for (size_t Index = 0; Index < Intro->Movie.Frames.size(); ++Index)
+    {
+        if (const std::expected<void, std::string> Result = Decoder.Decode(Intro->Movie.Frames[Index]); !Result)
+        {
+            std::printf("Intro: frame %zu: %s\n", Index, Result.error().c_str());
+            return 1;
+        }
+
+        Pictures += !Intro->Movie.Frames[Index].empty();
+    }
+
+    const std::optional<Sound::FSample> Sound = Intro->Movie.SoundFormat == Mp3Format ? Sound::DecodeMp3(Intro->Movie.Sound) : std::nullopt;
+    if (!Sound || Sound->Rate == 0)
+    {
+        std::printf("Intro: cannot decode the sound\n");
+        return 1;
+    }
+
+    constexpr double MicrosecondsPerSecond = 1e6;
+    std::printf("Intro: %zu frames, %zu pictures, %ux%u, %.1f s of picture and %.1f s of sound\n", Intro->Movie.Frames.size(), Pictures, Decoder.GetWidth(),
+        Decoder.GetHeight(), double(Intro->Movie.Frames.size()) * Intro->Movie.FrameMicroseconds / MicrosecondsPerSecond, double(Sound->FrameCount()) / Sound->Rate);
+    return 0;
+}
+
 // The score table (ScoreShowTable at 00401c40 with ScoreDrawLoop at 00401670): score.gaf, then the table, until a key or mouse button goes down.
 // Record, when given, joins vz.sco first (SaveScores at 0043e470 with its second argument set), and its row is brightened.
 void ShowScores(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, const std::optional<FScoreRecord>& Record)
@@ -1640,7 +1818,7 @@ void RunOptionsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuAr
 }
 
 // MenuExtras at 00427820, the extras: Scores, Credits, Intro, Slide Show while vz-slide.rsc is there, and Demo, then Back, the default.
-// The original's Russian build prints this menu's title and its Scores and Intro items in Russian even in English. ponytail: the scores table, the intro and demo is played by the main menu's caller.
+// The original's Russian build prints this menu's title and its Scores and Intro items in Russian even in English. The demo is played by the main menu's caller.
 bool RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random,
     const std::filesystem::path& DataFolder)
 {
@@ -1667,7 +1845,11 @@ bool RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchi
         .Bottom = int32_t(ScreenHeight),
         .StepY = MenuStepY,
         .Title = "Extras",
-        .Items = { { .Text = "Scores" }, { .Text = "Credits" }, { .Text = "Intro", .Help = "Intro animation file is not present." } },
+        .Items = {
+            { .Text = "Scores" },
+            { .Text = "Credits" },
+            { .Text = "Intro", .Help = FindIntro(DataFolder) ? "Select to view intro animation." : "Intro animation file is not present." },
+        },
     };
     if (bSlides)
     {
@@ -1699,6 +1881,11 @@ bool RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchi
         else if (*Item == CreditsItem)
         {
             ShowCredits(Window, Renderer, Archive, Art);
+        }
+        else if (*Item == IntroItem && FindIntro(DataFolder))
+        {
+            PlayIntro(Window, Renderer, DataFolder);
+            Sheets = CreateMenuSheets(Renderer, Art);
         }
         else if (*Item == SlidesItem && bSlides)
         {
@@ -1767,8 +1954,14 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
             return EMenuChoice::Quit;
         }
 
+        // VzMenuLoop's case 10 plays the intro before the demo, unless Extras' Demo set session +0x20d0 bit 0x2000, which it then clears.
         if (*Item == IdleDemo)
         {
+            if (FindIntro(DataFolder))
+            {
+                PlayIntro(Window, Renderer, DataFolder);
+            }
+
             return EMenuChoice::Demo;
         }
 
@@ -3762,6 +3955,7 @@ int main(const int ArgCount, char** const Args)
     bool bVerifyGafs = false;
     bool bVerifyLevels = false;
     bool bVerifyGame = false;
+    bool bVerifyIntro = false;
     // Development aid: --level and --start skip the main menu at startup.
     bool bSkipMenu = false;
     // Development aid: --dump-gaf PATH lists an archive GAF's animations with their frame counts and durations.
@@ -3781,6 +3975,10 @@ int main(const int ArgCount, char** const Args)
         else if (std::strcmp(Args[Index], "--verify-game") == 0)
         {
             bVerifyGame = true;
+        }
+        else if (std::strcmp(Args[Index], "--verify-intro") == 0)
+        {
+            bVerifyIntro = true;
         }
         else if (std::strcmp(Args[Index], "--auto-fire") == 0)
         {
@@ -3872,6 +4070,10 @@ int main(const int ArgCount, char** const Args)
     if (bVerifyGafs)
     {
         return VerifyGafs(Archive);
+    }
+    if (bVerifyIntro)
+    {
+        return VerifyIntro(DataPath->parent_path());
     }
     if (DumpGafPath)
     {
@@ -4127,6 +4329,12 @@ int main(const int ArgCount, char** const Args)
     // VzRun's loop (VzMenuLoop at 00447820): the main menu, then levels until a menu or the game's end brings it back. New Game starts at LevelPath.
     int Result = 0;
     bool bMenu = MenuArt && !bSkipMenu;
+    // VzRun plays the intro before the main menu.
+    if (bMenu && FindIntro(DataPath->parent_path()))
+    {
+        PlayIntro(Window, Renderer, DataPath->parent_path());
+    }
+
     for (std::string Path = LevelPath;;)
     {
         if (bMenu)
