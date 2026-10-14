@@ -220,7 +220,7 @@ struct FSurpriseState
     FCollisionPoint Body;
     int32_t InvisibleTimer = 0;
     std::optional<FCollisionPoint> ReturnStart;
-    // Session +0x2200 and +0x2204: the screen shake a trap or Destroy-around starts.
+    // Session +0x2200 and +0x2204: the screen shake a trap, Destroy-around or a blast on the player starts.
     int ShakeX = 0;
     int ShakeY = 0;
 };

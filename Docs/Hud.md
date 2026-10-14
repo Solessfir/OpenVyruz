@@ -94,11 +94,12 @@ Every one replaces a message at its position. The lift and gate texts come from 
 
 ## Port
 
+`PanelDraw` (`00435000`) would offset every part of the panel by the pair at session `+0x21f8` when it is not zero, but nothing writes it, so the panel never shakes; the screen shake moves only the view.
+
 `MessagesUpdate` also draws a type 1, a still bitmap, but nothing creates one: `MessageCreate` is called only by `MessageAddText` (type 3) and `MessageAddAnimation` (`004310b0`, type 2), so the port leaves it out.
 
 `Source/Pg/Font` loads and lays out fonts. `Source/Game/Panel` keeps the slots and returns the sprites to draw. `Source/Game/Message` keeps the floating messages, which the panel prints. The window draws them after the objects at the 640x480 corners; the sprite shader multiplies by the diffuse colour and adds the specular one.
 
 Not ported yet:
 
-- The screen shake offset (session `+0x21f8`), which moves every part of the panel.
 - The map's sounds, and its picture is point-sampled rather than stretched block by block.

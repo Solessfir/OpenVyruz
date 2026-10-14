@@ -2810,7 +2810,7 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
 
 // AreaDamage at 0043cb20: every live object near the blast takes damage falling off linearly over Damage-zone collision units.
 // A Player-direct-fire-only object only takes the blasts of the player's own shots (FUN_0043c990 on the blast's source).
-void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float Damage, const float Zone, std::vector<FObjectBody>& Bodies,
+void AreaDamage(FCombat& Combat, const FCollisionPoint Center, const FWorldCell Cell, const float Damage, const float Zone, std::vector<FObjectBody>& Bodies,
     const FPlayerTarget& Player, const bool bByPlayer)
 {
     if (Damage == 0.f || Zone == 0.f)
@@ -2853,30 +2853,44 @@ void AreaDamage(const FCollisionPoint Center, const FWorldCell Cell, const float
         }
     }
 
-    if (0.f < Player.Inventory.Energy)
+    // The scan leaves out an invulnerable player (object flag 0x800000) altogether, so it neither flashes nor shakes.
+    if (0.f < Player.Inventory.Energy && !Player.Inventory.Surprises.bInvulnerable)
     {
         if (const std::optional<float> Amount = Falloff(Player.State.Position, Player.State.Center))
         {
-            if (!Player.State.bInvisible && !Player.Inventory.Surprises.bInvulnerable)
+            if (!Player.State.bInvisible)
             {
                 ApplyDamage(Player.Inventory, *Amount);
                 Player.Inventory.bHit = true;
             }
 
-            // AreaDamage at 0043cb20: a blast of 300 or more flashes the screen (60, or 30 below 1000) and makes a living player cry out three times in eight by the game clock.
+            // The damage that reaches the player, not the blast's, decides the shake, flash and cry.
+            // 200 or more shakes the screen by RandomRange(-n, n) twice from the Misc stream (StartScreenShake at 0043d100 into session +0x2200), n = damage / 100 + 8 up to 32, except during the finale.
+            constexpr float ShakeDamage = 200.f;
+            constexpr int ShakeBase = 8;
+            constexpr int ShakeDivisor = 100;
+            constexpr int ShakeLimit = 0x20;
+            if (ShakeDamage <= *Amount && !Combat.bFinale)
+            {
+                const int Range = std::min(int(*Amount) / ShakeDivisor + ShakeBase, ShakeLimit);
+                Player.Inventory.Surprises.ShakeX = Combat.MiscRandom.Range(-Range, Range);
+                Player.Inventory.Surprises.ShakeY = Combat.MiscRandom.Range(-Range, Range);
+            }
+
+            // 300 or more flashes the screen (60, or 30 below 1000) and makes a living player cry out three times in eight by the game clock.
             constexpr float CryDamage = 300.f;
             constexpr float StrongBlast = 1000.f;
             constexpr int32_t StrongFlash = 60;
             constexpr int32_t WeakFlash = 30;
             constexpr int32_t BlastFlashLimit = 100;
-            if (CryDamage <= Damage && 0.f < Player.Inventory.Energy)
+            if (CryDamage <= *Amount && 0.f < Player.Inventory.Energy)
             {
-                PushGamma(Player.Inventory.Surprises.Gamma, Damage < StrongBlast ? WeakFlash : StrongFlash, BlastFlashLimit);
+                PushGamma(Player.Inventory.Surprises.Gamma, *Amount < StrongBlast ? WeakFlash : StrongFlash, BlastFlashLimit);
             }
 
             constexpr std::array Cries = { EVoice::Ooh, EVoice::Looser, EVoice::SadMan };
             constexpr uint32_t CryMask = 7;
-            if (CryDamage <= Damage && 0.f < Player.Inventory.Energy)
+            if (CryDamage <= *Amount && 0.f < Player.Inventory.Energy)
             {
                 if (const uint32_t Pick = GetVoiceClock() & CryMask; Pick < Cries.size())
                 {
@@ -6540,7 +6554,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
             // AmmoHit at 0043d7d0 blasts around the shot's last committed centre, then AmmoImpact (0043d350) shoves and damages what it struck.
             const bool bPlayerShot = Shot.Owner == Player.ObjectIndex;
-            AreaDamage(Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies, Player, bPlayerShot);
+            AreaDamage(Combat, Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies, Player, bPlayerShot);
             // AreaDamage opens a 500 ms window (session +0x2748) on the first hunter a player's blast finishes off and counts each one after it.
             constexpr int32_t FastKillWindowMilliseconds = 0x1f4;
             for (size_t Index = 0; Index < WasAlive.size(); ++Index)
@@ -6758,7 +6772,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             if (bBlast)
             {
                 Effect.BlastTimer = -1;
-                AreaDamage(CollisionFromWorld(Effect.Position), CellOf(Effect.Position), Effect.Damage, Effect.Zone, Bodies, Player, false);
+                AreaDamage(Combat, CollisionFromWorld(Effect.Position), CellOf(Effect.Position), Effect.Damage, Effect.Zone, Bodies, Player, false);
                 Effect.Damage = 0.f;
             }
         }

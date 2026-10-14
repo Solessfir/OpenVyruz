@@ -5521,7 +5521,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         CameraX = std::clamp(CameraX, 0.0, std::max(0.0, double(MapWidth - ScreenWidth)));
         CameraY = std::clamp(CameraY, 0.0, std::max(0.0, double(MapHeight - ScreenHeight)));
-        // EngineRunLevel moves a trap's or Destroy-around's screen shake (session +0x2200 and +0x2204) one step toward still and flips its side every frame, and adds it to the view after the clamp.
+        // EngineRunLevel moves the screen shake of a trap, Destroy-around or a blast on the player (session +0x2200 and +0x2204) one step toward still and flips its side every frame, and adds it to the view after the clamp.
         const auto StepShake = [](int& Offset)
         {
             if (Offset != 0)

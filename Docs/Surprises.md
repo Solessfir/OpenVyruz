@@ -64,7 +64,7 @@ Invisibility sets object flag 8 and leaves a passable copy of the player where i
 
 - **Darken** loads `Data\Object\FX\darkzone.gaf` and sets session `+0x20d0` bit `0x20`. `EngineRunLevel` then draws the level only inside a 376x309 window around the player (8 pixels left and 16 up of centring it, inset by 2), leaves the rest black, and stretches the GAF's frame, a 128x103 quarter in draw mode 8 (inverse source colour, white toward the corner), over the window's four quarters, mirrored outward, which leaves an oval of light. The player and the `Is-light` objects are drawn again over the dark. With Gamma FX it also keeps the gamma ramp and sets the user's gamma, which holds while it lasts ([MainLoop.md](MainLoop.md#gamma-flashes)).
 - **Extasy** sets object flag `0x1000000`, which `ReadPlayerInput` (`00438540`) reads as full forward thrust whatever the keys say.
-- **Screen shake**: a trap draws `RandomRange(-16, 16)` and Destroy-around `RandomRange(-32, 32)` twice into session `+0x2200` and `+0x2204`. Each frame `EngineRunLevel` moves each one step toward zero, flips its sign, and adds it to the view offset after the clamp to the level.
+- **Screen shake**: a trap draws `RandomRange(-16, 16)` and Destroy-around `RandomRange(-32, 32)` twice into session `+0x2200` and `+0x2204`; a blast on the player does too ([Combat.md](Combat.md#knocks)). Each frame `EngineRunLevel` moves each one step toward zero, flips its sign, and adds it to the view offset after the clamp to the level.
 - **Gamma flashes**: see [MainLoop.md](MainLoop.md#gamma-flashes).
 
 ## Port

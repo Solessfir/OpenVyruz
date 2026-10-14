@@ -98,6 +98,8 @@ While the timer runs, `EngineRunLevel` reads no action keys, and `FUN_00445dd0` 
 
 `AreaDamage` scans the grid cells within the zone and damages every live object whose collision centre lies within `Damage-zone` units: the full damage at distance zero, otherwise `(zone - trunc(sqrt(trunc(d^2)))) / zone * damage`.
 
+It leaves out an invulnerable player. For the player, the damage that reaches it, not the blast's, decides the rest: 200 or more shakes the screen (`StartScreenShake`, `0043d100`, into session `+0x2200`) by `RandomRange(-n, n)` twice from the Misc stream, `n = trunc(damage) / 100 + 8` up to 32, unless the finale has started; 300 or more flashes the screen, 60 or 30 below 1000, and makes a living player cry out.
+
 `ApplyDamage` (`0043ca30`) takes damage from the shield first; when the shield breaks, the rest goes to energy and the shield takes back the class's `Shield [Min]` (class `+0x6c`; the block's `Initial`, `Min` and `Max` fill `+0x68` to `+0x70`). Every class's minimum is zero but four of `underground\item.3dc`'s, whose shield equals its maximum, so it refills whole each time it breaks. An object whose energy reaches zero is destroyed in its next update. Cops, generators, walkers, burners, jeeps, rollers, helicopters, turrets, spiders and tanks pay their `Reward` to the player.
 
 ## Effects and explosions
