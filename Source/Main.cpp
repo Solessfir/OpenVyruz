@@ -974,6 +974,33 @@ void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std
     std::stable_sort(Sprites.Sprites.begin(), Sprites.Sprites.end(), [](const FObjectSprite& A, const FObjectSprite& B) { return SpriteDrawsBefore(A.Depth, B.Depth); });
 }
 
+// The original took the mouse for itself through DirectInput, so the cursor never left the game.
+// The port keeps it inside the window (GLFW lets go while the window is unfocused) and hides it with a blank image while the game draws its own.
+GLFWcursor* BlankCursor = nullptr;
+bool bSystemCursorShown = true;
+// Windows can drop the confinement on some focus changes, so it is applied again whenever the game becomes active.
+bool bCursorToCapture = true;
+
+void ShowSystemCursor(GLFWwindow* const Window, const bool bShown)
+{
+    if (!BlankCursor)
+    {
+        static std::array<unsigned char, 4> Pixel{};
+        const GLFWimage Image{ .width = 1, .height = 1, .pixels = Pixel.data() };
+        BlankCursor = glfwCreateCursor(&Image, 0, 0);
+    }
+
+    if (bCursorToCapture)
+    {
+        glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        bCursorToCapture = false;
+    }
+
+    glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_CAPTURED);
+    glfwSetCursor(Window, bShown ? nullptr : BlankCursor);
+    bSystemCursorShown = bShown;
+}
+
 uint32_t ClockMilliseconds()
 {
     return uint32_t(ClockNowMilliseconds());
@@ -988,8 +1015,15 @@ void PollEvents(GLFWwindow* const Window)
     { return !glfwWindowShouldClose(Window) && (glfwGetWindowAttrib(Window, GLFW_ICONIFIED) != 0 || glfwGetWindowAttrib(Window, GLFW_FOCUSED) == 0); };
     if (!IsInactive())
     {
+        if (bCursorToCapture)
+        {
+            ShowSystemCursor(Window, bSystemCursorShown);
+        }
+
         return;
     }
+
+    bCursorToCapture = true;
 
     PauseClock(true);
     if (GameAudio)
@@ -1291,7 +1325,7 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
     }
 
     SetScreenCursor(Window, State.CursorX, State.CursorY);
-    glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+    ShowSystemCursor(Window, false);
     // PgPoll reports presses, so a key held from before the menu does nothing.
     // Escape and Backspace choose the default item, Space and Return the selected one, and the left button the one under the cursor.
     static constexpr std::array<int, 7> Keys = { GLFW_KEY_ESCAPE, GLFW_KEY_BACKSPACE, GLFW_KEY_SPACE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_UP, GLFW_KEY_DOWN };
@@ -1375,7 +1409,7 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
         }
     }
 
-    glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    ShowSystemCursor(Window, true);
     Cursor = std::pair(State.CursorX, State.CursorY);
     if (GameAudio && State.Result)
     {
@@ -2682,9 +2716,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     while (!glfwWindowShouldClose(Window))
     {
         PollEvents(Window);
-        if (glfwGetInputMode(Window, GLFW_CURSOR) != GLFW_CURSOR_HIDDEN)
+        if (bSystemCursorShown)
         {
-            glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+            ShowSystemCursor(Window, false);
         }
 
         // EnginePause (0043b8d0): action-pause (P) closes an open map, or freezes the game (session +0x20 bit 0x1000000) under pause.gaf until P again; meanwhile only P is read and the clock's time is dropped.
