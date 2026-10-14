@@ -32,6 +32,20 @@ std::optional<FSample> DecodeMp3(std::span<const uint8_t> File);
 inline constexpr int MaxVolume = 0xffff;
 inline constexpr int MaxPan = 0x7fff;
 
+// SoundOpen's output format (0045f300): its flags pick 8 or 16 bits, 11025 or 22050 Hz, and mono or stereo for DirectSound's primary buffer, which mixes every channel.
+// VzOpenSound (004477e0) opens 16 bits, 22050 Hz, stereo.
+struct FOutputFormat
+{
+    static constexpr uint32_t LowRate = 11025;
+    static constexpr uint32_t HighRate = 22050;
+
+    bool bEightBits = false;
+    uint32_t Rate = HighRate;
+    bool bMono = false;
+
+    bool operator==(const FOutputFormat&) const = default;
+};
+
 // SoundOpen (0045f300) sets up 16 channels; each plays one sample at a time.
 class FMixer
 {
@@ -44,8 +58,8 @@ public:
     FMixer(const FMixer&) = delete;
     FMixer& operator=(const FMixer&) = delete;
 
-    // Opens the default output device; without one every call is ignored.
-    bool Open();
+    // Opens the default output device in the format, or reopens it in a new one with every channel kept; without a device every call is ignored.
+    bool Open(const FOutputFormat& InFormat);
 
     // SoundPlay (0045f7e0): the first idle channel of Mask, else the one playing the lowest priority not above Priority (the one closest to its end on a tie).
     // Volume and pan replace the channel's own when given.
@@ -80,12 +94,14 @@ private:
     struct FDevice;
 
     static void Mix(FMixer& Mixer, float* Output, uint32_t FrameCount);
+    void CloseDevice();
     // Time left in a playing channel, the tie breaker between equal priorities (channel +0x24, which SoundPoll (0045f6b0) keeps).
     static double SecondsLeft(const FChannel& Channel);
 
     mutable std::mutex Mutex;
     std::array<FChannel, ChannelCount> Channels;
     uint32_t OutputRate = 0;
+    FOutputFormat Format;
     uint32_t NextSerial = 1;
     bool bPaused = false;
     std::unique_ptr<FDevice> Device;

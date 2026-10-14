@@ -2038,9 +2038,7 @@ struct FSettings
     // ConfigSave writes use-extended-movie-player only when the file had it (option flag 0x100 cleared).
     std::optional<bool> bExtendedMoviePlayer;
     // The Audio menu's sound format (session +0x1030, 0x2a0000 from VzRun): 16 or 8 bits, 22050 or 11025 Hz, stereo or mono. Never saved.
-    bool bEightBits = false;
-    bool bLowFrequency = false;
-    bool bMono = false;
+    Sound::FOutputFormat SoundFormat;
 };
 
 // FUN_00401060: the names vzconf.txt gives the languages and voice types.
@@ -2809,14 +2807,12 @@ void RunAudioMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt&
     };
     constexpr int EightBits = 8;
     constexpr int SixteenBits = 16;
-    constexpr int LowFrequency = 0x2b11;
-    constexpr int HighFrequency = 0x5622;
     FMenu Menu = OptionsMenu({}, "/Audio");
     const auto Update = [&]
     {
-        Menu.Items[QualityItem].Text = Format("Quality : %d bits", Settings.bEightBits ? EightBits : SixteenBits);
-        Menu.Items[FrequencyItem].Text = Format("Frequency : %d Hz", Settings.bLowFrequency ? LowFrequency : HighFrequency);
-        Menu.Items[ChannelsItem].Text = Settings.bMono ? "Channels : Mono" : "Channels : Stereo";
+        Menu.Items[QualityItem].Text = Format("Quality : %d bits", Settings.SoundFormat.bEightBits ? EightBits : SixteenBits);
+        Menu.Items[FrequencyItem].Text = Format("Frequency : %d Hz", Settings.SoundFormat.Rate);
+        Menu.Items[ChannelsItem].Text = Settings.SoundFormat.bMono ? "Channels : Mono" : "Channels : Stereo";
     };
     Menu.Items = { { .Text = "Music" }, { .Text = "Sound FX, Voices" }, {}, {}, {} };
     AddBack(Menu);
@@ -2832,17 +2828,27 @@ void RunAudioMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt&
         {
             RunEffectsMenu(Window, Renderer, Art, Sheets, Random, Settings);
         }
-        else if (*Item == QualityItem)
+        else if (*Item == QualityItem || *Item == FrequencyItem || *Item == ChannelsItem)
         {
-            Settings.bEightBits = !Settings.bEightBits;
-        }
-        else if (*Item == FrequencyItem)
-        {
-            Settings.bLowFrequency = !Settings.bLowFrequency;
-        }
-        else if (*Item == ChannelsItem)
-        {
-            Settings.bMono = !Settings.bMono;
+            Sound::FOutputFormat& SoundFormat = Settings.SoundFormat;
+            if (*Item == QualityItem)
+            {
+                SoundFormat.bEightBits = !SoundFormat.bEightBits;
+            }
+            else if (*Item == FrequencyItem)
+            {
+                SoundFormat.Rate = SoundFormat.Rate == Sound::FOutputFormat::LowRate ? Sound::FOutputFormat::HighRate : Sound::FOutputFormat::LowRate;
+            }
+            else
+            {
+                SoundFormat.bMono = !SoundFormat.bMono;
+            }
+
+            // The original reopens the sound only for Channels, so its Quality and Frequency wait for that; the port reopens it for each.
+            if (GameAudio)
+            {
+                GameAudio->SetOutputFormat(SoundFormat);
+            }
         }
 
         Update();
@@ -6039,7 +6045,7 @@ int main(const int ArgCount, char** const Args)
 
     // VzRun at 00446e20 opens the sound (VzOpenSound (004477e0)) and applies the volumes; the music waits for the story page and the intro.
     FAudio Audio(Archive);
-    if (Audio.Open())
+    if (Audio.Open(Settings.SoundFormat))
     {
         GameAudio = &Audio;
         Audio.Apply(Settings.Audio);

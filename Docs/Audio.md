@@ -15,7 +15,7 @@ The original plays everything through its own channel mixer (`pgaudio.cpp`) on t
 - **Volume and pan** (`SoundSetVolume`, `0045fe00`; `SoundSetPan`, `0045ff00`) stay with the channel for later samples. `SoundStop` (`0045fa00`) stops a mask of channels and `SoundChannelPlaying` (`0045fb70`) tells whether one plays.
 - **The device layer** (`SoundDeviceOpen`, `0047e9c0`; `SoundDeviceUpdate`, `0047ee10`) turns a volume into a DirectSound attenuation through a table of `volume >> 8` steps: step 0 is silent (-10000), step 255 is full, and step `n` in between is `trunc(873 * ln((n + 1) / 256))` hundredths of a decibel, close to linear amplitude. The pan attenuates the far side by the table entry `255 - (|pan| >> 7)`.
 
-The port mixes the channels itself in miniaudio's callback, resampling each sample linearly to the device rate, with the same table.
+The port mixes the channels itself in miniaudio's callback at the format's rate and channel count, resampling each sample linearly, with the same table; miniaudio converts the mix for the system. As with a DirectSound primary buffer in that format, an 8-bit format truncates the mix to the top byte of each 16-bit value, and a mono one ignores the pan and averages a stereo sample's sides.
 
 ### Positional sounds
 

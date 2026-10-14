@@ -255,21 +255,33 @@ Sound::FMixer::FMixer() = default;
 
 Sound::FMixer::~FMixer()
 {
+    CloseDevice();
+}
+
+void Sound::FMixer::CloseDevice()
+{
     if (Device && Device->bStarted)
     {
         ma_device_uninit(&Device->Device);
     }
+
+    Device.reset();
 }
 
-bool Sound::FMixer::Open()
+bool Sound::FMixer::Open(const FOutputFormat& InFormat)
 {
-    // The original mixed at 22050 Hz (VzOpenSound (004477e0)); the device runs at its own rate and every sample is resampled to it.
-    constexpr uint32_t PreferredRate = 44100;
+    // The mix runs at the primary buffer's rate and channel count, and miniaudio converts it to the system's; an 8-bit buffer is reproduced by truncating the mix.
+    CloseDevice();
+    {
+        const std::scoped_lock Lock(Mutex);
+        Format = InFormat;
+    }
+
     Device = std::make_unique<FDevice>();
     ma_device_config Config = ma_device_config_init(ma_device_type_playback);
     Config.playback.format = ma_format_f32;
-    Config.playback.channels = StereoChannels;
-    Config.sampleRate = PreferredRate;
+    Config.playback.channels = Format.bMono ? MonoChannels : StereoChannels;
+    Config.sampleRate = Format.Rate;
     Config.pUserData = this;
     Config.dataCallback = [](ma_device* const Output, void* const Frames, const void*, const ma_uint32 FrameCount)
     {
@@ -411,8 +423,9 @@ void Sound::FMixer::SetPaused(const bool bInPaused)
 
 void Sound::FMixer::Mix(FMixer& Mixer, float* const Output, const uint32_t FrameCount)
 {
-    std::fill_n(Output, size_t(FrameCount) * StereoChannels, 0.f);
     const std::scoped_lock Lock(Mixer.Mutex);
+    const uint32_t OutputChannels = Mixer.Format.bMono ? MonoChannels : StereoChannels;
+    std::fill_n(Output, size_t(FrameCount) * OutputChannels, 0.f);
     if (Mixer.bPaused)
     {
         return;
@@ -428,8 +441,9 @@ void Sound::FMixer::Mix(FMixer& Mixer, float* const Output, const uint32_t Frame
         const FSample& Sample = *Channel.Sample;
         const float Gain = HundredthsGain(StepHundredths(Channel.Volume >> VolumeShift));
         const int Pan = PanHundredths(Channel.Pan);
-        const float LeftGain = Gain * (Pan > 0 ? HundredthsGain(-Pan) : 1.f);
-        const float RightGain = Gain * (Pan < 0 ? HundredthsGain(Pan) : 1.f);
+        // A mono primary buffer has no sides to pan between.
+        const float LeftGain = Gain * (Pan > 0 && !Mixer.Format.bMono ? HundredthsGain(-Pan) : 1.f);
+        const float RightGain = Gain * (Pan < 0 && !Mixer.Format.bMono ? HundredthsGain(Pan) : 1.f);
         const double Step = double(Sample.Rate) / double(Mixer.OutputRate);
         const size_t SampleFrames = Sample.FrameCount();
         for (uint32_t Frame = 0; Frame < FrameCount; ++Frame)
@@ -455,9 +469,28 @@ void Sound::FMixer::Mix(FMixer& Mixer, float* const Output, const uint32_t Frame
             };
             const float Left = At(First, 0) + (At(Next, 0) - At(First, 0)) * Blend;
             const float Right = At(First, 1) + (At(Next, 1) - At(First, 1)) * Blend;
-            Output[Frame * StereoChannels] += Left * LeftGain;
-            Output[Frame * StereoChannels + 1] += Right * RightGain;
+            if (OutputChannels == MonoChannels)
+            {
+                constexpr float DownmixGain = 0.5f;
+                Output[Frame] += (Left * LeftGain + Right * RightGain) * DownmixGain;
+            }
+            else
+            {
+                Output[Frame * StereoChannels] += Left * LeftGain;
+                Output[Frame * StereoChannels + 1] += Right * RightGain;
+            }
+
             Channel.Position += Step;
+        }
+    }
+
+    if (Mixer.Format.bEightBits)
+    {
+        // Unsigned 8-bit PCM keeps the top byte of each 16-bit value.
+        constexpr float EightBitSteps = 128.f;
+        for (float& Value : std::span(Output, size_t(FrameCount) * OutputChannels))
+        {
+            Value = std::floor(std::clamp(Value, -1.f, 1.f - 1.f / EightBitSteps) * EightBitSteps) / EightBitSteps;
         }
     }
 }

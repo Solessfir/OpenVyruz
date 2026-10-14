@@ -123,9 +123,9 @@ FAudio::~FAudio()
     SetAnimationMixer(nullptr);
 }
 
-bool FAudio::Open()
+bool FAudio::Open(const Sound::FOutputFormat& Format)
 {
-    if (!Mixer.Open())
+    if (!Mixer.Open(Format))
     {
         return false;
     }

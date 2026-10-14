@@ -109,8 +109,10 @@ public:
     FAudio(const FAudio&) = delete;
     FAudio& operator=(const FAudio&) = delete;
 
-    // Opens the output and hands the mixer to the animations; false leaves the game silent.
-    bool Open();
+    // Opens the output in the format and hands the mixer to the animations; false leaves the game silent.
+    bool Open(const Sound::FOutputFormat& Format);
+    // The Audio menu's Quality, Frequency and Channels reopen the output (SoundOpen at 0045f300).
+    void SetOutputFormat(const Sound::FOutputFormat& Format) { Mixer.Open(Format); }
 
     // SoundApplyFxVolume (0042f280) and EngineApplyDisplayAndCursor (0042f2d0): every channel but music and voices plays at the sound-fx volume, or silent with sound-fx off; music and voices take their own volumes while they are on.
     void Apply(const FAudioSettings& InSettings);
