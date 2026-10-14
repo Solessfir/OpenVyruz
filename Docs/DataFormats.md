@@ -412,7 +412,7 @@ The recording was made with the 10 ms demo step cap: a frame of `E` ms produced 
 
 | Extension | Notes |
 |---|---|
-| `.TGA` | Targa images - cutscene slides, story art |
+| `.TGA` | Targa images - cutscene slides, story art. True colour only: uncompressed (type 2) or run-length compressed (type 10), 16-bit A1R5G5B5, 24-bit or 32-bit, rows bottom to top unless descriptor bit `0x20` is set. Run-length packets start with a byte whose top bit repeats the one pixel that follows, else raw pixels follow; its low 7 bits are the count less one. |
 | `.WAV` | Uncompressed PCM |
 | `.TXT` | Localized text, EN/FR pairs |
 

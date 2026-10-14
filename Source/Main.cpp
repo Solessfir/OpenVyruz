@@ -37,6 +37,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace
@@ -1565,12 +1566,11 @@ void ShowCredits(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive
     }
 }
 
-// The slide show (ShowSlides at 00404aa0): vz-slide.rsc's slides\slide-001.tga to slide-031.tga, each centred for up to 4 seconds, round again while any showed, until a key or mouse button goes down.
-// The archive sits beside vz-data.rsc in any case.
-void ShowSlides(GLFWwindow* const Window, FRenderer& Renderer, const std::filesystem::path& DataFolder)
+// vz-slide.rsc's slides (slides\slide-001.tga to slide-031.tga) that decode, in order; none without the archive beside vz-data.rsc.
+// Failed, when given, counts the slides present that do not decode.
+std::vector<Gaf::FFrame> LoadSlides(const std::filesystem::path& DataFolder, size_t* const Failed = nullptr)
 {
     constexpr int LastSlide = 0x1f;
-    constexpr uint32_t SlideMilliseconds = 4000;
     std::optional<std::filesystem::path> SlidePath;
     std::error_code Error;
     for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(DataFolder, Error))
@@ -1583,50 +1583,126 @@ void ShowSlides(GLFWwindow* const Window, FRenderer& Renderer, const std::filesy
         }
     }
 
-    FResourceArchive Slides;
-    if (!SlidePath || !Slides.Open(*SlidePath))
+    std::vector<Gaf::FFrame> Slides;
+    FResourceArchive Archive;
+    if (!SlidePath || !Archive.Open(*SlidePath))
     {
-        std::fprintf(stderr, "Cannot start slide show.\n");
-        return;
+        return Slides;
     }
 
-    FInputPress Input(Window);
-    for (bool bShown = true; bShown;)
+    for (int Slide = 1; Slide <= LastSlide; ++Slide)
     {
-        bShown = false;
-        for (int Slide = 1; Slide <= LastSlide; ++Slide)
+        const std::optional<std::vector<uint8_t>> File = Archive.Read(std::format("slides\\slide-{:03}.tga", Slide));
+        if (std::optional<Gaf::FFrame> Image = File ? LoadTga(*File) : std::nullopt)
         {
-            const std::optional<std::vector<uint8_t>> File = Slides.Read(std::format("slides\\slide-{:03}.tga", Slide));
-            const std::optional<Gaf::FFrame> Image = File ? LoadTga(*File) : std::nullopt;
-            if (!Image)
-            {
-                continue;
-            }
-
-            bShown = true;
-            Renderer.ReleaseSpriteSheets();
-            const FSpriteSheet Sheet = Renderer.CreateSpriteSheet({ *Image });
-            const float X = float((int32_t(ScreenWidth) - int32_t(Image->Width)) / 2);
-            const float Y = float((int32_t(ScreenHeight) - int32_t(Image->Height)) / 2);
-            const uint32_t Start = ClockMilliseconds();
-            while (ClockMilliseconds() - Start < SlideMilliseconds)
-            {
-                PollEvents(Window);
-                if (glfwWindowShouldClose(Window) || Input.Poll())
-                {
-                    Renderer.ReleaseSpriteSheets();
-                    return;
-                }
-
-                if (Renderer.BeginFrame())
-                {
-                    Renderer.DrawSprite(Sheet, 0, X, Y);
-                    Renderer.EndFrame();
-                }
-            }
+            Slides.push_back(std::move(*Image));
+        }
+        else if (File && Failed)
+        {
+            ++*Failed;
         }
     }
 
+    return Slides;
+}
+
+// The mouse wheel's turns since the slide show last looked, which GLFW reports only through a callback.
+double SlideScroll = 0.;
+
+// The slide show (ShowSlides at 00404aa0): the slides, each centred for 4 seconds, round again; in the original any key or mouse button ends it.
+// The port lets the player step through them: the left button, Right or the wheel turned down go to the next slide, the right button, Left or the wheel turned up back to the one before, and Escape ends it.
+// A slide left alone still moves on after 4 seconds.
+void ShowSlides(GLFWwindow* const Window, FRenderer& Renderer, const std::vector<Gaf::FFrame>& Slides)
+{
+    constexpr uint32_t SlideMilliseconds = 4000;
+    if (Slides.empty())
+    {
+        return;
+    }
+
+    enum class EStep : uint8_t
+    {
+        Stay,
+        Next,
+        Back,
+        Exit,
+    };
+    enum EControl : size_t
+    {
+        LeftButton,
+        RightKey,
+        RightButton,
+        LeftKey,
+        EscapeKey,
+        ControlCount,
+    };
+    std::array<bool, ControlCount> WasDown{};
+    const auto ReadStep = [&]
+    {
+        const std::array<bool, ControlCount> Down = {
+            glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS,
+            glfwGetKey(Window, GLFW_KEY_RIGHT) == GLFW_PRESS,
+            glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS,
+            glfwGetKey(Window, GLFW_KEY_LEFT) == GLFW_PRESS,
+            glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS,
+        };
+        const auto Pressed = [&](const EControl Control) { return Down[Control] && !WasDown[Control]; };
+        const double Scroll = std::exchange(SlideScroll, 0.);
+        EStep Step = EStep::Stay;
+        if (Pressed(EscapeKey))
+        {
+            Step = EStep::Exit;
+        }
+        else if (Pressed(LeftButton) || Pressed(RightKey) || Scroll < 0.)
+        {
+            Step = EStep::Next;
+        }
+        else if (Pressed(RightButton) || Pressed(LeftKey) || Scroll > 0.)
+        {
+            Step = EStep::Back;
+        }
+
+        WasDown = Down;
+        return Step;
+    };
+
+    const GLFWscrollfun PreviousScroll = glfwSetScrollCallback(Window, [](GLFWwindow*, double, const double Turn) { SlideScroll += Turn; });
+    SlideScroll = 0.;
+    ReadStep();
+    for (size_t Index = 0; !glfwWindowShouldClose(Window);)
+    {
+        const Gaf::FFrame& Image = Slides[Index];
+        Renderer.ReleaseSpriteSheets();
+        const FSpriteSheet Sheet = Renderer.CreateSpriteSheet({ Image });
+        const float X = float((int32_t(ScreenWidth) - int32_t(Image.Width)) / 2);
+        const float Y = float((int32_t(ScreenHeight) - int32_t(Image.Height)) / 2);
+        const uint32_t Start = ClockMilliseconds();
+        EStep Step = EStep::Stay;
+        while (Step == EStep::Stay && !glfwWindowShouldClose(Window))
+        {
+            PollEvents(Window);
+            Step = ReadStep();
+            if (Step == EStep::Stay && ClockMilliseconds() - Start >= SlideMilliseconds)
+            {
+                Step = EStep::Next;
+            }
+
+            if (Renderer.BeginFrame())
+            {
+                Renderer.DrawSprite(Sheet, 0, X, Y);
+                Renderer.EndFrame();
+            }
+        }
+
+        if (Step == EStep::Exit)
+        {
+            break;
+        }
+
+        Index = Step == EStep::Back ? (Index + Slides.size() - 1) % Slides.size() : (Index + 1) % Slides.size();
+    }
+
+    glfwSetScrollCallback(Window, PreviousScroll);
     Renderer.ReleaseSpriteSheets();
 }
 
@@ -1887,14 +1963,9 @@ bool RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchi
         IntroItem,
         SlidesItem,
     };
-    std::error_code Error;
-    bool bSlides = false;
-    for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(DataFolder, Error))
-    {
-        std::string Name = Entry.path().filename().string();
-        std::ranges::transform(Name, Name.begin(), [](const unsigned char Character) { return char(std::tolower(Character)); });
-        bSlides = bSlides || Name == "vz-slide.rsc";
-    }
+    // SlidesPresent (00404a60) offers the slide show while vz-slide.rsc is there; the port also needs a slide in it that loads.
+    const std::vector<Gaf::FFrame> Slides = LoadSlides(DataFolder);
+    const bool bSlides = !Slides.empty();
 
     FMenu Menu{
         .Left = MenuLeft,
@@ -1947,7 +2018,7 @@ bool RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchi
         }
         else if (*Item == SlidesItem && bSlides)
         {
-            ShowSlides(Window, Renderer, DataFolder);
+            ShowSlides(Window, Renderer, Slides);
             Sheets = CreateMenuSheets(Renderer, Art);
         }
     }
@@ -4148,7 +4219,12 @@ int main(const int ArgCount, char** const Args)
     std::fflush(stdout);
     if (bVerifyGafs)
     {
-        return VerifyGafs(Archive);
+        // The slide show's archive, when it is there, takes the same Targa loader.
+        size_t SlidesFailed = 0;
+        const size_t SlidesDecoded = LoadSlides(DataPath->parent_path(), &SlidesFailed).size();
+        std::printf("Slides: %zu decoded, %zu failed\n", SlidesDecoded, SlidesFailed);
+        const int GafResult = VerifyGafs(Archive);
+        return SlidesFailed != 0 ? 1 : GafResult;
     }
     if (bVerifyIntro)
     {
