@@ -3793,10 +3793,109 @@ struct FObjectHandle
     explicit operator bool() const { return Index.has_value(); }
 };
 
+// Command-line cheats, which the original does not have (its own are typed codes): each holds for the whole game and none touches a demo.
+struct FCheats
+{
+    bool bGodMode = false;
+    bool bInfiniteAmmo = false;
+    bool bAllWeapons = false;
+    bool bInfiniteMoney = false;
+};
+
+// The cash --infiniteMoney keeps the player at.
+constexpr float CheatMoney = 999999.f;
+
+// A cheat's switch for a command-line argument in any case, or null for any other argument.
+bool FCheats::* CheatFlag(const std::string_view Argument)
+{
+    static constexpr std::pair<std::string_view, bool FCheats::*> Flags[] = {
+        { "--godmode", &FCheats::bGodMode },
+        { "--infiniteammo", &FCheats::bInfiniteAmmo },
+        { "--allweapons", &FCheats::bAllWeapons },
+        { "--allweapon", &FCheats::bAllWeapons },
+        { "--infinitemoney", &FCheats::bInfiniteMoney },
+    };
+    std::string Lower(Argument);
+    std::ranges::transform(Lower, Lower.begin(), [](const char Character) { return char(std::tolower(uint8_t(Character))); });
+    const auto Found = std::ranges::find(Flags, std::string_view(Lower), &std::pair<std::string_view, bool FCheats::*>::first);
+    return Found == std::end(Flags) ? nullptr : Found->second;
+}
+
+// The campaign in LEVEL-ID order (tower.floor), which the lifts follow. CAVE\T3C2 has no LEVEL-ID; T3C1's lift leads to it, so it is 3.5.
+// CAVE\T2C3 (2.5) is the one level no lift leads to.
+constexpr std::array<std::pair<std::string_view, std::string_view>, 24> CampaignLevels = { {
+    { "1.1", "underground\\t1u1" },
+    { "1.2", "cave\\t1c1" },
+    { "1.3", "cave\\t1c2" },
+    { "1.4", "hitek\\t1h1" },
+    { "1.5", "hitek\\t1h2" },
+    { "2.1", "underground\\t2u1" },
+    { "2.2", "underground\\t2u2" },
+    { "2.3", "cave\\t2c1" },
+    { "2.4", "cave\\t2c2" },
+    { "2.5", "cave\\t2c3" },
+    { "2.6", "hitek\\t2h1" },
+    { "2.7", "hitek\\t2h2" },
+    { "2.8", "cpu\\t2p1" },
+    { "3.1", "underground\\t3u1" },
+    { "3.2", "underground\\t3u2" },
+    { "3.3", "underground\\t3u3" },
+    { "3.4", "cave\\t3c1" },
+    { "3.5", "cave\\t3c2" },
+    { "3.6", "cave\\t3c3" },
+    { "3.7", "hitek\\t3h1" },
+    { "3.8", "hitek\\t3h2" },
+    { "3.9", "hitek\\t3h3" },
+    { "3.10", "cpu\\t3p1" },
+    { "3.11", "cpu\\t3p2" },
+} };
+
+// --level's argument as a level path: a campaign number from 1, a LEVEL-ID such as 2.3, or a path such as cave\t2c1 as it is.
+std::optional<std::string> LevelArgument(const std::string_view Text)
+{
+    if (!Text.empty() && std::ranges::all_of(Text, [](const char Character) { return std::isdigit(uint8_t(Character)) != 0; }))
+    {
+        size_t Number = 0;
+        std::from_chars(Text.data(), Text.data() + Text.size(), Number);
+        return Number >= 1 && Number <= CampaignLevels.size() ? std::optional<std::string>(CampaignLevels[Number - 1].second) : std::nullopt;
+    }
+
+    if (Text.find_first_of("\\/") != std::string_view::npos)
+    {
+        return std::string(Text);
+    }
+
+    const auto Found = std::ranges::find(CampaignLevels, Text, &std::pair<std::string_view, std::string_view>::first);
+    return Found == CampaignLevels.end() ? std::nullopt : std::optional<std::string>(Found->second);
+}
+
+// The cheats' hold on the player after each step: full energy and shield so nothing can kill it, every stock it holds kept full, and the cash topped up.
+void ApplyCheats(const FCheats& Cheats, FPlayerInventory& Inventory)
+{
+    if (Cheats.bGodMode)
+    {
+        Inventory.Energy = Inventory.EnergyMax;
+        Inventory.Shield = Inventory.ShieldMax;
+    }
+
+    if (Cheats.bInfiniteAmmo)
+    {
+        for (FAmmoStock& Stock : Inventory.Ammo)
+        {
+            Stock.Count = Stock.Count > 0.f ? Stock.Max : Stock.Count;
+        }
+    }
+
+    if (Cheats.bInfiniteMoney)
+    {
+        Inventory.Money = CheatMoney;
+    }
+}
+
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a menu ends or restarts the level.
 // A level loaded from a session takes its objects and the player's numbers from Restore; any other becomes the default session, in Session and on disk.
 std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
-    const std::optional<std::pair<float, float>> Start, const bool bAutoFire, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
+    const std::optional<std::pair<float, float>> Start, const bool bAutoFire, const FCheats& Cheats, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
     FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, FSettings& Settings,
     const std::vector<FDemoRecord>* const Demo, const bool bShowPage)
 {
@@ -3968,6 +4067,15 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 if (Demo)
                 {
                     Combat->Clock = Demo->front().Time;
+                }
+
+                // --allWeapons fills every stock the player class has, as the Reload Weapons surprise does, so every weapon slot is armed.
+                if (Cheats.bAllWeapons && !Demo)
+                {
+                    for (FAmmoStock& Stock : Inventory.Ammo)
+                    {
+                        Stock.Count = Stock.Max;
+                    }
                 }
 
                 for (const FEffectClass& Effect : Combat->EffectClasses)
@@ -5550,6 +5658,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         std::fflush(stdout);
                     }
 
+                    if (!Demo)
+                    {
+                        ApplyCheats(Cheats, Inventory);
+                    }
+
                     // Spent energy kills the player like any object: its explosions go off and the object stays hidden.
                     if (!DeathTimer && Inventory.Energy <= 0.f)
                     {
@@ -6670,23 +6783,115 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
 int main(const int ArgCount, char** const Args)
 {
-    // --extract <game folder or .rsc> [<output folder>]: the archives as modern files, then exit.
-    if (ArgCount >= 3 && std::strcmp(Args[1], "--extract") == 0)
+    // Every argument main takes; a new one belongs here too.
+    constexpr std::string_view Help = R"(Usage: Vyruz [<game folder>] [options]
+
+Options take one dash or two and any case: -skipIntro, --skipintro and --SkipIntro are the same.
+
+  <game folder>             The folder with vz-data.rsc (or the archive itself), remembered for later runs.
+                            Without it: vz-data.rsc beside the executable, else the remembered folder,
+                            else a folder picker.
+
+Playing:
+  --level <level>           Start straight in a level, skipping the menu: a campaign number from 1 to 24,
+                            a level id such as 2.3, or a path such as cave\t2c1. A bad value lists them all.
+  --start <x>,<y>           Put the player at that world position as the level starts; skips the menu.
+  --skipIntro               Go straight to the main menu, without the story page and the intro (Extras still
+                            plays the intro).
+
+Cheats (combine freely, any case; never applied to the demo):
+  --godMode                 Energy and shield stay full, so nothing can kill the player.
+  --infiniteAmmo            Every ammo the player holds stays full.
+  --allWeapons              Every weapon is armed with full ammo at each level start (--allWeapon works too).
+  --infiniteMoney           Cash stays at 999999.
+
+Tools (each comes first, runs on its own and exits; anything else on the line is an error):
+  --extract <game folder | archive.rsc> [<output folder>]
+                            Write the archives as modern files: sprite sheets, JSON, BMFont, WAV, text and
+                            Tiled maps; the default output is Extracted beside the input.
+  --compress <extracted folder> [<output folder>]
+                            Pack an extracted tree, edits included, back into archives the original reads;
+                            the default output is Packed beside the tree.
+  --verify-extract <game folder>
+                            Extract, pack back and check that everything reads the same.
+  --verify-gaf, --verify-levels, --verify-game, --verify-intro
+                            Decode every sprite file, load every level, replay the demo against the
+                            original's records, or decode the intro; exit non-zero on any failure.
+  --dump-gaf <archive path> List a sprite file's animations with their frame counts and durations.
+  --auto-fire               Hold the trigger down, for testing shots without a keyboard.
+
+  -h, --help                Show this list.
+)";
+    // Options take one dash or two and any case (-skipIntro is --skipintro); values and paths stay as given.
+    std::vector<std::string> Arguments;
+    for (int Index = 1; Index < ArgCount; ++Index)
     {
-        return RunExtract(Args[2], ArgCount >= 4 ? std::optional<std::filesystem::path>(Args[3]) : std::nullopt);
+        std::string Argument = Args[Index];
+        if (Argument.size() > 2 && Argument[0] == '-' && std::isalpha(uint8_t(Argument[1])))
+        {
+            Argument.insert(0, "-");
+        }
+
+        if (Argument.starts_with("--"))
+        {
+            std::ranges::transform(Argument, Argument.begin(), [](const char Character) { return char(std::tolower(uint8_t(Character))); });
+        }
+
+        Arguments.push_back(std::move(Argument));
     }
 
-    // --compress <extracted folder> [<output folder>]: the extracted tree packed back into archives the original reads, then exit.
-    if (ArgCount >= 3 && std::strcmp(Args[1], "--compress") == 0)
-    {
-        return RunCompress(Args[2], ArgCount >= 4 ? std::optional<std::filesystem::path>(Args[3]) : std::nullopt);
-    }
-
-    // --verify-extract <game folder>: extract, pack back and compare, then edit a text and an image and check they pack.
-    if (ArgCount >= 3 && std::strcmp(Args[1], "--verify-extract") == 0)
+    const auto Fail = [](const std::string& Message)
     {
         AttachParentConsole();
-        return VerifyExtractRoundTrip(Args[2]);
+        std::fprintf(stderr, "%s\nRun with --help for every argument.\n", Message.c_str());
+        return 1;
+    };
+
+    if (std::ranges::any_of(Arguments, [](const std::string& Argument) { return Argument == "-h" || Argument == "--help"; }))
+    {
+        AttachParentConsole();
+        std::fputs(Help.data(), stdout);
+        return 0;
+    }
+
+    // A tool runs alone: it comes first and takes only its own operands, none of them an option.
+    constexpr std::array<std::string_view, 3> Tools = { "--extract", "--compress", "--verify-extract" };
+    for (size_t Index = 1; Index < Arguments.size(); ++Index)
+    {
+        if (std::ranges::find(Tools, Arguments[Index]) != Tools.end())
+        {
+            return Fail(std::format("{} runs on its own and must come first.", Arguments[Index]));
+        }
+    }
+
+    if (!Arguments.empty() && std::ranges::find(Tools, Arguments.front()) != Tools.end())
+    {
+        const std::string& Tool = Arguments.front();
+        const size_t MaxOperands = Tool == "--verify-extract" ? 1 : 2;
+        const std::span<const std::string> Operands = std::span(Arguments).subspan(1);
+        if (Operands.empty() || Operands.size() > MaxOperands || std::ranges::any_of(Operands, [](const std::string& Operand) { return Operand.starts_with("--"); }))
+        {
+            return Fail(Tool == "--extract"    ? "Usage: --extract <game folder | archive.rsc> [<output folder>]"
+                        : Tool == "--compress" ? "Usage: --compress <extracted folder> [<output folder>]"
+                                               : "Usage: --verify-extract <game folder>");
+        }
+
+        const std::optional<std::filesystem::path> Output = Operands.size() > 1 ? std::optional<std::filesystem::path>(Operands[1]) : std::nullopt;
+        if (Tool == "--extract")
+        {
+            // The archives as modern files, then exit.
+            return RunExtract(Operands[0], Output);
+        }
+
+        if (Tool == "--compress")
+        {
+            // The extracted tree packed back into archives the original reads, then exit.
+            return RunCompress(Operands[0], Output);
+        }
+
+        // Extract, pack back and compare, then edit a text, an image and a sprite and check they pack.
+        AttachParentConsole();
+        return VerifyExtractRoundTrip(Operands[0]);
     }
 
     std::optional<std::filesystem::path> DataPath;
@@ -6697,52 +6902,88 @@ int main(const int ArgCount, char** const Args)
     bool bVerifyLevels = false;
     bool bVerifyGame = false;
     bool bVerifyIntro = false;
-    // Development aid: --level and --start skip the main menu at startup.
+    // --level and --start skip the main menu at startup, --skipIntro only the intro before it.
     bool bSkipMenu = false;
+    bool bSkipIntro = false;
     // Development aid: --dump-gaf PATH lists an archive GAF's animations with their frame counts and durations.
     std::optional<std::string> DumpGafPath;
     // Holds the trigger down, for checking shots and explosions without a keyboard.
     bool bAutoFire = false;
-    for (int Index = 1; Index < ArgCount; ++Index)
+    FCheats Cheats;
+    const std::array<std::pair<std::string_view, bool*>, 7> Switches = { {
+        { "--verify-gaf", &bVerifyGafs },
+        { "--verify-levels", &bVerifyLevels },
+        { "--verify-game", &bVerifyGame },
+        { "--verify-intro", &bVerifyIntro },
+        { "--auto-fire", &bAutoFire },
+        { "--skipintro", &bSkipIntro },
+        { "--skip-intro", &bSkipIntro },
+    } };
+    for (size_t Index = 0; Index < Arguments.size(); ++Index)
     {
-        if (std::strcmp(Args[Index], "--verify-gaf") == 0)
+        const std::string& Argument = Arguments[Index];
+        // A value never reads as an option, except --start's negative coordinates.
+        const auto IsOption = [](const std::string& Text) { return Text.starts_with("--") || Text == "-h"; };
+        const bool bHasValue = Index + 1 < Arguments.size() && !IsOption(Arguments[Index + 1]);
+        const auto Switch = std::ranges::find(Switches, std::string_view(Argument), &std::pair<std::string_view, bool*>::first);
+        if (Switch != Switches.end())
         {
-            bVerifyGafs = true;
+            *Switch->second = true;
         }
-        else if (std::strcmp(Args[Index], "--verify-levels") == 0)
+        else if (bool FCheats::* const Cheat = CheatFlag(Argument))
         {
-            bVerifyLevels = true;
+            Cheats.*Cheat = true;
         }
-        else if (std::strcmp(Args[Index], "--verify-game") == 0)
+        else if (Argument == "--dump-gaf" || Argument == "--level" || Argument == "--start")
         {
-            bVerifyGame = true;
+            if (!bHasValue)
+            {
+                return Fail(std::format("{} needs a value.", Argument));
+            }
+
+            const std::string& Value = Arguments[++Index];
+            float X = 0.f;
+            float Y = 0.f;
+            if (Argument == "--dump-gaf")
+            {
+                DumpGafPath = Value;
+            }
+            else if (Argument == "--start" && std::sscanf(Value.c_str(), "%f,%f", &X, &Y) == 2)
+            {
+                Start = { X, Y };
+                bSkipMenu = true;
+            }
+            else if (Argument == "--start")
+            {
+                return Fail("--start takes a world position as X,Y.");
+            }
+            else if (const std::optional<std::string> Level = LevelArgument(Value))
+            {
+                LevelPath = *Level;
+                bSkipMenu = true;
+            }
+            else
+            {
+                std::string Message = std::format("--level takes a number from 1 to {}, a level id such as 2.3, or a path such as cave\\t2c1:", CampaignLevels.size());
+                for (size_t Number = 0; Number < CampaignLevels.size(); ++Number)
+                {
+                    Message += std::format("\n  {:2}  {:<5} {}", Number + 1, CampaignLevels[Number].first, CampaignLevels[Number].second);
+                }
+
+                return Fail(Message);
+            }
         }
-        else if (std::strcmp(Args[Index], "--verify-intro") == 0)
+        else if (IsOption(Argument) || Argument.starts_with("-"))
         {
-            bVerifyIntro = true;
+            return Fail(std::format("Unknown option {}.", Args[Index + 1]));
         }
-        else if (std::strcmp(Args[Index], "--auto-fire") == 0)
+        else if (DataPath)
         {
-            bAutoFire = true;
-        }
-        else if (std::strcmp(Args[Index], "--dump-gaf") == 0 && Index + 1 < ArgCount)
-        {
-            DumpGafPath = Args[++Index];
-        }
-        else if (std::strcmp(Args[Index], "--level") == 0 && Index + 1 < ArgCount)
-        {
-            LevelPath = Args[++Index];
-            bSkipMenu = true;
-        }
-        else if (float X = 0.f, Y = 0.f; std::strcmp(Args[Index], "--start") == 0 && Index + 1 < ArgCount && std::sscanf(Args[Index + 1], "%f,%f", &X, &Y) == 2)
-        {
-            Start = { X, Y };
-            bSkipMenu = true;
-            ++Index;
+            return Fail(std::format("Two game folders given: {} and {}.", DataPath->string(), Argument));
         }
         else
         {
-            DataPath = Args[Index];
+            DataPath = Argument;
         }
     }
 
@@ -6959,8 +7200,8 @@ int main(const int ArgCount, char** const Args)
     // VzRun's loop (VzMenuLoop at 00447820): the main menu, then levels until a menu or the game's end brings it back. New Game starts at LevelPath.
     int Result = 0;
     bool bMenu = MenuArt && !bSkipMenu;
-    // VzRun shows the story page (ShowStoryPage at 00447c80, read aloud, for up to 30 seconds), then plays the intro, before the main menu.
-    if (bMenu && Panel)
+    // VzRun shows the story page (ShowStoryPage at 00447c80, read aloud, for up to 30 seconds), then plays the intro, before the main menu; --skipIntro skips both.
+    if (bMenu && Panel && !bSkipIntro)
     {
         constexpr int32_t StoryLeft = 0x80;
         constexpr uint32_t StoryMilliseconds = 30000;
@@ -6978,7 +7219,7 @@ int main(const int ArgCount, char** const Args)
         Renderer.ReleaseSpriteSheets();
     }
 
-    if (bMenu && FindIntro(DataPath->parent_path()))
+    if (bMenu && !bSkipIntro && FindIntro(DataPath->parent_path()))
     {
         PlayIntro(Window, Renderer, DataPath->parent_path());
     }
@@ -7029,7 +7270,7 @@ int main(const int ArgCount, char** const Args)
             }
         }
 
-        const std::expected<FLevelEnd, std::string> End = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Carried, DebugLevels, Panel ? &*Panel : nullptr,
+        const std::expected<FLevelEnd, std::string> End = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Cheats, Carried, DebugLevels, Panel ? &*Panel : nullptr,
             MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Settings, Demo ? &*Demo : nullptr, bNewGame || Carried.has_value());
         bNewGame = false;
         Restore.reset();
