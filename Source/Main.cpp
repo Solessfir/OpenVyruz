@@ -19,6 +19,7 @@
 #include "Pg/ResourceArchive.h"
 #include "Pg/Sound.h"
 #include "Render/Renderer.h"
+#include "Tools/Extract.h"
 
 #include <GLFW/glfw3.h>
 
@@ -6668,6 +6669,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
 int main(const int ArgCount, char** const Args)
 {
+    // --extract <game folder or .rsc> [<output folder>]: the archives as modern files, then exit.
+    if (ArgCount >= 3 && std::strcmp(Args[1], "--extract") == 0)
+    {
+        return RunExtract(Args[2], ArgCount >= 4 ? std::optional<std::filesystem::path>(Args[3]) : std::nullopt);
+    }
+
     std::optional<std::filesystem::path> DataPath;
     std::string LevelPath = "underground\\t1u1";
     // Development aid: --start X,Y spawns the player at that world position.

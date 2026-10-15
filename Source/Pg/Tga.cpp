@@ -30,29 +30,42 @@ constexpr uint8_t Rgb555Bits = 16;
 constexpr uint8_t RgbBits = 24;
 constexpr uint8_t RgbaBits = 32;
 constexpr size_t BitsPerByte = 8;
+constexpr size_t RgbaChannels = 4;
 constexpr uint8_t TopToBottomFlag = 0x20;
 constexpr uint32_t MaxDimension = 4096;
 // A run-length packet's header: the top bit repeats one pixel, otherwise raw pixels follow; the low bits hold the count less one.
 constexpr uint8_t RunPacketFlag = 0x80;
 constexpr uint8_t PacketCountMask = 0x7f;
+constexpr int RedShift = 10;
+constexpr int GreenShift = 5;
+constexpr uint16_t ChannelMask = 0x1f;
+constexpr int WidenShift = 3;
+constexpr int FillShift = 2;
+constexpr uint8_t Opaque = 0xff;
 
-// One stored pixel to RGB555: 16-bit pixels are already A1R5G5B5, the others blue, green and red bytes.
-uint16_t ToRgb555(const uint8_t* const Pixel, const size_t BytesPerPixel)
+// One stored pixel to RGBA: 16-bit pixels are A1R5G5B5, widened so that narrowing by >> 3 gives them back; the others blue, green and red bytes. Every pixel is opaque, as the game draws them.
+void ToRgba(const uint8_t* const Pixel, const size_t BytesPerPixel, uint8_t* const Out)
 {
-    constexpr uint16_t Rgb555Mask = 0x7fff;
-    constexpr int ChannelShift = 3;
-    constexpr int RedShift = 10;
-    constexpr int GreenShift = 5;
     if (BytesPerPixel == Rgb555Bits / BitsPerByte)
     {
-        return uint16_t((Pixel[0] | Pixel[1] << BitsPerByte) & Rgb555Mask);
+        const uint16_t Value = uint16_t(Pixel[0] | Pixel[1] << BitsPerByte);
+        const auto Widen = [](const uint16_t Channel) { return uint8_t(Channel << WidenShift | Channel >> FillShift); };
+        Out[0] = Widen(Value >> RedShift & ChannelMask);
+        Out[1] = Widen(Value >> GreenShift & ChannelMask);
+        Out[2] = Widen(Value & ChannelMask);
+    }
+    else
+    {
+        Out[0] = Pixel[2];
+        Out[1] = Pixel[1];
+        Out[2] = Pixel[0];
     }
 
-    return uint16_t((Pixel[2] >> ChannelShift) << RedShift | (Pixel[1] >> ChannelShift) << GreenShift | Pixel[0] >> ChannelShift);
+    Out[3] = Opaque;
 }
 }
 
-std::optional<Gaf::FFrame> LoadTga(const std::span<const uint8_t> File)
+std::optional<FTgaImage> DecodeTga(const std::span<const uint8_t> File)
 {
     const std::optional<FTgaHeader> Header = ReadStruct<FTgaHeader>(File, 0);
     if (!Header || (Header->ImageType != UncompressedTrueColor && Header->ImageType != CompressedTrueColor) || Header->ColorMapType != 0 ||
@@ -71,11 +84,12 @@ std::optional<Gaf::FFrame> LoadTga(const std::span<const uint8_t> File)
     }
 
     // The pixels in file order, uncompressed or as run-length packets.
-    std::vector<uint16_t> Stored;
-    Stored.reserve(PixelCount);
-    while (Stored.size() < PixelCount)
+    std::vector<uint8_t> Stored;
+    Stored.reserve(PixelCount * RgbaChannels);
+    while (Stored.size() < PixelCount * RgbaChannels)
     {
-        size_t Count = PixelCount;
+        const size_t Done = Stored.size() / RgbaChannels;
+        size_t Count = PixelCount - Done;
         bool bRun = false;
         if (Header->ImageType == CompressedTrueColor)
         {
@@ -86,7 +100,7 @@ std::optional<Gaf::FFrame> LoadTga(const std::span<const uint8_t> File)
 
             const uint8_t Packet = File[Offset++];
             bRun = (Packet & RunPacketFlag) != 0;
-            Count = std::min(size_t(Packet & PacketCountMask) + 1, PixelCount - Stored.size());
+            Count = std::min(size_t(Packet & PacketCountMask) + 1, PixelCount - Done);
         }
 
         const size_t Bytes = bRun ? BytesPerPixel : Count * BytesPerPixel;
@@ -97,20 +111,42 @@ std::optional<Gaf::FFrame> LoadTga(const std::span<const uint8_t> File)
 
         for (size_t Index = 0; Index < Count; ++Index)
         {
-            Stored.push_back(ToRgb555(&File[Offset + (bRun ? 0 : Index * BytesPerPixel)], BytesPerPixel));
+            Stored.resize(Stored.size() + RgbaChannels);
+            ToRgba(&File[Offset + (bRun ? 0 : Index * BytesPerPixel)], BytesPerPixel, &Stored[Stored.size() - RgbaChannels]);
         }
 
         Offset += Bytes;
     }
 
     // Rows run bottom to top unless the descriptor says otherwise.
-    Gaf::FFrame Frame{ .Width = Header->Width, .Height = Header->Height };
-    Frame.Pixels.resize(PixelCount);
+    FTgaImage Image{ .Width = Header->Width, .Height = Header->Height };
+    Image.Pixels.resize(Stored.size());
     const bool bTopDown = (Header->Descriptor & TopToBottomFlag) != 0;
+    const size_t RowBytes = size_t{ Header->Width } * RgbaChannels;
     for (uint32_t Row = 0; Row < Header->Height; ++Row)
     {
         const uint32_t Target = bTopDown ? Row : Header->Height - 1 - Row;
-        std::copy_n(Stored.begin() + ptrdiff_t(size_t{ Row } * Header->Width), Header->Width, Frame.Pixels.begin() + ptrdiff_t(size_t{ Target } * Header->Width));
+        std::copy_n(Stored.begin() + ptrdiff_t(Row * RowBytes), RowBytes, Image.Pixels.begin() + ptrdiff_t(Target * RowBytes));
+    }
+
+    return Image;
+}
+
+std::optional<Gaf::FFrame> LoadTga(const std::span<const uint8_t> File)
+{
+    const std::optional<FTgaImage> Image = DecodeTga(File);
+    if (!Image)
+    {
+        return std::nullopt;
+    }
+
+    Gaf::FFrame Frame{ .Width = Image->Width, .Height = Image->Height };
+    Frame.Pixels.resize(size_t(Image->Width) * Image->Height);
+    constexpr int NarrowShift = 3;
+    for (size_t Index = 0; Index < Frame.Pixels.size(); ++Index)
+    {
+        const uint8_t* const Pixel = &Image->Pixels[Index * RgbaChannels];
+        Frame.Pixels[Index] = uint16_t((Pixel[0] >> NarrowShift) << RedShift | (Pixel[1] >> NarrowShift) << GreenShift | Pixel[2] >> NarrowShift);
     }
 
     // A key outside RGB555 keeps every pixel opaque.

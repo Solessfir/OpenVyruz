@@ -1,0 +1,22 @@
+#pragma once
+
+#include "Pg/Gaf.h"
+
+#include <cstdint>
+#include <optional>
+#include <vector>
+
+// Straight 8-bit RGBA, rows top to bottom.
+struct FImage
+{
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+    std::vector<uint8_t> Pixels;
+};
+
+// An RGB555 frame as RGBA: each channel widened to 8 bits as (c << 3) | (c >> 2), so narrowing back by >> 3 gives the original; the colour key turns transparent.
+FImage ImageFromFrame(const Gaf::FFrame& Frame);
+// Copies Source into Target with its top-left at X, Y.
+void Blit(FImage& Target, const FImage& Source, uint32_t X, uint32_t Y);
+// The image as a PNG file's bytes; nullopt for an empty image.
+std::optional<std::vector<uint8_t>> EncodePng(const FImage& Image);
