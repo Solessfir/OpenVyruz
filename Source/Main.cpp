@@ -4361,6 +4361,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // A white pixel that the fade without Gamma FX stretches over rows.
     std::optional<FSpriteSheet> WhiteSheet;
     FDeathDrift DeathDrift;
+    // When the eased death view last moved.
+    std::optional<uint32_t> DeathCameraAt;
     std::optional<FSpriteSheet> PauseSheet;
     // action-next-weapon, then action-weapon-1 to 9.
     constexpr size_t WeaponKeyCount = 10;
@@ -5683,8 +5685,24 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             // Match the sprite's rounding so fractional movement cannot shift the ship against the camera.
             const int ViewWidth = int(ScreenWidth);
             const int ViewHeight = int(ScreenHeight);
-            CameraX = std::clamp(int(SpriteCoordinate(Player->Position.X)) - ViewWidth / 2, 0, std::max(0, int(Level->WorldExtentX) - ViewWidth));
-            CameraY = std::clamp(int(SpriteCoordinate(Player->Position.Y)) - ViewHeight / 2, 0, std::max(0, int(Level->WorldExtentY) - ViewHeight));
+            const double TargetX = std::clamp(int(SpriteCoordinate(Player->Position.X)) - ViewWidth / 2, 0, std::max(0, int(Level->WorldExtentX) - ViewWidth));
+            const double TargetY = std::clamp(int(SpriteCoordinate(Player->Position.Y)) - ViewHeight / 2, 0, std::max(0, int(Level->WorldExtentY) - ViewHeight));
+            // The death drift turns square corners at full speed; the original's view snaps after it, the port's eases after it so the turns do not jar.
+            const uint32_t Now = ClockMilliseconds();
+            if (DeathTimer && DeathCameraAt)
+            {
+                constexpr double DeathCameraLagMilliseconds = 400.;
+                const double Ease = 1. - std::exp(-double(Now - *DeathCameraAt) / DeathCameraLagMilliseconds);
+                CameraX += (TargetX - CameraX) * Ease;
+                CameraY += (TargetY - CameraY) * Ease;
+            }
+            else
+            {
+                CameraX = TargetX;
+                CameraY = TargetY;
+            }
+
+            DeathCameraAt = DeathTimer ? std::optional(Now) : std::nullopt;
         }
 
         CameraX = std::clamp(CameraX, 0.0, std::max(0.0, double(MapWidth - ScreenWidth)));

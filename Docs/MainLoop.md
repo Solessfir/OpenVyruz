@@ -70,7 +70,7 @@ While the timer runs, `EngineRunLevel` (`0043e5f0`) plays out the death:
 - **The skull**: `FUN_004457f0` puts `Data\Extra\failed.gaf` at the screen's centre as two animation messages that last until the game ends: animation 2, a dark outline in draw mode 8, under animation 1, the skull.
 - **The motor** stops (`SoundStop(8)`).
 - **Red**: with Gamma FX on and a gamma ramp available, the gamma offsets (session `+0x25a0`) become 80, 0, 0. While the player is dead they are applied as they are and do not decay. See [Gamma flashes](#gamma-flashes).
-- **The drift**: after each update the dead player's position, which the view follows, moves at 0.5 pixels per update, then at 3 per 14 ms step (`3 / (14 / step)`), in a growing square: right, up, left, down. It turns, without moving that update, whenever the position leaves the level or the truncated X or Y is a multiple of the turn interval, which starts at 32 and grows by 30 with each turn.
+- **The drift**: after each update the dead player's position, which the view follows, moves at 0.5 pixels per update, then at 3 per 14 ms step (`3 / (14 / step)`), in a growing square: right, up, left, down. It turns, without moving that update, whenever the position leaves the level or the truncated X or Y is a multiple of the turn interval, which starts at 32 and grows by 30 with each turn. The original's view snaps after the drift's square corners; the port's eases after it (each frame closing `1 - e^(-ms / 400)` of the gap), so the turns do not jar.
 
 ## Gamma flashes
 
