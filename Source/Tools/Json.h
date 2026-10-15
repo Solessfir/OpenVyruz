@@ -2,12 +2,52 @@
 
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+struct FJsonMember;
+
+// A parsed JSON value: what --compress reads back from the manifest and the extracted data.
+struct FJsonValue
+{
+    enum class EType : uint8_t
+    {
+        Null,
+        Bool,
+        Number,
+        String,
+        Array,
+        Object,
+    };
+
+    // A member's value, or a null value when the object has none.
+    const FJsonValue& operator[](std::string_view Name) const;
+    // An array's element, or a null value past its end.
+    const FJsonValue& operator[](size_t Index) const;
+    std::string_view AsString() const { return String; }
+    double AsNumber() const { return Number; }
+
+    EType Type = EType::Null;
+    bool bValue = false;
+    double Number = 0.;
+    std::string String;
+    std::vector<FJsonValue> Elements;
+    std::vector<FJsonMember> Members;
+};
+
+struct FJsonMember
+{
+    std::string Name;
+    FJsonValue Value;
+};
+
+// Parses a whole JSON text; nullopt on any syntax error.
+std::optional<FJsonValue> ParseJson(std::string_view Text);
 
 // A small pretty-printing JSON writer for the extracted data: objects and arrays nest, and number arrays can stay on one line.
 class FJsonWriter

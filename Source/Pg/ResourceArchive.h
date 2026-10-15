@@ -21,6 +21,9 @@ public:
 
     size_t GetEntryCount() const { return Entries.size(); }
 
+    // Every entry's name as stored, in the archive's own order, repeats included.
+    const std::vector<std::string>& GetStoredNames() const { return StoredNames; }
+
     // Normalized (lowercase, backslash) names of every entry.
     std::vector<std::string> GetNames() const
     {
@@ -43,5 +46,10 @@ private:
 
     std::ifstream File;
     std::unordered_map<std::string, FEntry> Entries;
+    std::vector<std::string> StoredNames;
     bool bInvertedData = false;
 };
+
+// Writes an archive RscOpen reads: the tables unencrypted (key 0) behind the "_KX_" magic, then each entry's data in order. Names keep their case.
+// Returns false when the file cannot be written or the names overflow the 16-bit name offsets.
+bool WriteResourceArchive(const std::filesystem::path& Path, const std::vector<std::pair<std::string, std::vector<uint8_t>>>& Files);

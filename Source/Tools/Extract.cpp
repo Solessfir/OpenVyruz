@@ -11,6 +11,7 @@
 #include "Pg/Tga.h"
 #include "Tools/Json.h"
 #include "Tools/Png.h"
+#include "Tools/Text.h"
 
 #include <algorithm>
 #include <array>
@@ -33,82 +34,6 @@
 namespace
 {
 namespace fs = std::filesystem;
-
-// Windows-1252 and Windows-1251 from 0x80 up. The codes either leaves undefined keep their C1 control points, so a text converts back byte for byte.
-constexpr std::array<char16_t, 128> Cp1252High = {
-    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
-    0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
-    0x00A0, 0x00A1, 0x00A2, 0x00A3, 0x00A4, 0x00A5, 0x00A6, 0x00A7, 0x00A8, 0x00A9, 0x00AA, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
-    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7, 0x00B8, 0x00B9, 0x00BA, 0x00BB, 0x00BC, 0x00BD, 0x00BE, 0x00BF,
-    0x00C0, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x00C7, 0x00C8, 0x00C9, 0x00CA, 0x00CB, 0x00CC, 0x00CD, 0x00CE, 0x00CF,
-    0x00D0, 0x00D1, 0x00D2, 0x00D3, 0x00D4, 0x00D5, 0x00D6, 0x00D7, 0x00D8, 0x00D9, 0x00DA, 0x00DB, 0x00DC, 0x00DD, 0x00DE, 0x00DF,
-    0x00E0, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x00E7, 0x00E8, 0x00E9, 0x00EA, 0x00EB, 0x00EC, 0x00ED, 0x00EE, 0x00EF,
-    0x00F0, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7, 0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x00FF,
-};
-constexpr std::array<char16_t, 128> Cp1251High = []
-{
-    std::array<char16_t, 128> Table = {
-        0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021, 0x20AC, 0x2030, 0x0409, 0x2039, 0x040A, 0x040C, 0x040B, 0x040F,
-        0x0452, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x0098, 0x2122, 0x0459, 0x203A, 0x045A, 0x045C, 0x045B, 0x045F,
-        0x00A0, 0x040E, 0x045E, 0x0408, 0x00A4, 0x0490, 0x00A6, 0x00A7, 0x0401, 0x00A9, 0x0404, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x0407,
-        0x00B0, 0x00B1, 0x0406, 0x0456, 0x0491, 0x00B5, 0x00B6, 0x00B7, 0x0451, 0x2116, 0x0454, 0x00BB, 0x0458, 0x0405, 0x0455, 0x0457,
-    };
-    // 0xC0 to 0xFF run straight through the Cyrillic capitals and small letters.
-    constexpr size_t CyrillicStart = 0x40;
-    constexpr char16_t CyrillicCapitalA = 0x0410;
-    for (size_t Index = CyrillicStart; Index < Table.size(); ++Index)
-    {
-        Table[Index] = char16_t(CyrillicCapitalA + (Index - CyrillicStart));
-    }
-
-    return Table;
-}();
-
-using FCodePage = std::array<char16_t, 128>;
-
-void AppendUtf8(std::string& Out, const char32_t Code)
-{
-    constexpr char32_t OneByte = 0x80;
-    constexpr char32_t TwoBytes = 0x800;
-    if (Code < OneByte)
-    {
-        Out += char(Code);
-    }
-    else if (Code < TwoBytes)
-    {
-        Out += char(0xC0 | Code >> 6);
-        Out += char(0x80 | (Code & 0x3F));
-    }
-    else
-    {
-        Out += char(0xE0 | Code >> 12);
-        Out += char(0x80 | (Code >> 6 & 0x3F));
-        Out += char(0x80 | (Code & 0x3F));
-    }
-}
-
-char32_t CodePoint(const uint8_t Byte, const FCodePage& Page)
-{
-    constexpr uint8_t HighStart = 0x80;
-    return Byte < HighStart ? char32_t(Byte) : char32_t(Page[Byte - HighStart]);
-}
-
-std::string ToUtf8(const std::span<const uint8_t> Bytes, const FCodePage& Page)
-{
-    std::string Out;
-    Out.reserve(Bytes.size());
-    for (const uint8_t Byte : Bytes)
-    {
-        AppendUtf8(Out, CodePoint(Byte, Page));
-    }
-
-    return Out;
-}
-
-std::span<const uint8_t> AsBytes(const std::string_view Text)
-{
-    return { reinterpret_cast<const uint8_t*>(Text.data()), Text.size() };
-}
 
 // A segment in PascalCase: words split at anything not a letter or digit, a plus written out (CPU has both ROOF and ROOF+), and a level id kept in capitals.
 std::string Pascal(const std::string_view Segment)
@@ -224,19 +149,6 @@ FTarget MapEntry(const std::string_view Name)
     return Target;
 }
 
-uint64_t Fnv1a(const std::span<const uint8_t> Bytes)
-{
-    constexpr uint64_t Offset = 0xcbf29ce484222325;
-    constexpr uint64_t Prime = 0x100000001b3;
-    uint64_t Hash = Offset;
-    for (const uint8_t Byte : Bytes)
-    {
-        Hash = (Hash ^ Byte) * Prime;
-    }
-
-    return Hash;
-}
-
 // 16-bit PCM RIFF WAVE from the decoder's floats.
 std::vector<uint8_t> EncodeWav(const Sound::FSample& Sample)
 {
@@ -314,7 +226,7 @@ public:
             return false;
         }
 
-        Entry.Files.push_back({ .Path = Relative.generic_string(), .Hash = Fnv1a(Bytes) });
+        Entry.Files.push_back({ .Path = Relative.generic_string(), .Hash = HashBytes(Bytes) });
         return true;
     }
 
@@ -608,7 +520,7 @@ const FCodePage& DetectCodePage(FResourceArchive& Archive)
     const std::optional<std::vector<uint8_t>> File = Archive.Read("common\\data\\menu\\v-menu.gaf");
     const std::optional<std::vector<Font::FFont>> Fonts = File ? Font::LoadFonts(*File) : std::nullopt;
     const bool bCyrillic = Fonts && !Fonts->empty() && Fonts->front().Glyphs.size() >= CyrillicA && Fonts->front().Glyphs[CyrillicA - 1].Base.BitmapIndex != 0;
-    return bCyrillic ? Cp1251High : Cp1252High;
+    return bCyrillic ? Cp1251() : Cp1252();
 }
 
 // A block of the .3DC/.3DO/.3DP grammar: its kind and name, its fields in order (repeats kept), and its child blocks.
@@ -744,7 +656,7 @@ void TiledNumberProperty(FJsonWriter& Json, const std::string_view Name, const i
 // A level as a Tiled map (.tmj) with its tileset image, and its terrain descriptors and cells as JSON.
 // The map's tile layers are the .3DG's MAP_ layers over its BLK_ blocks; its object layers hold the .3DO's objects with their own fields, the .3DP's patrol paths
 // and the static terrain collision. The .3DO's header fields become map properties.
-bool ExportLevel(FExtractor& Extractor, std::vector<FManifestEntry*> Entries, const fs::path& Folder, const std::string& LevelPath, FResourceArchive& Archive,
+bool ExportLevel(FExtractor& Extractor, const std::vector<FManifestEntry*>& Entries, const fs::path& Folder, const std::string& LevelPath, FResourceArchive& Archive,
     const FCodePage& Page)
 {
     FManifestEntry Shared;
@@ -1128,7 +1040,7 @@ FArchiveResult ExtractArchive(FExtractor& Extractor, const fs::path& ArchivePath
     }
 
     const FCodePage& Page = DetectCodePage(Archive);
-    Result.Encoding = &Page == &Cp1251High ? "windows-1251" : "windows-1252";
+    Result.Encoding = &Page == &Cp1251() ? "windows-1251" : "windows-1252";
     std::vector<std::string> Names = Archive.GetNames();
     std::ranges::sort(Names);
     // Each level's folder and its entries, by archive path without the extension.
@@ -1207,30 +1119,11 @@ FArchiveResult ExtractArchive(FExtractor& Extractor, const fs::path& ArchivePath
     return Result;
 }
 
-#ifdef _WIN32
-// The game is a windowed program, so a console that started it sees nothing unless the output is attached to it.
-void AttachParentConsole()
-{
-    if (_isatty(_fileno(stdout)) == 0 && GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) != FILE_TYPE_UNKNOWN)
-    {
-        return;
-    }
-
-    if (AttachConsole(ATTACH_PARENT_PROCESS))
-    {
-        FILE* Stream = nullptr;
-        freopen_s(&Stream, "CONOUT$", "w", stdout);
-        freopen_s(&Stream, "CONOUT$", "w", stderr);
-    }
-}
-#endif
 }
 
 int RunExtract(const std::filesystem::path& Input, const std::optional<std::filesystem::path>& Output)
 {
-#ifdef _WIN32
     AttachParentConsole();
-#endif
     std::error_code Error;
     const bool bFolder = fs::is_directory(Input, Error);
     const fs::path GameFolder = bFolder ? Input : Input.parent_path();
@@ -1339,4 +1232,22 @@ int RunExtract(const std::filesystem::path& Input, const std::optional<std::file
 
     std::printf("Extracted to %s: %s; %zu failed\n", Root.string().c_str(), Summary.c_str(), Failed);
     return Failed == 0 ? 0 : 1;
+}
+
+void AttachParentConsole()
+{
+#ifdef _WIN32
+    if (_isatty(_fileno(stdout)) == 0 && GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) != FILE_TYPE_UNKNOWN)
+    {
+        return;
+    }
+
+    if (AttachConsole(ATTACH_PARENT_PROCESS))
+    {
+        FILE* Stream = nullptr;
+        // Without the console the output is lost anyway, so a failed reopen changes nothing.
+        static_cast<void>(freopen_s(&Stream, "CONOUT$", "w", stdout));
+        static_cast<void>(freopen_s(&Stream, "CONOUT$", "w", stderr));
+    }
+#endif
 }

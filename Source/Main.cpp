@@ -19,6 +19,7 @@
 #include "Pg/ResourceArchive.h"
 #include "Pg/Sound.h"
 #include "Render/Renderer.h"
+#include "Tools/Compress.h"
 #include "Tools/Extract.h"
 
 #include <GLFW/glfw3.h>
@@ -6673,6 +6674,19 @@ int main(const int ArgCount, char** const Args)
     if (ArgCount >= 3 && std::strcmp(Args[1], "--extract") == 0)
     {
         return RunExtract(Args[2], ArgCount >= 4 ? std::optional<std::filesystem::path>(Args[3]) : std::nullopt);
+    }
+
+    // --compress <extracted folder> [<output folder>]: the extracted tree packed back into archives the original reads, then exit.
+    if (ArgCount >= 3 && std::strcmp(Args[1], "--compress") == 0)
+    {
+        return RunCompress(Args[2], ArgCount >= 4 ? std::optional<std::filesystem::path>(Args[3]) : std::nullopt);
+    }
+
+    // --verify-extract <game folder>: extract, pack back and compare, then edit a text and an image and check they pack.
+    if (ArgCount >= 3 && std::strcmp(Args[1], "--verify-extract") == 0)
+    {
+        AttachParentConsole();
+        return VerifyExtractRoundTrip(Args[2]);
     }
 
     std::optional<std::filesystem::path> DataPath;
