@@ -4352,6 +4352,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     FDeathDrift DeathDrift;
     // When the eased death view last moved.
     std::optional<uint32_t> DeathCameraAt;
+    // The presses since the death, which end the game early.
+    std::optional<FInputPress> DeathInput;
     std::optional<FSpriteSheet> PauseSheet;
     // action-next-weapon, then action-weapon-1 to 9.
     constexpr size_t WeaponKeyCount = 10;
@@ -4850,11 +4852,18 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 return FLevelEnd{ .Kind = ELevelEnd::Menu };
             }
 
+            // The original ends the dead player's game early only on Escape; the port on any fresh press, a pad button included.
+            if (DeathTimer && !DeathInput)
+            {
+                DeathInput.emplace(Window);
+            }
+
+            const bool bDeathSkipped = DeathTimer && DeathInput && DeathInput->Poll();
             if (bEscapePressed && bMapShown)
             {
                 ToggleMap();
             }
-            else if (bEscapePressed && DeathTimer)
+            else if ((bEscapePressed || bDeathSkipped) && DeathTimer)
             {
                 *DeathTimer = 0;
             }
