@@ -143,6 +143,9 @@ public:
     void StopStoryVoice();
     // The whole game, sound included, stands still while it is inactive.
     void SetPaused(bool bPaused) { Mixer.SetPaused(bPaused); }
+    // MenuMain (004271a0), MenuGame (004223e0) and the menu fade FUN_0041e5a0, which also fades each level in, set every channel's pan back to the middle (SoundSetPan at 0045ff00).
+    // Without it a channel keeps the last pan given to a sound on it, such as the menu flash's hard left on channel 2, the player's weapon channel.
+    void CenterPans();
     // The reverb follows the zone of the level playing (its path's folder: cave, hitek, underground or cpu); an empty path, as in the menus, has none.
     void SetLevelZone(std::string_view LevelPath);
 

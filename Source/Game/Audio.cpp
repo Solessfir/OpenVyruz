@@ -200,6 +200,14 @@ void FAudio::Apply(const FAudioSettings& InSettings)
     }
 }
 
+void FAudio::CenterPans()
+{
+    for (uint32_t Channel = 1; Channel <= Sound::FMixer::ChannelCount; ++Channel)
+    {
+        Mixer.SetPan(Channel, 0);
+    }
+}
+
 void FAudio::SetLevelZone(const std::string_view LevelPath)
 {
     const std::string_view Folder = LevelPath.substr(0, LevelPath.find_first_of("\\/"));

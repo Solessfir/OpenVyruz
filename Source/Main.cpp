@@ -3414,6 +3414,11 @@ enum class EMenuChoice : uint8_t
 EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, std::optional<FSession>& Session,
     FSettings& Settings, const std::filesystem::path& DataFolder, FSession& Chosen)
 {
+    if (GameAudio)
+    {
+        GameAudio->CenterPans();
+    }
+
     enum EItem : size_t
     {
         RestartItem,
@@ -3603,6 +3608,11 @@ void FadeMenuBackdrop(GLFWwindow* const Window, FRenderer& Renderer, const FMenu
 // MenuGame at 004223e0, the menu Escape opens during a level: Resume Game, Options, Retry Level (shown while there is a default session, which a running level always has) and End Game.
 std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
 {
+    if (GameAudio)
+    {
+        GameAudio->CenterPans();
+    }
+
     enum EItem : size_t
     {
         ResumeItem,
@@ -5014,9 +5024,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     Combat->Details = Settings.Details;
                 }
 
+                // The fade back in (FUN_0041e5a0) centres the pans again.
                 if (GameAudio)
                 {
                     GameAudio->Apply(Settings.Audio);
+                    GameAudio->CenterPans();
                 }
 
                 // The mouse moved over the menu, which steers nothing.
@@ -7322,9 +7334,11 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
             }
         }
 
+        // The level's fade in (FUN_0041e5a0) centres the pans.
         if (GameAudio)
         {
             GameAudio->SetLevelZone(Path);
+            GameAudio->CenterPans();
         }
 
         const std::expected<FLevelEnd, std::string> End = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Cheats, Carried, DebugLevels, Panel ? &*Panel : nullptr,
