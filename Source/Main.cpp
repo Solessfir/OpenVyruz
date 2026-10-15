@@ -7322,6 +7322,11 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
             }
         }
 
+        if (GameAudio)
+        {
+            GameAudio->SetLevelZone(Path);
+        }
+
         const std::expected<FLevelEnd, std::string> End = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Cheats, Carried, DebugLevels, Panel ? &*Panel : nullptr,
             MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Settings, Demo ? &*Demo : nullptr, bNewGame || Carried.has_value());
         bNewGame = false;
@@ -7330,6 +7335,7 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
         // EngineRunLevel stops the player's weapon and motor, and LoopLevels brings the first tune back.
         if (GameAudio)
         {
+            GameAudio->SetLevelZone({});
             GameAudio->StopLevelChannels();
             if (GameAudio->GetMusicTrack() > 1)
             {
