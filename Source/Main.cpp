@@ -4277,9 +4277,6 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
     FFrameClock Clock(FramePeriod);
     Clock.Poll(ClockMilliseconds());
-    // Development aid: the frame rate in the window title.
-    uint32_t FpsWindowStart = ClockMilliseconds();
-    uint32_t FpsFrames = 0;
     // Development aid: N starts the next level, wrapping to the first after the last, always without a carried player.
     bool bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
     bool bPaused = false;
@@ -5211,7 +5208,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                     // The pad, a deliberate addition to the original's controls. Its left stick heads the ship that way as the absolute direction does.
                     // While it fires the ship turns toward the nearest hunter in view and in clear sight, a right stick flick switches to the one that way,
-                    // and the left stick still moves by screen direction, split into thrust and strafe along the ship. The D-pad strafes.
+                    // and the left stick still moves by screen direction, split into thrust and strafe along the ship.
                     // A movement key or the mouse hands the steering back.
                     const bool bKeysSteer = ActionDown(EAction::Forward) || ActionDown(EAction::Backward) || ActionDown(EAction::Left) || ActionDown(EAction::Right) || bSideLeft || bSideRight;
                     if (TakeGamepadActivity() && !Demo)
@@ -5297,8 +5294,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                                                                                          : EPlayerTurn::None;
                             bForwardKey = (Input & PlayerInputForward) != 0;
                             bBackwardKey = (Input & PlayerInputBackward) != 0;
-                            bSideLeft = (Input & PlayerInputStrafeLeft) != 0 || GamepadStrafe() < 0;
-                            bSideRight = (Input & PlayerInputStrafeRight) != 0 || GamepadStrafe() > 0;
+                            bSideLeft = (Input & PlayerInputStrafeLeft) != 0;
+                            bSideRight = (Input & PlayerInputStrafeRight) != 0;
                             // The aim keeps turning while the ship strafes; turning by hand gives way to a strafe on its side as the keys do.
                             bTurnLeft = Turn == EPlayerTurn::Left && (Target || !bSideLeft);
                             bTurnRight = Turn == EPlayerTurn::Right && (Target || !bSideRight);
@@ -5308,10 +5305,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             const uint32_t Input = Stick ? StickMoveInput(*Player, { .X = Stick->first, .Y = Stick->second }) : 0;
                             bForwardKey = (Input & PlayerInputForward) != 0;
                             bBackwardKey = (Input & PlayerInputBackward) != 0;
-                            bSideLeft = GamepadStrafe() < 0;
-                            bSideRight = GamepadStrafe() > 0;
-                            bTurnLeft = (Input & PlayerInputTurnLeft) != 0 && !bSideLeft;
-                            bTurnRight = (Input & PlayerInputTurnRight) != 0 && !bSideRight;
+                            bSideLeft = false;
+                            bSideRight = false;
+                            bTurnLeft = (Input & PlayerInputTurnLeft) != 0;
+                            bTurnRight = (Input & PlayerInputTurnRight) != 0;
                         }
                     }
 
@@ -6629,16 +6626,6 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             bInventoryKeyDown = ActionDown(EAction::Inventory);
             Clock = FFrameClock(FramePeriod);
             Clock.Poll(ClockMilliseconds());
-        }
-
-        ++FpsFrames;
-        constexpr uint32_t FpsWindowMilliseconds = MillisecondsPerSecond;
-        if (const uint32_t Now = ClockMilliseconds(); Now - FpsWindowStart >= FpsWindowMilliseconds)
-        {
-            const std::string Title = std::format("Vyruz - {:.0f} fps", FpsFrames * double(MillisecondsPerSecond) / (Now - FpsWindowStart));
-            glfwSetWindowTitle(Window, Title.c_str());
-            FpsWindowStart = Now;
-            FpsFrames = 0;
         }
 
         // EngineRunLevel ends the game after a starred lift: the registered game's two ending pages over theend.tga (FUN_00402890), then the score table and the menu.

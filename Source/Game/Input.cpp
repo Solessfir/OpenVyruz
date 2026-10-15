@@ -553,11 +553,6 @@ bool IsGamepadPreviousWeaponDown()
     return PadDown(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
 }
 
-int GamepadStrafe()
-{
-    return int(PadDown(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT)) - int(PadDown(GLFW_GAMEPAD_BUTTON_DPAD_LEFT));
-}
-
 std::optional<std::pair<float, float>> GamepadMoveStick()
 {
     const float X = Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_X];

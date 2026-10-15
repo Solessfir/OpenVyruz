@@ -122,8 +122,6 @@ void NoteMouseUsed();
 bool IsGamepadActionDown(EAction Action);
 // LB, the previous weapon, which the original's actions lack.
 bool IsGamepadPreviousWeaponDown();
-// The D-pad's strafe: -1 left, 1 right, 0 neither.
-int GamepadStrafe();
 // The left stick past its dead zone, x right and y down, each from -1 to 1.
 std::optional<std::pair<float, float>> GamepadMoveStick();
 // How far the left stick is pushed, from 0 at its dead zone to 1 at full travel, which scales the ship's top speed.
