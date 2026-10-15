@@ -5427,12 +5427,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                     // Extasy (object flag 0x1000000) holds the thrust full forward whatever the keys say.
                     const bool bForward = Surprises.Active == ESurprise::Extasy || bForwardKey;
-                    bThrustInput = bForward;
+                    bThrustInput = bForward && !bFinaleStarted;
                     const bool bLeft = Surprises.bReversed ? bTurnRight : bTurnLeft;
                     const bool bRight = Surprises.bReversed ? bTurnLeft : bTurnRight;
                     const bool bStrafeLeft = Surprises.bReversed ? bSideRight : bSideLeft;
                     const bool bStrafeRight = Surprises.bReversed ? bSideLeft : bSideRight;
-                    FPlayerCommand Command = Surprises.bBlockedMotor ? FPlayerCommand{}
+                    // Unlike the original, the finale takes the controls away, so nothing can undo the win.
+                    FPlayerCommand Command = Surprises.bBlockedMotor || bFinaleStarted ? FPlayerCommand{}
                                                                       : PlayerCommandFromKeys(bForward, bBackwardKey && Surprises.Active != ESurprise::Extasy, bLeft, bRight,
                                                                           bStrafeLeft, bStrafeRight);
                     // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its velocity in collision units, and drives with the replayed input.
@@ -5521,7 +5522,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
 
                 const FPlayerTarget Rider{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
-                if (bFullUpdate)
+                if (bFullUpdate && !bFinaleStarted)
                 {
                     StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &Rider);
                 }
@@ -5544,7 +5545,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     Combat->Clock += StepMilliseconds;
                     const float EnergyBefore = Inventory.Energy;
                     const float ShieldBefore = Inventory.Shield;
-                    if (bFullUpdate)
+                    if (bFullUpdate && !bFinaleStarted)
                     {
                         StepGenerators(*Combat, *Level, Bodies, Rider, StepMilliseconds);
                     }
@@ -5552,7 +5553,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     constexpr uint32_t FireBit = 0x2;
                     const bool bLiveFire = Demo ? (DemoInput & FireBit) != 0 : bAutoFire || ActionDown(EAction::Fire);
                     bFireInput = bLiveFire;
-                    const bool bFire = !Inventory.Surprises.bBlockedMotor && bLiveFire;
+                    const bool bFire = !Inventory.Surprises.bBlockedMotor && !bFinaleStarted && bLiveFire;
                     if (!DeathTimer)
                     {
                         StepPlayerWeapon(*Combat, bFire, *Player, *PlayerObject, PlayerIndex, PlayerSpriteSize, Inventory, Messages);
@@ -5560,7 +5561,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                     if (bFullUpdate)
                     {
-                        StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, *Player);
+                        if (!bFinaleStarted)
+                        {
+                            StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, *Player);
+                        }
+
                         StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies,
                             { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
                     }
@@ -5659,6 +5664,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     {
                         std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
                         std::fflush(stdout);
+                    }
+
+                    // Shots and blasts still in flight during the finale leave the player unharmed.
+                    if (bFinaleStarted)
+                    {
+                        Inventory.Energy = std::max(Inventory.Energy, EnergyBefore);
+                        Inventory.Shield = std::max(Inventory.Shield, ShieldBefore);
                     }
 
                     if (!Demo)
