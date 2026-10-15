@@ -6187,6 +6187,17 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
+        // Objects created during play (drops, births, blast parts) join the counters, an invisible one from nothing as ObjectActivate starts it.
+        const size_t KnownObjects = ObjectFades.size();
+        ObjectFades.resize(std::max(KnownObjects, Level->Objects.size()), FullFade + 1);
+        for (const FObjectBody& Body : Bodies)
+        {
+            if (Body.ObjectIndex >= KnownObjects && Body.ObjectIndex < ObjectFades.size() && Body.bInvisible)
+            {
+                ObjectFades[Body.ObjectIndex] = 0;
+            }
+        }
+
         for (const FObjectBody& Body : Bodies)
         {
             int& Fade = ObjectFades[Body.ObjectIndex];
@@ -6760,6 +6771,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 GameAudio->PlayFade();
             }
 
+            // The finale's fade leaves the ramp black; the pages are drawn with the user's gamma, as the game-over image is.
+            Renderer.ResetGamma();
             constexpr int32_t FirstPageLeft = 0x46;
             constexpr int32_t SecondPageLeft = 0x8c;
             if (Panel)
