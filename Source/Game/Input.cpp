@@ -430,7 +430,7 @@ struct FGamepad
 
 FGamepad Pad;
 
-constexpr float StickDeadZone = 0.5f;
+constexpr float StickDeadZone = 0.2f;
 constexpr float TriggerPressed = 0.5f;
 constexpr float FlickOut = 0.8f;
 constexpr float MenuStickOut = 0.6f;
@@ -563,6 +563,12 @@ std::optional<std::pair<float, float>> GamepadMoveStick()
     const float X = Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
     const float Y = Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
     return StickLength(X, Y) >= StickDeadZone ? std::optional(std::pair(X, Y)) : std::nullopt;
+}
+
+float GamepadThrottle()
+{
+    const float Length = StickLength(Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_X], Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_Y]);
+    return std::clamp((Length - StickDeadZone) / (1.f - StickDeadZone), 0.f, 1.f);
 }
 
 std::optional<std::pair<float, float>> GamepadAimFlick()

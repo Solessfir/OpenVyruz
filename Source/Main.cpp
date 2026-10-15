@@ -5362,6 +5362,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         Movement.TurnTimeout *= FreeAimTurnScale;
                     }
 
+                    // The left stick's push sets the top speed and the strafe: thrust only pushes below a tenth of Speed-max, as the low speed relies on.
+                    if (bPadSteers && GamepadMoveStick())
+                    {
+                        const float Throttle = GamepadThrottle();
+                        Movement.SpeedMax *= Throttle;
+                        Command.Strafe *= Throttle;
+                    }
+
                     if (const FObjectBody* const Struck = StepPlayer(*Player, Movement, Command, StepMilliseconds, *Terrain, *Level, Bodies))
                     {
                         ReportDoorContact(*Doors, *Struck, *Player, Inventory, Messages);
