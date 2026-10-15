@@ -1120,9 +1120,101 @@ uint32_t ClockMilliseconds()
 
 // PgPoll's message pump (004813c0): once the window procedure has found the game inactive (AppActivate at 004814c0) and paused the clock (PgClockPause at 00469730), it blocks in GetMessage until the game is active again, so nothing moves meanwhile.
 // Minimized or without the focus counts as inactive; on Wayland a window on a hidden workspace loses the focus, so nothing is drawn or presented for it.
+// The original ran fullscreen at 640x480; the port fills the monitor at its desktop mode, the 4:3 picture letterboxed, or runs in a window.
+// The window's place and size while windowed, kept across a fullscreen spell.
+struct FWindowedPlace
+{
+    int X = 0;
+    int Y = 0;
+    int Width = int(ScreenWidth) * 2;
+    int Height = int(ScreenHeight) * 2;
+};
+FWindowedPlace WindowedPlace;
+bool bFullscreenKeyDown = false;
+
+// The monitor holding the window's centre, else the primary one.
+GLFWmonitor* WindowMonitor(GLFWwindow* const Window)
+{
+    int Count = 0;
+    GLFWmonitor** const Monitors = glfwGetMonitors(&Count);
+    int X = 0;
+    int Y = 0;
+    int Width = 0;
+    int Height = 0;
+    glfwGetWindowPos(Window, &X, &Y);
+    glfwGetWindowSize(Window, &Width, &Height);
+    for (GLFWmonitor* const Monitor : std::span(Monitors, size_t(std::max(Count, 0))))
+    {
+        int Left = 0;
+        int Top = 0;
+        const GLFWvidmode* const Mode = glfwGetVideoMode(Monitor);
+        glfwGetMonitorPos(Monitor, &Left, &Top);
+        const int CentreX = X + Width / 2;
+        const int CentreY = Y + Height / 2;
+        if (Mode && CentreX >= Left && CentreX < Left + Mode->width && CentreY >= Top && CentreY < Top + Mode->height)
+        {
+            return Monitor;
+        }
+    }
+
+    return glfwGetPrimaryMonitor();
+}
+
+void SetFullscreen(GLFWwindow* const Window, const bool bFullscreen)
+{
+    if ((glfwGetWindowMonitor(Window) != nullptr) == bFullscreen)
+    {
+        return;
+    }
+
+    if (bFullscreen)
+    {
+        GLFWmonitor* const Monitor = WindowMonitor(Window);
+        const GLFWvidmode* const Mode = Monitor ? glfwGetVideoMode(Monitor) : nullptr;
+        if (!Mode)
+        {
+            return;
+        }
+
+        // Wayland gives no window position; the window then comes back wherever the compositor puts it.
+        if (glfwGetPlatform() != GLFW_PLATFORM_WAYLAND)
+        {
+            glfwGetWindowPos(Window, &WindowedPlace.X, &WindowedPlace.Y);
+        }
+
+        glfwGetWindowSize(Window, &WindowedPlace.Width, &WindowedPlace.Height);
+        glfwSetWindowMonitor(Window, Monitor, 0, 0, Mode->width, Mode->height, Mode->refreshRate);
+    }
+    else
+    {
+        glfwSetWindowMonitor(Window, nullptr, WindowedPlace.X, WindowedPlace.Y, WindowedPlace.Width, WindowedPlace.Height, GLFW_DONT_CARE);
+    }
+
+    bCursorToCapture = true;
+}
+
+bool IsAltDown(GLFWwindow* const Window)
+{
+    return glfwGetKey(Window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS || glfwGetKey(Window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
+}
+
+// Alt+Enter or F11 switches between fullscreen and a window, wherever the game is.
+void StepFullscreenKey(GLFWwindow* const Window)
+{
+    const bool bDown = glfwGetKey(Window, GLFW_KEY_F11) == GLFW_PRESS ||
+        (IsAltDown(Window) && (glfwGetKey(Window, GLFW_KEY_ENTER) == GLFW_PRESS || glfwGetKey(Window, GLFW_KEY_KP_ENTER) == GLFW_PRESS));
+    if (bDown && !bFullscreenKeyDown)
+    {
+        SetFullscreen(Window, glfwGetWindowMonitor(Window) == nullptr);
+    }
+
+    bFullscreenKeyDown = bDown;
+}
+
 void PollEvents(GLFWwindow* const Window)
 {
     glfwPollEvents();
+    StepFullscreenKey(Window);
     StepMouseWheel();
     StepGamepad(ClockMilliseconds());
     const auto IsInactive = [Window]
@@ -1447,9 +1539,12 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
     const auto ReadDown = [Window]
     {
         std::array<bool, Keys.size() + 1> Down{};
+        // Alt+Enter switches fullscreen instead of choosing an item.
+        const bool bAlt = IsAltDown(Window);
         for (size_t Index = 0; Index < Keys.size(); ++Index)
         {
-            Down[Index] = glfwGetKey(Window, Keys[Index]) == GLFW_PRESS;
+            const bool bReturn = Keys[Index] == GLFW_KEY_ENTER || Keys[Index] == GLFW_KEY_KP_ENTER;
+            Down[Index] = glfwGetKey(Window, Keys[Index]) == GLFW_PRESS && !(bReturn && bAlt);
         }
 
         Down[MouseButton] = glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
@@ -6862,6 +6957,7 @@ Playing:
   --start <x>,<y>           Put the player at that world position as the level starts; skips the menu.
   --skipIntro               Go straight to the main menu, without the story page and the intro (Extras still
                             plays the intro).
+  --windowed                Start in a window instead of fullscreen; Alt+Enter or F11 switches either way.
 
 Cheats (combine freely, any case; never applied to the demo):
   --godMode                 Energy and shield stay full, so nothing can kill the player.
@@ -6969,12 +7065,13 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
     // --level and --start skip the main menu at startup, --skipIntro only the intro before it.
     bool bSkipMenu = false;
     bool bSkipIntro = false;
+    bool bWindowed = false;
     // Development aid: --dump-gaf PATH lists an archive GAF's animations with their frame counts and durations.
     std::optional<std::string> DumpGafPath;
     // Holds the trigger down, for checking shots and explosions without a keyboard.
     bool bAutoFire = false;
     FCheats Cheats;
-    const std::array<std::pair<std::string_view, bool*>, 7> Switches = { {
+    const std::array<std::pair<std::string_view, bool*>, 8> Switches = { {
         { "--verify-gaf", &bVerifyGafs },
         { "--verify-levels", &bVerifyLevels },
         { "--verify-game", &bVerifyGame },
@@ -6982,6 +7079,7 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
         { "--auto-fire", &bAutoFire },
         { "--skipintro", &bSkipIntro },
         { "--skip-intro", &bSkipIntro },
+        { "--windowed", &bWindowed },
     } };
     for (size_t Index = 0; Index < Arguments.size(); ++Index)
     {
@@ -7199,11 +7297,18 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
     constexpr const char* AppId = "openvyruz";
     glfwWindowHintString(GLFW_WAYLAND_APP_ID, AppId);
     glfwWindowHintString(GLFW_X11_CLASS_NAME, AppId);
-    GLFWwindow* const Window = glfwCreateWindow(static_cast<int>(ScreenWidth) * 2, static_cast<int>(ScreenHeight) * 2, "Vyruz", nullptr, nullptr);
+    // Fullscreen stays up when another window takes the focus; the game pauses instead, as it does in a window.
+    glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
+    GLFWwindow* const Window = glfwCreateWindow(WindowedPlace.Width, WindowedPlace.Height, "Vyruz", nullptr, nullptr);
     if (!Window)
     {
         std::fprintf(stderr, "glfwCreateWindow failed\n");
         return 1;
+    }
+
+    if (!bWindowed)
+    {
+        SetFullscreen(Window, true);
     }
 
     WatchMouseWheel(Window);
