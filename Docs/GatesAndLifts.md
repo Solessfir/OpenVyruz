@@ -69,7 +69,7 @@ When the level ends on a starred name, `EngineRunLevel` clears the level-change 
 
 Each page (`FUN_004027f0` with the callback at `00402640`) draws the 640x480 Targa image and the text in `v-bonus.gaf` font 4 with word wrap on, inside the clip from x 70 (140 for the second ending page), y 100 to the screen's right edge, until a key or mouse button goes down. The level name is then cleared, which leads back to the menu.
 
-The port plays the registered game. With no menu yet, a new game starts at the first level after the pages.
+The port plays the registered game: after the pages it shows the score table and returns to the main menu.
 
 Once the final object dies, the port takes the player's motor and fire away as the original's ignored action keys do, and it also stops the actors, turrets and generators and keeps the player's energy and shield from dropping, so nothing during the flashes can kill the player. Shots and explosions already under way still finish. The original keeps the rest of the level running until the fade ends.
 
