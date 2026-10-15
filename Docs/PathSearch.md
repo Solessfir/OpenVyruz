@@ -47,6 +47,8 @@ Cops and burners have 48 body poses, two per direction; jeeps, rollers, tanks an
 
 `FixedIdleLookAround` (`00444a40`) runs for a seeker or tracker that can turn on the spot (`Can-turn-on-place`) and stands still with no turn or thrust command, such as a fixed burner waiting for the player. While it is at its target pose it draws `RandomRange(1, 150)` from the Misc stream, and a 75 picks a new target pose with `RandomRange(0, 23) + 1`, so only poses 1 to 24 even for a 48-pose body. It then turns one pose toward it per `Turn-timeout` (`PlayerTurn`). A two-piece body looks around with its top instead (`FUN_00444b80`); no two-piece class can turn on the spot, so the port leaves that out.
 
+An aimed seeker in firing range that hovers or stands also counts as idle, so in the original it now and then turns one pose off its target and back; a Visible-when-firing heli such as the T3 dragon scouts blinks out each time. The port keeps such a seeker on target: it still makes the draws, so the Misc stream is unchanged, but drops the new target pose while the last engage found the target within firing distance.
+
 Walking, turning poses and bobbing follow the object passes in [MainLoop.md](MainLoop.md#object-passes).
 
 ## Random movers and guardians

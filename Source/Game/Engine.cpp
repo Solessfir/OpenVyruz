@@ -5453,9 +5453,13 @@ void LookAround(FObjectBody& Body, FRandom& Misc, const int32_t Step)
     constexpr int LookChance = 75;
     constexpr int LookPoseCount = 24;
     const int PoseCount = DirectionCount * Actor.PosesPerDirection;
+    // Unlike the original, a seeker in firing range keeps its aim: the look around turned an aimed heli one pose away and back, and a Visible-when-firing one blinked out meanwhile.
+    // The draws still happen, so the Misc stream stays the original's.
+    const bool bEngaged = Actor.Seeker && (Actor.Seeker->Work.RangeState & RangeFiring) != 0;
     if (State.Pose == State.TargetPose && Misc.Range(1, LookChanceRange) == LookChance)
     {
-        State.TargetPose = Misc.Range(0, LookPoseCount - 1) + 1;
+        const int LookPose = Misc.Range(0, LookPoseCount - 1) + 1;
+        State.TargetPose = bEngaged ? State.TargetPose : LookPose;
     }
 
     if (State.TurnTimer < 0)
