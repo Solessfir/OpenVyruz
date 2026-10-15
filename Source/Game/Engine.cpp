@@ -4641,7 +4641,7 @@ int32_t DecorDepthBias(const ETerrain Terrain)
     return Terrain == ETerrain::Roof ? int32_t(2 * BlockHeight) : int32_t(BlockHeight);
 }
 
-std::vector<FDecorAnimation> StartMapAnimations(const FLevel& Level, FResourceArchive& Archive, FRandom& Random)
+std::vector<FDecorAnimation> StartLevelMapAnimations(const FLevel& Level, FResourceArchive& Archive, FRandom& Random)
 {
     std::unordered_map<int, std::vector<Gaf::FAnimation>> Loaded;
     // By descriptor, 1-based like the .3DI tile ids: the GAF and the animation index of a loaded Anim descriptor.
@@ -4714,7 +4714,7 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
     const bool bDemo)
 {
     FCombat Combat;
-    Combat.DecorAnimations = StartMapAnimations(Level, Archive, Combat.Random);
+    Combat.DecorAnimations = StartLevelMapAnimations(Level, Archive, Combat.Random);
     if (bDemo)
     {
         Combat.Random = FRandom{};
@@ -6379,6 +6379,11 @@ bool HuntsPlayer(const FObjectBody& Body)
 {
     return Body.Turret || (Body.Actor && Body.Actor->Seeker) || (Body.Generator && Body.Generator->bProductHunts);
 }
+}
+
+std::vector<FDecorAnimation> StartMapAnimations(const FLevel& Level, FResourceArchive& Archive, FRandom& Random)
+{
+    return StartLevelMapAnimations(Level, Archive, Random);
 }
 
 bool IsAutoAimTarget(const FObjectBody& Body, const FLevel& Level)

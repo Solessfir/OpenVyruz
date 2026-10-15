@@ -767,6 +767,9 @@ struct FDecorAnimation
     FAnimationPlayback Playback;
 };
 
+// LevelStartMapAnimations at 0041f0b0: the level's map animations, each starting on RandomRange(1, frames) and drawing its start time.
+std::vector<FDecorAnimation> StartMapAnimations(const FLevel& Level, FResourceArchive& Archive, FRandom& Random);
+
 // A running FX object; an explosion's blast goes off once with it.
 struct FEffect
 {

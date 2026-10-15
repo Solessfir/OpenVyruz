@@ -1,6 +1,9 @@
 #include "Tools/Extract.h"
 
 #include "Game/Animation.h"
+#include "Game/Collision.h"
+#include "Game/Engine.h"
+#include "Game/Level.h"
 #include "Pg/Font.h"
 #include "Pg/Gaf.h"
 #include "Pg/ResourceArchive.h"
@@ -608,6 +611,505 @@ const FCodePage& DetectCodePage(FResourceArchive& Archive)
     return bCyrillic ? Cp1251High : Cp1252High;
 }
 
+// A block of the .3DC/.3DO/.3DP grammar: its kind and name, its fields in order (repeats kept), and its child blocks.
+// The grammar's first line, the format version, which the parser keeps as a bare field of the root.
+bool IsFormatLine(const std::string_view Name, const std::string_view Value)
+{
+    return Value.empty() && !Name.empty() && std::isdigit(uint8_t(Name.front())) && Name.find('.') != std::string_view::npos;
+}
+
+void WriteBlock(FJsonWriter& Json, const FLevelPropertyBlock& Block)
+{
+    Json.BeginObject();
+    for (const auto& [Name, Value] : Block.Fields)
+    {
+        if (IsFormatLine(Name, Value))
+        {
+            Json.Field("Format", Name);
+        }
+    }
+
+    Json.Field("Kind", Block.Kind);
+    Json.Field("Name", Block.Name);
+    Json.Key("Fields");
+    Json.BeginArray();
+    for (const auto& [Name, Value] : Block.Fields)
+    {
+        if (IsFormatLine(Name, Value))
+        {
+            continue;
+        }
+
+        Json.BeginObject();
+        Json.Field("Name", Name);
+        Json.Field("Value", Value);
+        Json.EndObject();
+    }
+
+    Json.EndArray();
+    Json.Key("Children");
+    Json.BeginArray();
+    for (const FLevelPropertyBlock& Child : Block.Children)
+    {
+        WriteBlock(Json, Child);
+    }
+
+    Json.EndArray();
+    Json.EndObject();
+}
+
+std::string BlockText(const FLevelPropertyBlock& Block)
+{
+    FJsonWriter Json;
+    WriteBlock(Json, Block);
+    return Json.GetText();
+}
+
+// A class library: its classes and DEFAULT-PROPERTY blocks as written, before any Derived-From is resolved.
+bool ExportClasses(FExtractor& Extractor, FManifestEntry& Entry, const fs::path& Base, const std::span<const uint8_t> File, const FCodePage& Page)
+{
+    const std::expected<FLevelPropertyBlock, std::string> Root = ParseLevelBlocks(ToUtf8(File, Page));
+    if (!Root)
+    {
+        Entry.Error = Root.error();
+        return false;
+    }
+
+    return Extractor.WriteText(Entry, fs::path(Base).replace_extension(".json"), BlockText(*Root));
+}
+
+// The demo: each record's clock time, input bits, position and facing (DemoLoad at 004292b0).
+bool ExportRecording(FExtractor& Extractor, FManifestEntry& Entry, const fs::path& Base, FResourceArchive& Archive)
+{
+    const std::expected<std::vector<FDemoRecord>, std::string> Records = LoadDemo(Archive);
+    if (!Records)
+    {
+        Entry.Error = Records.error();
+        return false;
+    }
+
+    FJsonWriter Json;
+    Json.BeginObject();
+    Json.Key("Records");
+    Json.BeginArray();
+    for (const FDemoRecord& Record : *Records)
+    {
+        Json.BeginObject();
+        Json.Field("Time", Record.Time);
+        Json.Field("Input", Record.Input);
+        Json.Field("X", Record.X);
+        Json.Field("Y", Record.Y);
+        Json.Field("Direction", Record.Direction);
+        Json.EndObject();
+    }
+
+    Json.EndArray();
+    Json.EndObject();
+    return Extractor.WriteText(Entry, fs::path(Base).replace_extension(".json"), Json.GetText());
+}
+
+std::string_view TerrainName(const ETerrain Type)
+{
+    constexpr std::array<std::string_view, 16> Names = { "None", "Bridge", "Corner", "Ground", "GroundLeftWall", "GroundRightWall", "HalfGround", "HalfRoof",
+        "HorizontalWall", "LeftWall", "Obstacle", "RightWall", "Roof", "RoofPlus", "WallCorner", "Water" };
+    return size_t(Type) < Names.size() ? Names[size_t(Type)] : "None";
+}
+
+// The JSON of the GAF an archive path names, relative to a level's folder.
+std::string GafJsonPath(const std::string_view ArchiveName, const fs::path& LevelFolder)
+{
+    const FTarget Target = MapEntry(ArchiveName);
+    return fs::path(fs::relative(Target.Folder / (Target.Stem + ".json"), LevelFolder)).generic_string();
+}
+
+// One Tiled property, a string unless told otherwise.
+void TiledProperty(FJsonWriter& Json, const std::string_view Name, const std::string_view Value)
+{
+    Json.BeginObject();
+    Json.Field("name", Name);
+    Json.Field("type", std::string("string"));
+    Json.Field("value", Value);
+    Json.EndObject();
+}
+
+void TiledNumberProperty(FJsonWriter& Json, const std::string_view Name, const int64_t Value)
+{
+    Json.BeginObject();
+    Json.Field("name", Name);
+    Json.Field("type", std::string("int"));
+    Json.Field("value", Value);
+    Json.EndObject();
+}
+
+// A level as a Tiled map (.tmj) with its tileset image, and its terrain descriptors and cells as JSON.
+// The map's tile layers are the .3DG's MAP_ layers over its BLK_ blocks; its object layers hold the .3DO's objects with their own fields, the .3DP's patrol paths
+// and the static terrain collision. The .3DO's header fields become map properties.
+bool ExportLevel(FExtractor& Extractor, std::vector<FManifestEntry*> Entries, const fs::path& Folder, const std::string& LevelPath, FResourceArchive& Archive,
+    const FCodePage& Page)
+{
+    FManifestEntry Shared;
+    const auto Fail = [&](const std::string& Error)
+    {
+        for (FManifestEntry* const Entry : Entries)
+        {
+            Entry->Error = Error;
+        }
+
+        return false;
+    };
+    const std::expected<FLevel, std::string> Level = LoadLevel(Archive, LevelPath);
+    if (!Level)
+    {
+        return Fail(Level.error());
+    }
+
+    const std::optional<std::vector<uint8_t>> ObjectText = Archive.Read(LevelPath + ".3do");
+    const std::optional<std::vector<uint8_t>> PathText = Archive.Read(LevelPath + ".3dp");
+    const std::expected<FLevelPropertyBlock, std::string> Objects = ObjectText ? ParseLevelBlocks(ToUtf8(*ObjectText, Page)) : std::unexpected(std::string("no .3do"));
+    const std::expected<FLevelPropertyBlock, std::string> Paths = PathText ? ParseLevelBlocks(ToUtf8(*PathText, Page)) : std::unexpected(std::string("no .3dp"));
+    const std::expected<FTerrainCollision, std::string> Terrain = BuildTerrainCollision(*Level);
+    if (!Objects || !Paths || !Terrain)
+    {
+        return Fail(!Objects ? Objects.error() : !Paths ? Paths.error() : Terrain.error());
+    }
+
+    // The tileset: every block in a grid of TilesetColumns.
+    constexpr uint32_t TilesetColumns = 16;
+    const uint32_t TileCount = uint32_t(Level->Blocks.size());
+    const uint32_t Columns = std::max(1u, std::min(TilesetColumns, TileCount));
+    const uint32_t Rows = std::max(1u, (TileCount + Columns - 1) / Columns);
+    constexpr size_t RgbaChannels = 4;
+    FImage Tileset{ .Width = Columns * BlockWidth, .Height = Rows * BlockHeight };
+    Tileset.Pixels.assign(size_t(Tileset.Width) * Tileset.Height * RgbaChannels, 0);
+    for (uint32_t Index = 0; Index < TileCount; ++Index)
+    {
+        Blit(Tileset, ImageFromFrame(Level->Blocks[Index]), Index % Columns * BlockWidth, Index / Columns * BlockHeight);
+    }
+
+    const std::optional<std::vector<uint8_t>> TilesetPng = EncodePng(Tileset);
+    if (!TilesetPng || !Extractor.Write(Shared, Folder / "Tileset.png", *TilesetPng))
+    {
+        return Fail("cannot write the tileset");
+    }
+
+    const std::string Id = Folder.filename().string();
+    FJsonWriter Json;
+    Json.BeginObject();
+    Json.Field("type", std::string("map"));
+    Json.Field("version", std::string("1.10"));
+    Json.Field("orientation", std::string("orthogonal"));
+    Json.Field("renderorder", std::string("right-down"));
+    Json.Field("infinite", false);
+    Json.Field("width", Level->GridWidth);
+    Json.Field("height", Level->GridHeight);
+    Json.Field("tilewidth", BlockWidth);
+    Json.Field("tileheight", BlockHeight);
+    Json.Key("properties");
+    Json.BeginArray();
+    for (const auto& [Name, Value] : Objects->Fields)
+    {
+        TiledProperty(Json, IsFormatLine(Name, Value) ? "Format" : Name, IsFormatLine(Name, Value) ? Name : Value);
+    }
+
+    TiledNumberProperty(Json, "WorldExtentX", Level->WorldExtentX);
+    TiledNumberProperty(Json, "WorldExtentY", Level->WorldExtentY);
+    TiledProperty(Json, "Terrain", "Terrain.json");
+    Json.EndArray();
+
+    Json.Key("tilesets");
+    Json.BeginArray();
+    Json.BeginObject();
+    Json.Field("firstgid", 1);
+    Json.Field("name", Id);
+    Json.Field("image", std::string("Tileset.png"));
+    Json.Field("imagewidth", Tileset.Width);
+    Json.Field("imageheight", Tileset.Height);
+    Json.Field("tilewidth", BlockWidth);
+    Json.Field("tileheight", BlockHeight);
+    Json.Field("tilecount", TileCount);
+    Json.Field("columns", Columns);
+    Json.Field("margin", 0);
+    Json.Field("spacing", 0);
+    Json.Key("tiles");
+    Json.BeginArray();
+    for (uint32_t Index = 0; Index < TileCount && Index < Level->BlockDepths.size(); ++Index)
+    {
+        Json.BeginObject();
+        Json.Field("id", Index);
+        Json.Key("properties");
+        Json.BeginArray();
+        TiledNumberProperty(Json, "Depth", Level->BlockDepths[Index]);
+        Json.EndArray();
+        Json.EndObject();
+    }
+
+    Json.EndArray();
+    Json.EndObject();
+    Json.EndArray();
+
+    int64_t LayerId = 0;
+    int64_t ObjectId = 0;
+    Json.Key("layers");
+    Json.BeginArray();
+    const size_t LayerCells = size_t(Level->GridWidth) * Level->GridHeight;
+    for (uint32_t Layer = 0; Layer < Level->LayerCount; ++Layer)
+    {
+        std::vector<int64_t> Data(LayerCells);
+        for (size_t Cell = 0; Cell < LayerCells && Layer * LayerCells + Cell < Level->Map.size(); ++Cell)
+        {
+            Data[Cell] = Level->Map[Layer * LayerCells + Cell];
+        }
+
+        Json.BeginObject();
+        Json.Field("type", std::string("tilelayer"));
+        Json.Field("id", ++LayerId);
+        Json.Field("name", std::format("Map{}", Layer + 1));
+        Json.Field("x", 0);
+        Json.Field("y", 0);
+        Json.Field("width", Level->GridWidth);
+        Json.Field("height", Level->GridHeight);
+        Json.Field("opacity", 1);
+        Json.Field("visible", true);
+        Json.Key("data");
+        Json.Numbers(Data);
+        Json.EndObject();
+    }
+
+    const auto BeginGroup = [&](const std::string_view Name)
+    {
+        Json.BeginObject();
+        Json.Field("type", std::string("objectgroup"));
+        Json.Field("id", ++LayerId);
+        Json.Field("name", Name);
+        Json.Field("draworder", std::string("index"));
+        Json.Field("x", 0);
+        Json.Field("y", 0);
+        Json.Field("opacity", 1);
+        Json.Field("visible", true);
+        Json.Key("objects");
+        Json.BeginArray();
+    };
+    const auto EndGroup = [&]
+    {
+        Json.EndArray();
+        Json.EndObject();
+    };
+
+    // The objects as the .3DO writes them, a point at each Position; the player's is its spawn point.
+    BeginGroup("Objects");
+    for (const FLevelPropertyBlock& Object : Objects->Children)
+    {
+        std::string ClassName(Object.Find("Class-name"));
+        float X = 0.f;
+        float Y = 0.f;
+        if (const std::string_view Position = Object.Find("Position"); !Position.empty())
+        {
+            std::sscanf(std::string(Position).c_str(), "%f , %f", &X, &Y);
+        }
+
+        const auto Placed = std::ranges::find_if(Level->Objects, [&](const FLevelObject& Candidate) { return Candidate.FileIndex == size_t(ObjectId); });
+        Json.BeginObject();
+        Json.Field("id", ++ObjectId);
+        Json.Field("name", ClassName);
+        Json.Field("type", ClassName);
+        Json.Field("x", X);
+        Json.Field("y", Y);
+        Json.Field("width", 0);
+        Json.Field("height", 0);
+        Json.Field("rotation", 0);
+        Json.Field("visible", true);
+        Json.Field("point", true);
+        Json.Key("properties");
+        Json.BeginArray();
+        for (const auto& [Name, Value] : Object.Fields)
+        {
+            if (Name != "Class-name" && Name != "Position")
+            {
+                TiledProperty(Json, Name, Value);
+            }
+        }
+
+        if (!Object.Children.empty())
+        {
+            std::string Blocks;
+            for (const FLevelPropertyBlock& Child : Object.Children)
+            {
+                Blocks += BlockText(Child);
+            }
+
+            TiledProperty(Json, "Blocks", Blocks);
+        }
+
+        if (Placed != Level->Objects.end() && Placed->Behaviour == "Player")
+        {
+            TiledProperty(Json, "Spawn", "Player");
+        }
+
+        Json.EndArray();
+        Json.EndObject();
+    }
+
+    EndGroup();
+
+    BeginGroup("PatrolPaths");
+    for (const FPatrolPath& Path : Level->PatrolPaths)
+    {
+        if (Path.Points.empty())
+        {
+            continue;
+        }
+
+        Json.BeginObject();
+        Json.Field("id", ++ObjectId);
+        Json.Field("name", std::format("Path{}", Path.Id));
+        Json.Field("x", Path.Points.front()[0]);
+        Json.Field("y", Path.Points.front()[1]);
+        Json.Field("rotation", 0);
+        Json.Field("visible", true);
+        Json.Key("polyline");
+        Json.BeginArray();
+        for (const std::array<int32_t, 2>& Point : Path.Points)
+        {
+            Json.BeginObject();
+            Json.Field("x", Point[0] - Path.Points.front()[0]);
+            Json.Field("y", Point[1] - Path.Points.front()[1]);
+            Json.EndObject();
+        }
+
+        Json.EndArray();
+        Json.Key("properties");
+        Json.BeginArray();
+        TiledNumberProperty(Json, "Id", Path.Id);
+        Json.EndArray();
+        Json.EndObject();
+    }
+
+    EndGroup();
+
+    // The animated tiles, at their cells' top-left corners, with the GAF and animation each plays (their random start frames left out).
+    BeginGroup("MapAnimations");
+    FRandom Random;
+    for (const FDecorAnimation& Decor : StartMapAnimations(*Level, Archive, Random))
+    {
+        Json.BeginObject();
+        Json.Field("id", ++ObjectId);
+        Json.Field("name", std::format("Animation{}", Decor.Animation + 1));
+        Json.Field("x", Decor.X);
+        Json.Field("y", Decor.Y);
+        Json.Field("width", 0);
+        Json.Field("height", 0);
+        Json.Field("rotation", 0);
+        Json.Field("visible", true);
+        Json.Field("point", true);
+        Json.Key("properties");
+        Json.BeginArray();
+        TiledProperty(Json, "Gaf", GafJsonPath(Decor.GafPath, Folder));
+        TiledNumberProperty(Json, "Animation", int64_t(Decor.Animation) + 1);
+        TiledNumberProperty(Json, "DepthBias", Decor.DepthBias);
+        Json.EndArray();
+        Json.EndObject();
+    }
+
+    EndGroup();
+
+    // The static terrain collision the port builds from the .3DI, in world pixels: two-point shapes as lines, four-point ones as polygons.
+    BeginGroup("Collision");
+    constexpr size_t PolygonPoints = 4;
+    for (const FStaticCollisionShape& Shape : Terrain->GetShapes())
+    {
+        const FCollisionPoint Origin = ToWorldSpace(Shape.Points[0]);
+        Json.BeginObject();
+        Json.Field("id", ++ObjectId);
+        Json.Field("name", std::string(Shape.bWater ? "Water" : "Wall"));
+        Json.Field("x", Origin.X);
+        Json.Field("y", Origin.Y);
+        Json.Field("rotation", 0);
+        Json.Field("visible", true);
+        Json.Key(Shape.PointCount == PolygonPoints ? "polygon" : "polyline");
+        Json.BeginArray();
+        for (size_t Index = 0; Index < Shape.PointCount; ++Index)
+        {
+            const FCollisionPoint Point = ToWorldSpace(Shape.Points[Index]);
+            Json.BeginObject();
+            Json.Field("x", Point.X - Origin.X);
+            Json.Field("y", Point.Y - Origin.Y);
+            Json.EndObject();
+        }
+
+        Json.EndArray();
+        Json.EndObject();
+    }
+
+    EndGroup();
+    Json.EndArray();
+    Json.Field("nextlayerid", LayerId + 1);
+    Json.Field("nextobjectid", ObjectId + 1);
+    Json.EndObject();
+    if (!Extractor.WriteText(Shared, Folder / (Id + ".tmj"), Json.GetText()))
+    {
+        return Fail("cannot write the map");
+    }
+
+    // The .3DX descriptors and the .3DI's four slots per cell, row-major, which Tiled has no place for.
+    FJsonWriter Terrain3di;
+    Terrain3di.BeginObject();
+    Terrain3di.Field("Width", Level->GridWidth);
+    Terrain3di.Field("Height", Level->GridHeight);
+    Terrain3di.Field("CellWidth", BlockWidth);
+    Terrain3di.Field("CellHeight", BlockHeight);
+    Terrain3di.Key("Descriptors");
+    Terrain3di.BeginArray();
+    for (size_t Index = 1; Index < Level->TileTypes.size(); ++Index)
+    {
+        Terrain3di.BeginObject();
+        Terrain3di.Field("Index", Index);
+        Terrain3di.Field("Type", std::string(TerrainName(Level->TileTypes[Index])));
+        if (Index - 1 < Level->TileReferences.size())
+        {
+            const auto& [Gaf, Name] = Level->TileReferences[Index - 1];
+            Terrain3di.Field("Animation", Name);
+            if (Gaf >= 1 && size_t(Gaf) <= Level->AnimGafs.size())
+            {
+                Terrain3di.Field("Gaf", GafJsonPath(Level->AnimGafs[size_t(Gaf) - 1], Folder));
+            }
+        }
+
+        Terrain3di.EndObject();
+    }
+
+    Terrain3di.EndArray();
+    Terrain3di.Key("Slots");
+    Terrain3di.BeginArray();
+    constexpr size_t SlotCount = 4;
+    for (size_t Slot = 0; Slot < SlotCount; ++Slot)
+    {
+        std::vector<int64_t> Data(LayerCells);
+        for (uint32_t Y = 0; Y < Level->GridHeight; ++Y)
+        {
+            for (uint32_t X = 0; X < Level->GridWidth && size_t(X) * Level->GridHeight + Y < Level->Cells.size(); ++X)
+            {
+                Data[size_t(Y) * Level->GridWidth + X] = Level->GetCell(X, Y)[Slot];
+            }
+        }
+
+        Terrain3di.Numbers(Data);
+    }
+
+    Terrain3di.EndArray();
+    Terrain3di.EndObject();
+    if (!Extractor.WriteText(Shared, Folder / "Terrain.json", Terrain3di.GetText()))
+    {
+        return Fail("cannot write the terrain");
+    }
+
+    for (FManifestEntry* const Entry : Entries)
+    {
+        Entry->Files = Shared.Files;
+    }
+
+    return true;
+}
+
 struct FArchiveResult
 {
     std::string File;
@@ -629,6 +1131,8 @@ FArchiveResult ExtractArchive(FExtractor& Extractor, const fs::path& ArchivePath
     Result.Encoding = &Page == &Cp1251High ? "windows-1251" : "windows-1252";
     std::vector<std::string> Names = Archive.GetNames();
     std::ranges::sort(Names);
+    // Each level's folder and its entries, by archive path without the extension.
+    std::map<std::string, std::pair<fs::path, std::vector<size_t>>> Levels;
     for (const std::string& Name : Names)
     {
         FManifestEntry Entry{ .Name = Name };
@@ -665,13 +1169,39 @@ FArchiveResult ExtractArchive(FExtractor& Extractor, const fs::path& ArchivePath
         {
             Extractor.WriteText(Entry, fs::path(Base).replace_extension(".txt"), ToUtf8(*File, Page));
         }
+        else if (Target.Extension == "3dc")
+        {
+            ExportClasses(Extractor, Entry, Base, *File, Page);
+        }
+        else if (Target.Extension == "3dr")
+        {
+            ExportRecording(Extractor, Entry, Base, Archive);
+        }
+        else if (Target.Extension.starts_with("3d"))
+        {
+            // A level's five files make one map, written once all are listed.
+            const std::string LevelPath = Name.substr(0, Name.rfind('.'));
+            auto& Level = Levels[LevelPath];
+            Level.first = Base.parent_path();
+            Level.second.push_back(Result.Entries.size());
+        }
         else
         {
-            // ponytail: the level files, class libraries and the demo stay in their original form until their converters land.
             Extractor.Write(Entry, fs::path(Base).replace_extension("." + Target.Extension), *File);
         }
 
         Result.Entries.push_back(std::move(Entry));
+    }
+
+    for (const auto& [LevelPath, Level] : Levels)
+    {
+        std::vector<FManifestEntry*> Entries;
+        for (const size_t Index : Level.second)
+        {
+            Entries.push_back(&Result.Entries[Index]);
+        }
+
+        ExportLevel(Extractor, Entries, Level.first, LevelPath, Archive, Page);
     }
 
     return Result;

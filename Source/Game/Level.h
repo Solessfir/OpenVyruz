@@ -150,3 +150,5 @@ std::expected<FLevel, std::string> LoadLevel(FResourceArchive& Archive, std::str
 
 // Parses one numeric property value the way the class loader stores it (a finite float).
 std::optional<float> ParseLevelFloat(std::string_view Text);
+// The block grammar of .3DC, .3DO and .3DP text: a root of top-level fields and blocks, comments dropped.
+std::expected<FLevelPropertyBlock, std::string> ParseLevelBlocks(std::string_view Text);

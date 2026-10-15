@@ -744,6 +744,11 @@ std::optional<float> ParseLevelFloat(const std::string_view Text)
     return ParseFloat(Text);
 }
 
+std::expected<FLevelPropertyBlock, std::string> ParseLevelBlocks(const std::string_view Text)
+{
+    return ParseBlocks(Text);
+}
+
 std::string_view FLevelPropertyBlock::Find(const std::string_view Field) const
 {
     const std::string LowerField = ToLower(Field);
