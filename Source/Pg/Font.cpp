@@ -104,6 +104,61 @@ std::optional<std::vector<Font::FFont>> Font::LoadFonts(const std::span<const ui
     return Fonts;
 }
 
+bool Font::WriteFonts(std::vector<Gaf::FContainerEntry>& Entries, const std::span<const FFont> Fonts)
+{
+    const auto Entry = std::ranges::find(Entries, Gaf::Tag("FNT_"), &Gaf::FContainerEntry::Tag);
+    if (Entry == Entries.end() || Entry->Head.RecordSize == 0 || Entry->Slots[FontRecordSlot].size() != Fonts.size() * Entry->Head.RecordSize)
+    {
+        return false;
+    }
+
+    // Each record is patched in place, so a short record keeps its length and what it never had stays out.
+    const size_t RecordSize = std::min<size_t>(Entry->Head.RecordSize, sizeof(FFontRecord));
+    size_t GlyphOffset = 0;
+    for (size_t Index = 0; Index < Fonts.size(); ++Index)
+    {
+        const FFont& Font = Fonts[Index];
+        uint8_t* const Bytes = Entry->Slots[FontRecordSlot].data() + Index * Entry->Head.RecordSize;
+        FFontRecord Record{};
+        std::memcpy(&Record, Bytes, RecordSize);
+        if (Record.GlyphCount != Font.Glyphs.size() || Entry->Slots[GlyphSlot].size() < GlyphOffset + Font.Glyphs.size() * sizeof(FGlyphRecord))
+        {
+            return false;
+        }
+
+        Record.Flags = Font.Flags;
+        Record.LineGap = Font.LineGap;
+        Record.CharSpacing = Font.CharSpacing;
+        Record.Advance = Font.Advance;
+        Record.LineHeight = Font.LineHeight;
+        Record.Baseline = Font.Baseline;
+        if ((Font.Flags & FontDrawSettings) != 0)
+        {
+            Record.DrawMode = Font.DrawMode;
+            Record.Color[0] = Font.Color.Alpha;
+            Record.Color[1] = Font.Color.Diffuse;
+            Record.Color[2] = Font.Color.Specular;
+        }
+
+        std::memcpy(Bytes, &Record, RecordSize);
+        for (const FGlyph& Glyph : Font.Glyphs)
+        {
+            const FGlyphRecord Out{
+                .BaseBitmap = Glyph.Base.BitmapIndex,
+                .BaseX = Glyph.Base.OffsetX,
+                .BaseY = Glyph.Base.OffsetY,
+                .OverlayBitmap = Glyph.Overlay.BitmapIndex,
+                .OverlayX = Glyph.Overlay.OffsetX,
+                .OverlayY = Glyph.Overlay.OffsetY,
+            };
+            std::memcpy(Entry->Slots[GlyphSlot].data() + GlyphOffset, &Out, sizeof(Out));
+            GlyphOffset += sizeof(Out);
+        }
+    }
+
+    return true;
+}
+
 Font::FColor Font::FColor::Combine(const FColor& Other) const
 {
     constexpr uint32_t ChannelMax = 0xff;

@@ -48,11 +48,25 @@ Top-level structure:
 GAF_                                  @ 0x00
 HEAD  - table of contents             @ 0x10
   extra = N declared object types (e.g. 3: GOB_, ANM_, NAM_)
-  each TOC entry = 16B sub-header + fixed 36-byte summary body (not real data)
+  each TOC entry = 16B sub-header + 36-byte descriptor (below)
 DATA  - real payload                  @ right after HEAD (offset varies per file)
   extra = N real entries, same tag set as HEAD's TOC
   entries contain the actual descriptors + compressed data
 ```
+
+The `HEAD` descriptor is what the loader trusts (`GafLoad` at `00453960`, `GafReadData` at `00453c90`, `GafParseSlot0` at `0047b830`):
+
+| Word | Meaning |
+|---|---|
+| 0, 1 | Slot 0 record count and record size; `GafParseSlot0` steps through exactly these |
+| 2 | 0 |
+| 3, 4 | Slot 2 record count and record size; the count sizes the entry's allocation |
+| 5 | 0 |
+| 6 | File offset of the entry's `DATA` record, which `GafReadData` seeks instead of walking `DATA` |
+| 7 | A `MAP_` entry's layer count; other values have no known reader |
+| 8 | Slot 3's decoded size |
+
+After an entry's 16-byte header come four 24-byte slot descriptors (method, two reserved words, stored size, decoded size, reserved) and the slot streams back to back. `GafReadSlotStream` (`0049ae30`) reads a stored slot (method 0) for exactly its decoded size and an LZSS slot (method `0x100`) for its stored size rounded up to 4.
 
 ## LZSS Compression
 
@@ -215,6 +229,8 @@ BLK_ slot 0 contains one 16-byte record per bitmap: `uint32 flags`, `int32 offse
 | 4 | `uint32` | grid height |
 | 5 | `uint32` | reserved; normally 0, `0xCCCCCCCC` in DEMO |
 
+Descriptor slot 2 holds one 76-byte record per layer: the layer's cell data size in bytes (`grid_width * grid_height * 4`), its grid width and height, a zero word, then `256, 256` and zeros. `GafParseSlot3` (`0047bdb0`) splits slot 3 into layers by that byte size; the port reads the cells from the header instead. The `256, 256` pair groups layers in the scroll setup (`FUN_0046ad20`), which merges neighbouring layers whose pair matches.
+
 Descriptor slot 3 is exactly `layer_count * grid_width * grid_height` little-endian `uint32` values. It is layer-major, then row-major inside each layer. Value `0` is transparent/empty; a nonzero value is a **1-based index** into the decompressed BLK bitmap table. Draw layers from 0 upward, alpha-compositing each referenced 64x32 BLK at:
 
 ```text
@@ -282,6 +298,8 @@ records: repeating 6 bytes until EOF
   uint16 y        (grid row)
   uint16 tile_id  (1-based, indexes into .3DX texture list)
 ```
+
+No level fills a cell in the last column or the last two rows, and the original cannot take one: `LevelBuildWalkGrid` (`0041ed30`) allocates its walk grid at exactly the grid size (`WalkGridAlloc`, `0041f010`) and marks each typed cell in the next column and the next two rows as well, so such a cell writes past the grid.
 
 Entry count is `(file_size - 4) / 6`. The header is not an entry count. Its grid-dimension formulas are:
 

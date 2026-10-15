@@ -25,6 +25,10 @@ struct FSample
 std::optional<FSample> DecodeWav(std::span<const uint8_t> File);
 // The SND_ records of a GAF's SMP_ entry, which animation frame events play by 1-based index. A GAF without one yields none.
 std::optional<std::vector<FSample>> DecodeGafSamples(std::span<const uint8_t> File);
+// Replaces the 0-based SND_ record of an SMP_ sample stream with the sample as 16-bit PCM, keeping the record's format words.
+bool WriteGafSample(std::vector<uint8_t>& Records, size_t Index, const FSample& Sample);
+// A float sample as the 16-bit value it came from, exact for 8-bit and 16-bit sources.
+int16_t SampleToPcm16(float Value);
 // An MPEG audio layer III stream, such as the intro's sound.
 std::optional<FSample> DecodeMp3(std::span<const uint8_t> File);
 

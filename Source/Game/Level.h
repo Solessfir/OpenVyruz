@@ -20,6 +20,72 @@ inline constexpr uint32_t BlockHeight = 32;
 inline constexpr int32_t BackgroundTerrainDepth = -1;
 inline constexpr int32_t MaxTerrainDepth = 4;
 
+// .3DG MAP_ slot 0.
+struct FMapHeader
+{
+    uint32_t LayerCount;
+    // Original render-cache size; not a map scale.
+    uint32_t CacheWidth;
+    uint32_t CacheHeight;
+    uint32_t GridWidth;
+    uint32_t GridHeight;
+    uint32_t Reserved;
+};
+static_assert(sizeof(FMapHeader) == 24);
+
+// .3DG MAP_ slot 2, one per layer: the size of the layer's cells in bytes, which GafParseSlot3 (0047bdb0) copies them by, and its grid size; the rest is kept as written.
+struct FMapLayerRecord
+{
+    uint32_t CellBytes;
+    uint32_t Width;
+    uint32_t Height;
+    uint32_t Reserved[16];
+};
+static_assert(sizeof(FMapLayerRecord) == 76);
+
+// .3DG BLK_ slot 0, one per block; GafParseSlot0 at 0047b830 copies the final word to the runtime block's depth.
+struct FBlockMetadata
+{
+    uint32_t Flags;
+    int32_t OffsetX;
+    int32_t OffsetY;
+    int32_t Depth;
+};
+static_assert(sizeof(FBlockMetadata) == 16);
+
+// .3DI: the world extents, then one record per filled cell slot.
+struct F3diHeader
+{
+    uint16_t WorldExtentX;
+    uint16_t WorldExtentY;
+};
+static_assert(sizeof(F3diHeader) == 4);
+
+struct F3diRecord
+{
+    uint16_t X;
+    uint16_t Y;
+    int16_t TileId;
+};
+static_assert(sizeof(F3diRecord) == 6);
+
+inline constexpr size_t MapHeaderSlot = 0;
+inline constexpr size_t MapLayerSlot = 2;
+inline constexpr size_t MapCellSlot = 3;
+inline constexpr size_t BlockMetadataSlot = 0;
+inline constexpr size_t BlockBitmapSlot = 1;
+
+// Grid size covering a world extent, as computed in LevelLoadFiles at 00429710.
+constexpr uint32_t GridWidthFromExtent(const uint32_t ExtentX)
+{
+    return ExtentX / BlockWidth + 1;
+}
+
+constexpr uint32_t GridHeightFromExtent(const uint32_t ExtentY)
+{
+    return ExtentY / BlockHeight + 1;
+}
+
 // Semantic tile types; values are the type IDs registered by VzCreateTypeTable at 00447430.
 enum class ETerrain : uint8_t
 {
@@ -113,6 +179,8 @@ struct FLevel
 
     // .3DX: animated map GAFs (archive paths) and the semantic type of each 1-based tile descriptor (index 0 unused).
     std::vector<std::string> AnimGafs;
+    // The same GAFs as the .3DX writes them, editor paths of which only the last three components count.
+    std::vector<std::string> AnimGafSources;
     std::vector<ETerrain> TileTypes;
     // Each descriptor's line in .3DX order: a 1-based AnimGafs index (0 for a bitmap path) and the name after it, an animation of that GAF.
     std::vector<std::pair<int, std::string>> TileReferences;

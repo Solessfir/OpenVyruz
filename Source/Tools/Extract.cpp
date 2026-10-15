@@ -156,7 +156,6 @@ std::vector<uint8_t> EncodeWav(const Sound::FSample& Sample)
     constexpr uint16_t BitsPerSample = 16;
     constexpr uint32_t FormatChunkSize = 16;
     constexpr uint32_t HeaderSize = 36;
-    constexpr float Peak = 32767.f;
     const uint16_t Channels = uint16_t(Sample.ChannelCount);
     const uint32_t DataSize = uint32_t(Sample.Data.size() * sizeof(int16_t));
     std::vector<uint8_t> Out;
@@ -187,7 +186,7 @@ std::vector<uint8_t> EncodeWav(const Sound::FSample& Sample)
     U32(DataSize);
     for (const float Value : Sample.Data)
     {
-        U16(uint16_t(int16_t(std::lround(std::clamp(Value, -1.f, 1.f) * Peak))));
+        U16(uint16_t(Sound::SampleToPcm16(Value)));
     }
 
     return Out;
@@ -319,15 +318,95 @@ std::string_view BlendName(const uint32_t DrawFlags)
     return Mode == AdditiveMode ? "Additive" : Mode == InverseSourceMode ? "InverseSource" : "Normal";
 }
 
-// A GAF as its atlas, its animations and fonts in JSON, BMFont files for the fonts, and its samples as WAV.
-bool ExportGaf(FExtractor& Extractor, FManifestEntry& Entry, const fs::path& Base, const std::span<const uint8_t> File, const FCodePage& Page)
+// The bitmaps in an even grid in index order, each at its trim inside a cell that holds them all, so frames cut from one sprite line up.
+FAtlas GridAtlas(const std::vector<FImage>& Images, const std::vector<const Gaf::FFrame*>& Bitmaps)
+{
+    int32_t Left = INT32_MAX;
+    int32_t Top = INT32_MAX;
+    int32_t Right = INT32_MIN;
+    int32_t Bottom = INT32_MIN;
+    for (const Gaf::FFrame* const Bitmap : Bitmaps)
+    {
+        Left = std::min(Left, Bitmap->TrimX);
+        Top = std::min(Top, Bitmap->TrimY);
+        Right = std::max(Right, Bitmap->TrimX + int32_t(Bitmap->Width));
+        Bottom = std::max(Bottom, Bitmap->TrimY + int32_t(Bitmap->Height));
+    }
+
+    const uint32_t Count = uint32_t(Images.size());
+    const uint32_t Columns = uint32_t(std::ceil(std::sqrt(double(Count))));
+    const uint32_t Rows = (Count + Columns - 1) / Columns;
+    const uint32_t CellWidth = uint32_t(Right - Left);
+    const uint32_t CellHeight = uint32_t(Bottom - Top);
+    constexpr size_t RgbaChannels = 4;
+    FAtlas Atlas;
+    Atlas.Image = { .Width = Columns * CellWidth, .Height = Rows * CellHeight };
+    Atlas.Image.Pixels.assign(size_t(Atlas.Image.Width) * Atlas.Image.Height * RgbaChannels, 0);
+    for (uint32_t Index = 0; Index < Count; ++Index)
+    {
+        const std::array<uint32_t, 2> Place = { Index % Columns * CellWidth + uint32_t(Bitmaps[Index]->TrimX - Left),
+            Index / Columns * CellHeight + uint32_t(Bitmaps[Index]->TrimY - Top) };
+        Blit(Atlas.Image, Images[Index], Place[0], Place[1]);
+        Atlas.Places.push_back(Place);
+    }
+
+    return Atlas;
+}
+
+// Puts a set of bitmaps on one page, packed for a font or in a grid for the bitmaps no animation shows, and lists where each went.
+bool WritePage(FExtractor& Extractor, FManifestEntry& Entry, FJsonWriter& Json, const fs::path& Path, const std::vector<FImage>& Images,
+    const std::vector<uint32_t>& Indices, std::vector<std::array<uint32_t, 2>>* Places = nullptr, const std::vector<Gaf::FFrame>* GridOf = nullptr)
+{
+    std::vector<FImage> Members;
+    std::vector<const Gaf::FFrame*> MemberBitmaps;
+    for (const uint32_t Index : Indices)
+    {
+        Members.push_back(Images[Index - 1]);
+        if (GridOf)
+        {
+            MemberBitmaps.push_back(&(*GridOf)[Index - 1]);
+        }
+    }
+
+    const FAtlas Atlas = GridOf ? GridAtlas(Members, MemberBitmaps) : PackAtlas(Members);
+    const std::optional<std::vector<uint8_t>> Png = EncodePng(Atlas.Image);
+    if (!Png || !Extractor.Write(Entry, Path, *Png))
+    {
+        Entry.Error = Entry.Error.empty() ? "cannot encode a page" : Entry.Error;
+        return false;
+    }
+
+    Json.Field("Image", Path.filename().string());
+    Json.Key("Places");
+    Json.BeginArray();
+    for (size_t Member = 0; Member < Indices.size(); ++Member)
+    {
+        Json.BeginObject();
+        Json.Field("Bitmap", Indices[Member]);
+        Json.Field("X", Atlas.Places[Member][0]);
+        Json.Field("Y", Atlas.Places[Member][1]);
+        Json.EndObject();
+    }
+
+    Json.EndArray();
+    if (Places)
+    {
+        *Places = Atlas.Places;
+    }
+
+    return true;
+}
+
+// A GAF as a folder: one sheet of every animation, every cell the same size with the sprite's anchor at the same point and frames in order; a page per font
+// with its BMFont file; the bitmaps no animation or font shows on one more page; the samples as WAV; and the JSON tying them together.
+bool ExportGaf(FExtractor& Extractor, FManifestEntry& Entry, const fs::path& Folder, const std::span<const uint8_t> File, const FCodePage& Page)
 {
     const std::optional<std::vector<Gaf::FFrame>> Frames = Gaf::LoadFrames(File);
     const std::vector<Gaf::FFrame> Bitmaps = Frames.value_or(std::vector<Gaf::FFrame>{});
     const std::optional<std::vector<Gaf::FAnimation>> Animations = Gaf::LoadAnimations(File, Bitmaps.size());
     const std::optional<std::vector<Sound::FSample>> Samples = Sound::DecodeGafSamples(File);
     const std::optional<std::vector<Font::FFont>> Fonts = Font::LoadFonts(File);
-    const std::string Stem = Base.filename().string();
+    const std::string Stem = Folder.filename().string();
 
     std::vector<FImage> Images;
     Images.reserve(Bitmaps.size());
@@ -336,62 +415,130 @@ bool ExportGaf(FExtractor& Extractor, FManifestEntry& Entry, const fs::path& Bas
         Images.push_back(ImageFromFrame(Bitmap));
     }
 
-    const FAtlas Atlas = PackAtlas(Images);
-    if (!Images.empty())
-    {
-        const std::optional<std::vector<uint8_t>> Png = EncodePng(Atlas.Image);
-        if (!Png || !Extractor.Write(Entry, fs::path(Base).replace_extension(".png"), *Png))
-        {
-            Entry.Error = Entry.Error.empty() ? "cannot encode the atlas" : Entry.Error;
-            return false;
-        }
-    }
-
+    std::vector<bool> bShown(Bitmaps.size());
+    const auto Visible = [&](const uint32_t Index) { return Index >= 1 && Index <= Bitmaps.size(); };
     std::vector<std::string> SoundFiles;
     for (size_t Index = 0; Samples && Index < Samples->size(); ++Index)
     {
-        const std::string Name = std::format("{}Sound{}.wav", Stem, Index + 1);
-        if (!Extractor.Write(Entry, Base.parent_path() / Name, EncodeWav((*Samples)[Index])))
+        const fs::path Path = Extractor.Claim(Folder, std::format("Sound{}", Index + 1), "wav");
+        if (!Extractor.Write(Entry, fs::path(Path).replace_extension(".wav"), EncodeWav((*Samples)[Index])))
         {
             return false;
         }
 
-        SoundFiles.push_back(Name);
+        SoundFiles.push_back(Path.filename().string() + ".wav");
     }
 
     FJsonWriter Json;
     Json.BeginObject();
-    Json.Field("Image", Images.empty() ? std::string() : Stem + ".png");
     Json.Field("FrameMilliseconds", AnimationPeriodMilliseconds);
     Json.Key("Bitmaps");
     Json.BeginArray();
-    for (size_t Index = 0; Index < Bitmaps.size(); ++Index)
+    for (const Gaf::FFrame& Bitmap : Bitmaps)
     {
         Json.BeginObject();
-        Json.Field("X", Atlas.Places[Index][0]);
-        Json.Field("Y", Atlas.Places[Index][1]);
-        Json.Field("Width", Bitmaps[Index].Width);
-        Json.Field("Height", Bitmaps[Index].Height);
-        Json.Field("TrimX", Bitmaps[Index].TrimX);
-        Json.Field("TrimY", Bitmaps[Index].TrimY);
+        Json.Field("Width", Bitmap.Width);
+        Json.Field("Height", Bitmap.Height);
+        Json.Field("TrimX", Bitmap.TrimX);
+        Json.Field("TrimY", Bitmap.TrimY);
         Json.EndObject();
     }
 
     Json.EndArray();
+    // One sheet for the whole GAF: every cell the size that covers any frame's bitmap where it is drawn, the anchor at the same pivot in each,
+    // and each animation from the start of a new row.
+    const std::vector<Gaf::FAnimation> AnimationList = Animations.value_or(std::vector<Gaf::FAnimation>{});
+    int32_t Left = 0;
+    int32_t Top = 0;
+    int32_t Right = 0;
+    int32_t Bottom = 0;
+    bool bAny = false;
+    size_t LongestAnimation = 0;
+    for (const Gaf::FAnimation& Animation : AnimationList)
+    {
+        LongestAnimation = std::max(LongestAnimation, Animation.Frames.size());
+        for (const Gaf::FAnimationFrame& Frame : Animation.Frames)
+        {
+            if (!Visible(Frame.BitmapIndex))
+            {
+                continue;
+            }
+
+            const Gaf::FFrame& Bitmap = Bitmaps[Frame.BitmapIndex - 1];
+            const FPlace Place = FramePlace(Frame, Bitmap);
+            Left = bAny ? std::min(Left, Place.X) : Place.X;
+            Top = bAny ? std::min(Top, Place.Y) : Place.Y;
+            Right = bAny ? std::max(Right, Place.X + int32_t(Bitmap.Width)) : Place.X + int32_t(Bitmap.Width);
+            Bottom = bAny ? std::max(Bottom, Place.Y + int32_t(Bitmap.Height)) : Place.Y + int32_t(Bitmap.Height);
+            bAny = true;
+        }
+    }
+
+    const uint32_t Columns = std::max(1u, uint32_t(std::ceil(std::sqrt(double(LongestAnimation)))));
+    const uint32_t CellWidth = bAny ? uint32_t(Right - Left) : 0;
+    const uint32_t CellHeight = bAny ? uint32_t(Bottom - Top) : 0;
+    // An animation that draws nothing takes no rows; its FirstCell says so.
+    constexpr int64_t NotOnSheet = -1;
+    std::vector<int64_t> FirstCells;
+    uint32_t Rows = 0;
+    for (const Gaf::FAnimation& Animation : AnimationList)
+    {
+        const bool bDraws = std::ranges::any_of(Animation.Frames, [&](const Gaf::FAnimationFrame& Frame) { return Visible(Frame.BitmapIndex); });
+        FirstCells.push_back(bDraws ? int64_t(Rows) * Columns : NotOnSheet);
+        Rows += bDraws ? (uint32_t(Animation.Frames.size()) + Columns - 1) / Columns : 0;
+    }
+
+    if (bAny)
+    {
+        constexpr size_t RgbaChannels = 4;
+        FImage Sheet{ .Width = Columns * CellWidth, .Height = Rows * CellHeight };
+        Sheet.Pixels.assign(size_t(Sheet.Width) * Sheet.Height * RgbaChannels, 0);
+        for (size_t AnimationIndex = 0; AnimationIndex < AnimationList.size(); ++AnimationIndex)
+        {
+            const std::vector<Gaf::FAnimationFrame>& AnimationFrames = AnimationList[AnimationIndex].Frames;
+            for (uint32_t FrameIndex = 0; FrameIndex < AnimationFrames.size(); ++FrameIndex)
+            {
+                const Gaf::FAnimationFrame& Frame = AnimationFrames[FrameIndex];
+                if (!Visible(Frame.BitmapIndex))
+                {
+                    continue;
+                }
+
+                const uint32_t Cell = uint32_t(FirstCells[AnimationIndex]) + FrameIndex;
+                const FPlace Place = FramePlace(Frame, Bitmaps[Frame.BitmapIndex - 1]);
+                Blit(Sheet, Images[Frame.BitmapIndex - 1], Cell % Columns * CellWidth + uint32_t(Place.X - Left), Cell / Columns * CellHeight + uint32_t(Place.Y - Top),
+                    Frame.bMirrorX, Frame.bMirrorY);
+                bShown[Frame.BitmapIndex - 1] = true;
+            }
+        }
+
+        const std::optional<std::vector<uint8_t>> Png = EncodePng(Sheet);
+        if (!Png || !Extractor.Write(Entry, fs::path(Extractor.Claim(Folder, Stem, "png")).replace_extension(".png"), *Png))
+        {
+            Entry.Error = Entry.Error.empty() ? "cannot encode the sheet" : Entry.Error;
+            return false;
+        }
+    }
+
+    Json.Field("Image", bAny ? Stem + ".png" : std::string());
+    Json.Field("Columns", Columns);
+    Json.Field("Rows", Rows);
+    Json.Field("CellWidth", CellWidth);
+    Json.Field("CellHeight", CellHeight);
+    Json.Field("PivotX", -Left);
+    Json.Field("PivotY", -Top);
     Json.Key("Animations");
     Json.BeginArray();
-    constexpr uint32_t LoopFlag = 2;
-    constexpr uint32_t PingPongFlag = 0x20;
-    constexpr uint32_t ReverseFlag = 0x40;
-    constexpr uint32_t SoundEventFlag = 1;
-    for (const Gaf::FAnimation& Animation : Animations.value_or(std::vector<Gaf::FAnimation>{}))
+    for (size_t AnimationIndex = 0; AnimationIndex < AnimationList.size(); ++AnimationIndex)
     {
+        const Gaf::FAnimation& Animation = AnimationList[AnimationIndex];
         Json.BeginObject();
         Json.Field("Name", Animation.Name);
+        Json.Field("FirstCell", FirstCells[AnimationIndex]);
         Json.Field("Flags", Animation.Flags);
-        Json.Field("Loop", (Animation.Flags & LoopFlag) != 0);
-        Json.Field("PingPong", (Animation.Flags & PingPongFlag) != 0);
-        Json.Field("Reverse", (Animation.Flags & ReverseFlag) != 0);
+        Json.Field("Loop", (Animation.Flags & Gaf::AnimationLoops) != 0);
+        Json.Field("PingPong", (Animation.Flags & Gaf::AnimationPingPong) != 0);
+        Json.Field("Reverse", (Animation.Flags & Gaf::AnimationReverse) != 0);
         Json.Field("LoopStart", Animation.LoopStart);
         Json.Key("Frames");
         Json.BeginArray();
@@ -409,7 +556,7 @@ bool ExportGaf(FExtractor& Extractor, FManifestEntry& Entry, const fs::path& Bas
             Json.Field("Blend", std::string(BlendName(Frame.DrawFlags)));
             Json.Field("EventFlags", Frame.EventFlags);
             Json.Field("EventValue", Frame.EventValue);
-            if ((Frame.EventFlags & SoundEventFlag) != 0 && Frame.EventValue >= 1 && Frame.EventValue <= SoundFiles.size())
+            if ((Frame.EventFlags & Gaf::FrameSoundEvent) != 0 && Frame.EventValue >= 1 && Frame.EventValue <= SoundFiles.size())
             {
                 Json.Field("Sound", SoundFiles[Frame.EventValue - 1]);
             }
@@ -435,20 +582,53 @@ bool ExportGaf(FExtractor& Extractor, FManifestEntry& Entry, const fs::path& Bas
     for (size_t FontIndex = 0; Fonts && FontIndex < Fonts->size(); ++FontIndex)
     {
         const Font::FFont& Font = (*Fonts)[FontIndex];
-        const std::string FontFile = std::format("{}Font{}.fnt", Stem, FontIndex + 1);
+        std::vector<uint32_t> Members;
+        for (const Font::FGlyph& Glyph : Font.Glyphs)
+        {
+            for (const uint32_t Index : { Glyph.Base.BitmapIndex, Glyph.Overlay.BitmapIndex })
+            {
+                if (Visible(Index) && std::ranges::find(Members, Index) == Members.end())
+                {
+                    Members.push_back(Index);
+                    bShown[Index - 1] = true;
+                }
+            }
+        }
+
+        Json.BeginObject();
+        const fs::path Base = Extractor.Claim(Folder, std::format("Font{}", FontIndex + 1), "fnt");
+        std::vector<std::array<uint32_t, 2>> Places;
+        std::string PageName;
+        if (!Members.empty())
+        {
+            if (!WritePage(Extractor, Entry, Json, fs::path(Base).replace_extension(".png"), Images, Members, &Places))
+            {
+                return false;
+            }
+
+            PageName = Base.filename().string() + ".png";
+        }
+
         // BMFont's text form, which Godot and most engines import: the base bitmap of each glyph; the overlays stay in the JSON.
+        const auto PlaceOf = [&](const uint32_t Index) { return Places[size_t(std::ranges::find(Members, Index) - Members.begin())]; };
         std::string Fnt = std::format("info face=\"{} {}\" size={} bold=0 italic=0 charset=\"\" unicode=1 stretchH=100 smooth=0 aa=1 padding=0,0,0,0 spacing=1,1\n",
             Stem, FontIndex + 1, Font.LineHeight);
-        Fnt += std::format("common lineHeight={} base={} scaleW={} scaleH={} pages=1 packed=0\npage id=0 file=\"{}.png\"\n", Font.LineHeight, Font.Baseline,
-            Atlas.Image.Width, Atlas.Image.Height, Stem);
         std::string Chars;
         size_t CharCount = 0;
         constexpr size_t SpaceCode = 0x20;
+        uint32_t ScaleWidth = 0;
+        uint32_t ScaleHeight = 0;
+        for (size_t Member = 0; Member < Members.size(); ++Member)
+        {
+            ScaleWidth = std::max(ScaleWidth, Places[Member][0] + Bitmaps[Members[Member] - 1].Width);
+            ScaleHeight = std::max(ScaleHeight, Places[Member][1] + Bitmaps[Members[Member] - 1].Height);
+        }
+
         for (size_t Index = 0; Index < Font.Glyphs.size(); ++Index)
         {
             const Font::FGlyph& Glyph = Font.Glyphs[Index];
             const uint8_t Byte = uint8_t(Index + 1);
-            const bool bHasBitmap = Glyph.Base.BitmapIndex >= 1 && Glyph.Base.BitmapIndex <= Bitmaps.size();
+            const bool bHasBitmap = Visible(Glyph.Base.BitmapIndex);
             if (!bHasBitmap && Byte != SpaceCode)
             {
                 continue;
@@ -456,21 +636,22 @@ bool ExportGaf(FExtractor& Extractor, FManifestEntry& Entry, const fs::path& Bas
 
             const uint32_t Width = bHasBitmap ? Bitmaps[Glyph.Base.BitmapIndex - 1].Width : 0;
             const uint32_t Height = bHasBitmap ? Bitmaps[Glyph.Base.BitmapIndex - 1].Height : 0;
-            const std::array<uint32_t, 2> Place = bHasBitmap ? Atlas.Places[Glyph.Base.BitmapIndex - 1] : std::array<uint32_t, 2>{};
+            const std::array<uint32_t, 2> Place = bHasBitmap ? PlaceOf(Glyph.Base.BitmapIndex) : std::array<uint32_t, 2>{};
             const int32_t Advance = (Font.Flags & Font::FontProportional) != 0 && bHasBitmap ? int32_t(Width) + Font.CharSpacing : Font.Advance;
             Chars += std::format("char id={} x={} y={} width={} height={} xoffset={} yoffset={} xadvance={} page=0 chnl=15\n", uint32_t(CodePoint(Byte, Page)), Place[0],
                 Place[1], Width, Height, Glyph.Base.OffsetX, Glyph.Base.OffsetY, Advance);
             ++CharCount;
         }
 
+        Fnt += std::format("common lineHeight={} base={} scaleW={} scaleH={} pages=1 packed=0\npage id=0 file=\"{}\"\n", Font.LineHeight, Font.Baseline, ScaleWidth,
+            ScaleHeight, PageName);
         Fnt += std::format("chars count={}\n", CharCount) + Chars;
-        if (!Extractor.WriteText(Entry, Base.parent_path() / FontFile, Fnt))
+        if (!Extractor.WriteText(Entry, fs::path(Base).replace_extension(".fnt"), Fnt))
         {
             return false;
         }
 
-        Json.BeginObject();
-        Json.Field("File", FontFile);
+        Json.Field("File", Base.filename().string() + ".fnt");
         Json.Field("Flags", Font.Flags);
         Json.Field("Proportional", (Font.Flags & Font::FontProportional) != 0);
         Json.Field("LineGap", Font.LineGap);
@@ -487,7 +668,8 @@ bool ExportGaf(FExtractor& Extractor, FManifestEntry& Entry, const fs::path& Bas
         for (size_t Index = 0; Index < Font.Glyphs.size(); ++Index)
         {
             const Font::FGlyph& Glyph = Font.Glyphs[Index];
-            if (Glyph.Base.BitmapIndex == 0 && Glyph.Overlay.BitmapIndex == 0)
+            const auto IsEmpty = [](const Font::FGlyphLayer& Layer) { return Layer.BitmapIndex == 0 && Layer.OffsetX == 0 && Layer.OffsetY == 0; };
+            if (IsEmpty(Glyph.Base) && IsEmpty(Glyph.Overlay))
             {
                 continue;
             }
@@ -509,8 +691,31 @@ bool ExportGaf(FExtractor& Extractor, FManifestEntry& Entry, const fs::path& Bas
     }
 
     Json.EndArray();
+
+    // Bitmaps no animation or font shows still pack back, from their own page.
+    std::vector<uint32_t> Leftovers;
+    for (uint32_t Index = 1; Index <= Bitmaps.size(); ++Index)
+    {
+        if (!bShown[Index - 1])
+        {
+            Leftovers.push_back(Index);
+        }
+    }
+
+    if (!Leftovers.empty())
+    {
+        Json.Key("Leftovers");
+        Json.BeginObject();
+        if (!WritePage(Extractor, Entry, Json, fs::path(Extractor.Claim(Folder, "Bitmaps", "png")).replace_extension(".png"), Images, Leftovers, nullptr, &Bitmaps))
+        {
+            return false;
+        }
+
+        Json.EndObject();
+    }
+
     Json.EndObject();
-    return Extractor.WriteText(Entry, fs::path(Base).replace_extension(".json"), Json.GetText());
+    return Extractor.WriteText(Entry, Folder / (Stem + ".json"), Json.GetText());
 }
 
 // The Russian build's menu font draws Windows-1251 Cyrillic; the English one has no glyph at its capital A.
@@ -631,7 +836,7 @@ std::string_view TerrainName(const ETerrain Type)
 std::string GafJsonPath(const std::string_view ArchiveName, const fs::path& LevelFolder)
 {
     const FTarget Target = MapEntry(ArchiveName);
-    return fs::path(fs::relative(Target.Folder / (Target.Stem + ".json"), LevelFolder)).generic_string();
+    return fs::path(fs::relative(Target.Folder / Target.Stem / (Target.Stem + ".json"), LevelFolder)).generic_string();
 }
 
 // One Tiled property, a string unless told otherwise.
@@ -843,13 +1048,15 @@ bool ExportLevel(FExtractor& Extractor, const std::vector<FManifestEntry*>& Entr
 
         if (!Object.Children.empty())
         {
-            std::string Blocks;
+            FJsonWriter Blocks;
+            Blocks.BeginArray();
             for (const FLevelPropertyBlock& Child : Object.Children)
             {
-                Blocks += BlockText(Child);
+                WriteBlock(Blocks, Child);
             }
 
-            TiledProperty(Json, "Blocks", Blocks);
+            Blocks.EndArray();
+            TiledProperty(Json, "Blocks", Blocks.GetText());
         }
 
         if (Placed != Level->Objects.end() && Placed->Behaviour == "Player")
@@ -969,23 +1176,28 @@ bool ExportLevel(FExtractor& Extractor, const std::vector<FManifestEntry*>& Entr
     Terrain3di.Field("Height", Level->GridHeight);
     Terrain3di.Field("CellWidth", BlockWidth);
     Terrain3di.Field("CellHeight", BlockHeight);
+    Terrain3di.Key("Gafs");
+    Terrain3di.BeginArray();
+    for (size_t Index = 0; Index < Level->AnimGafs.size() && Index < Level->AnimGafSources.size(); ++Index)
+    {
+        Terrain3di.BeginObject();
+        Terrain3di.Field("Source", Level->AnimGafSources[Index]);
+        Terrain3di.Field("Json", GafJsonPath(Level->AnimGafs[Index], Folder));
+        Terrain3di.EndObject();
+    }
+
+    Terrain3di.EndArray();
+    // Each descriptor names a bitmap path (Gaf 0) or an animation of a 1-based Gafs entry; the folder above the bitmap or GAF gives its Type.
     Terrain3di.Key("Descriptors");
     Terrain3di.BeginArray();
-    for (size_t Index = 1; Index < Level->TileTypes.size(); ++Index)
+    for (size_t Index = 1; Index < Level->TileTypes.size() && Index - 1 < Level->TileReferences.size(); ++Index)
     {
+        const auto& [Gaf, Name] = Level->TileReferences[Index - 1];
         Terrain3di.BeginObject();
         Terrain3di.Field("Index", Index);
         Terrain3di.Field("Type", std::string(TerrainName(Level->TileTypes[Index])));
-        if (Index - 1 < Level->TileReferences.size())
-        {
-            const auto& [Gaf, Name] = Level->TileReferences[Index - 1];
-            Terrain3di.Field("Animation", Name);
-            if (Gaf >= 1 && size_t(Gaf) <= Level->AnimGafs.size())
-            {
-                Terrain3di.Field("Gaf", GafJsonPath(Level->AnimGafs[size_t(Gaf) - 1], Folder));
-            }
-        }
-
+        Terrain3di.Field("Gaf", Gaf);
+        Terrain3di.Field("Name", Name);
         Terrain3di.EndObject();
     }
 

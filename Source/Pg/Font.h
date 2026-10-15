@@ -6,6 +6,11 @@
 #include <string_view>
 #include <vector>
 
+namespace Gaf
+{
+struct FContainerEntry;
+}
+
 // pgfont (pg\lib\pg\pgfont.cpp): the bitmap fonts stored as FNT_ entries of a GAF, whose glyphs are the GAF's GOB bitmaps.
 namespace Font
 {
@@ -60,6 +65,8 @@ struct FFont
 
 // Every FNT_ font of a GAF file, in their 1-based order; nullopt when the entry is malformed.
 std::optional<std::vector<FFont>> LoadFonts(std::span<const uint8_t> File);
+// Writes the fonts' settings and glyphs over a GAF's FNT_ entry, which must hold as many fonts with as many glyphs each.
+bool WriteFonts(std::vector<Gaf::FContainerEntry>& Entries, std::span<const FFont> Fonts);
 
 struct FPlacedGlyph
 {

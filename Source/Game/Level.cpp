@@ -18,61 +18,10 @@ namespace
 {
 constexpr uint32_t MaxGridDimension = 4096;
 constexpr uint32_t MaxLayers = 16;
-constexpr size_t MapHeaderSlot = 0;
-constexpr size_t MapCellSlot = 3;
-constexpr size_t BlockMetadataSlot = 0;
 constexpr size_t MaxPropertyDepth = 64;
 constexpr size_t MaxClassDepth = 256;
 constexpr int MaxObjectAnimationIndex = std::numeric_limits<int>::max() - ObjectDirectionCount;
 
-// MAP_ slot 0.
-struct FMapHeader
-{
-    uint32_t LayerCount;
-    // Original render-cache size; not a map scale.
-    uint32_t CacheWidth;
-    uint32_t CacheHeight;
-    uint32_t GridWidth;
-    uint32_t GridHeight;
-    uint32_t Reserved;
-};
-static_assert(sizeof(FMapHeader) == 24);
-
-// BLK_ slot 0; GafParseSlot0 at 0047b830 copies the final word to the runtime block's depth.
-struct FBlockMetadata
-{
-    uint32_t Flags;
-    int32_t OffsetX;
-    int32_t OffsetY;
-    int32_t Depth;
-};
-static_assert(sizeof(FBlockMetadata) == 16);
-
-struct F3diHeader
-{
-    uint16_t WorldExtentX;
-    uint16_t WorldExtentY;
-};
-static_assert(sizeof(F3diHeader) == 4);
-
-struct F3diRecord
-{
-    uint16_t X;
-    uint16_t Y;
-    int16_t TileId;
-};
-static_assert(sizeof(F3diRecord) == 6);
-
-// Grid size covering a world extent, as computed in LevelLoadFiles at 00429710.
-constexpr uint32_t GridWidthFromExtent(const uint32_t ExtentX)
-{
-    return ExtentX / BlockWidth + 1;
-}
-
-constexpr uint32_t GridHeightFromExtent(const uint32_t ExtentY)
-{
-    return ExtentY / BlockHeight + 1;
-}
 static_assert(GridWidthFromExtent(5056) == 80 && GridHeightFromExtent(4128) == 130);
 
 std::string ToLower(std::string_view Text)
@@ -496,6 +445,7 @@ std::expected<void, std::string> Load3dx(FResourceArchive& Archive, const std::s
             return std::unexpected(std::format("{}: GAF path '{}' too short", Path, Source));
         }
         Level.AnimGafs.push_back(std::format("{}\\data{}", Zone, Source.substr(Cut)));
+        Level.AnimGafSources.emplace_back(Source);
     }
 
     const std::optional<int> TileCount = Line < Lines.size() ? ParseInt(Lines[Line++]) : std::nullopt;

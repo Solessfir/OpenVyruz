@@ -50,6 +50,12 @@ struct FAnimationFrame
     int32_t Duration = 0;
 };
 
+inline constexpr uint32_t AnimationLoops = 0x2;
+inline constexpr uint32_t AnimationPingPong = 0x20;
+inline constexpr uint32_t AnimationReverse = 0x40;
+// A frame event flag: the frame plays the GAF sample its event value names.
+inline constexpr uint32_t FrameSoundEvent = 0x1;
+
 struct FAnimation
 {
     std::string Name;
@@ -80,4 +86,42 @@ std::optional<uint32_t> ReadEntryRecordSize(std::span<const uint8_t> File, uint3
 
 // Parses back-to-back BMP_ chunks, as stored in GOB_ slot 1 and BLK_ slot streams.
 std::optional<std::vector<FFrame>> ParseBitmaps(std::span<const uint8_t> Bitmaps);
+
+// A HEAD table-of-contents entry. GafParseSlot0 (0047b830) steps through RecordCount records of RecordSize, the slot 2 counts size the entry's allocation,
+// and GafReadData (00453c90) seeks the entry's DATA record at DataOffset.
+struct FHeadDescriptor
+{
+    uint32_t RecordCount;
+    uint32_t RecordSize;
+    uint32_t Reserved0;
+    uint32_t Slot2Count;
+    uint32_t Slot2RecordSize;
+    uint32_t Reserved1;
+    uint32_t DataOffset;
+    // A MAP_ entry's layer count; other entries' values have no known reader and are kept as written.
+    uint32_t Slot3Count;
+    uint32_t Slot3Size;
+};
+static_assert(sizeof(FHeadDescriptor) == 36);
+
+// One entry of a GAF as --compress rewrites it: its descriptor and its decoded slots.
+struct FContainerEntry
+{
+    uint32_t Tag = 0;
+    FHeadDescriptor Head{};
+    FSlots Slots;
+};
+
+// Every entry in HEAD order; nullopt when the file is malformed.
+std::optional<std::vector<FContainerEntry>> ReadContainer(std::span<const uint8_t> File);
+// A whole GAF of the entries, every slot LZSS coded; the record counts, slot 3 size and offsets follow the slots.
+std::vector<uint8_t> WriteContainer(std::span<const FContainerEntry> Entries);
+// A stream LzssDecode reads back.
+std::vector<uint8_t> LzssEncode(std::span<const uint8_t> Input);
+// The frames as a BMP_ stream over the original one: each chunk keeps its header and padding unless its size changed, and frames past its end copy the first chunk's header.
+std::optional<std::vector<uint8_t>> WriteBitmaps(std::span<const uint8_t> Original, std::span<const FFrame> Frames);
+// The frames as the GOB_ entry's bitmaps, a frame record and rectangle rewritten for every frame whose size or trim changed. The frame count is fixed.
+bool WriteFrames(std::vector<FContainerEntry>& Entries, std::span<const FFrame> Frames);
+// The animations as the ANM_ entry and the ANM_ names of the NAM_ entry, the inverse of LoadAnimations.
+bool WriteAnimations(std::vector<FContainerEntry>& Entries, std::span<const FAnimation> Animations);
 }

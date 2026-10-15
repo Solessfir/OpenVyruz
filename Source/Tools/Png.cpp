@@ -41,14 +41,26 @@ FImage ImageFromFrame(const Gaf::FFrame& Frame)
     return Image;
 }
 
-void Blit(FImage& Target, const FImage& Source, const uint32_t X, const uint32_t Y)
+void Blit(FImage& Target, const FImage& Source, const uint32_t X, const uint32_t Y, const bool bMirrorX, const bool bMirrorY)
 {
     for (uint32_t Row = 0; Row < Source.Height && Y + Row < Target.Height; ++Row)
     {
-        const uint32_t Columns = std::min(Source.Width, Target.Width > X ? Target.Width - X : 0);
-        std::copy_n(&Source.Pixels[size_t(Row) * Source.Width * RgbaChannels], size_t(Columns) * RgbaChannels,
-            &Target.Pixels[(size_t(Y + Row) * Target.Width + X) * RgbaChannels]);
+        const uint32_t SourceRow = bMirrorY ? Source.Height - 1 - Row : Row;
+        for (uint32_t Column = 0; Column < Source.Width && X + Column < Target.Width; ++Column)
+        {
+            const uint32_t SourceColumn = bMirrorX ? Source.Width - 1 - Column : Column;
+            std::copy_n(&Source.Pixels[(size_t(SourceRow) * Source.Width + SourceColumn) * RgbaChannels], RgbaChannels,
+                &Target.Pixels[(size_t(Y + Row) * Target.Width + X + Column) * RgbaChannels]);
+        }
     }
+}
+
+FPlace FramePlace(const Gaf::FAnimationFrame& Frame, const Gaf::FFrame& Bitmap)
+{
+    return {
+        .X = Frame.bMirrorX ? Frame.OffsetX - Bitmap.TrimX - int32_t(Bitmap.Width) : Frame.OffsetX + Bitmap.TrimX,
+        .Y = Frame.bMirrorY ? Frame.OffsetY - Bitmap.TrimY - int32_t(Bitmap.Height) : Frame.OffsetY + Bitmap.TrimY,
+    };
 }
 
 std::optional<std::vector<uint8_t>> EncodePng(const FImage& Image)

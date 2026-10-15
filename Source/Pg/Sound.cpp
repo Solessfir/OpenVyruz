@@ -213,6 +213,56 @@ std::optional<std::vector<Sound::FSample>> Sound::DecodeGafSamples(const std::sp
     return Samples;
 }
 
+int16_t Sound::SampleToPcm16(const float Value)
+{
+    constexpr float SignedScale = 32768.f;
+    return int16_t(std::clamp<long>(std::lround(Value * SignedScale), INT16_MIN, INT16_MAX));
+}
+
+bool Sound::WriteGafSample(std::vector<uint8_t>& Records, const size_t Index, const FSample& Sample)
+{
+    constexpr uint32_t Pcm16Bits = 16;
+    constexpr size_t Alignment = 4;
+    size_t Offset = 0;
+    for (size_t Skipped = 0; Skipped < Index; ++Skipped)
+    {
+        const std::optional<FSoundRecord> Record = ReadStruct<FSoundRecord>(Records, Offset);
+        if (!Record || Record->PaddedBytes > Records.size() - Offset - sizeof(FSoundRecord))
+        {
+            return false;
+        }
+
+        Offset += sizeof(FSoundRecord) + Record->PaddedBytes;
+    }
+
+    std::optional<FSoundRecord> Record = ReadStruct<FSoundRecord>(Records, Offset);
+    if (!Record || Record->PaddedBytes > Records.size() - Offset - sizeof(FSoundRecord) || Sample.ChannelCount == 0)
+    {
+        return false;
+    }
+
+    const size_t OldEnd = Offset + sizeof(FSoundRecord) + Record->PaddedBytes;
+    std::vector<uint8_t> Body;
+    for (const float Value : Sample.Data)
+    {
+        const int16_t Pcm = SampleToPcm16(Value);
+        Body.push_back(uint8_t(Pcm));
+        Body.push_back(uint8_t(uint16_t(Pcm) >> 8));
+    }
+
+    Body.resize((Body.size() + Alignment - 1) & ~(Alignment - 1), 0);
+    Record->PaddedBytes = uint32_t(Body.size());
+    Record->Rate = Sample.Rate;
+    Record->Bits = Pcm16Bits;
+    Record->ChannelCount = Sample.ChannelCount;
+    Record->FrameCount = uint32_t(Sample.FrameCount());
+    const auto* const Header = reinterpret_cast<const uint8_t*>(&*Record);
+    Body.insert(Body.begin(), Header, Header + sizeof(FSoundRecord));
+    Records.erase(Records.begin() + ptrdiff_t(Offset), Records.begin() + ptrdiff_t(OldEnd));
+    Records.insert(Records.begin() + ptrdiff_t(Offset), Body.begin(), Body.end());
+    return true;
+}
+
 std::optional<Sound::FSample> Sound::DecodeMp3(const std::span<const uint8_t> File)
 {
     const ma_decoder_config Config = ma_decoder_config_init(ma_format_f32, 0, 0);
