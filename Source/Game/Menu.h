@@ -55,6 +55,8 @@ struct FMenu
     int32_t SliderValue = 0;
     // A menu.gaf animation's first frame at the screen's bottom left, as the Control menu's own function draws the device in use.
     std::optional<size_t> Picture;
+    // The game menu: the pad's Start, which opened it, chooses the default item as Escape does, closing it again.
+    bool bStartCancels = false;
 };
 
 // The state of a running menu (RunMenu at 00421050).

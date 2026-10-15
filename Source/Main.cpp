@@ -1480,7 +1480,8 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
         const auto Pressed = [&](const size_t Index) { return Down[Index] && !Previous[Index]; };
         // The pad: the D-pad or the left stick moves, A chooses and B goes back.
         const FGamepadMenuInput Pad = GamepadMenuInput();
-        Pending.bCancel = Pending.bCancel || Pressed(0) || Pressed(1) || Pad.bBack;
+        // Start acts as it comes up, so the release that would open the game menu again is spent here.
+        Pending.bCancel = Pending.bCancel || Pressed(0) || Pressed(1) || Pad.bBack || (Menu.bStartCancels && IsGamepadActionDown(EAction::Menu));
         Pending.bAccept = Pending.bAccept || Pressed(2) || Pressed(3) || Pressed(4) || Pad.bAccept;
         Pending.bUp = Pending.bUp || Pressed(5) || Pad.bUp;
         Pending.bDown = Pending.bDown || Pressed(6) || Pad.bDown;
@@ -3631,6 +3632,7 @@ std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Render
             { .Text = "End Game" },
         },
         .DefaultItem = ResumeItem,
+        .bStartCancels = true,
     };
 
     std::optional<std::pair<int32_t, int32_t>> Cursor;
@@ -5668,6 +5670,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 GameAudio->UpdateVoices();
             }
 
+            // EngineGameOver sets the user's gamma back, so the death's red does not tint the game-over image or the score table.
+            Renderer.ResetGamma();
             ShowImage(Window, Renderer, Archive, "common\\data\\extra\\game-over.gaf");
             ShowFinalScore();
             return FLevelEnd{ .Kind = ELevelEnd::Menu };
