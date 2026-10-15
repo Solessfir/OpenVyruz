@@ -586,7 +586,8 @@ FGamepadMenuInput GamepadMenuInput()
 
 bool IsGamepadConfirmDown()
 {
-    return PadDown(GLFW_GAMEPAD_BUTTON_A) || PadDown(GLFW_GAMEPAD_BUTTON_B) || PadDown(GLFW_GAMEPAD_BUTTON_START);
+    return std::ranges::any_of(std::views::iota(0, GLFW_GAMEPAD_BUTTON_LAST + 1), [](const int Button) { return PadDown(Button); }) ||
+           Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER] >= TriggerPressed || Pad.Now.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] >= TriggerPressed;
 }
 
 void WatchMouseWheel(GLFWwindow* const Window)

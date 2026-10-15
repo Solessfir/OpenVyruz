@@ -1156,6 +1156,44 @@ void PollEvents(GLFWwindow* const Window)
     PauseClock(false);
 }
 
+// A key or mouse button going down, as WaitForInput (00404910) and FUN_00401880 wait for one.
+class FInputPress
+{
+public:
+    explicit FInputPress(GLFWwindow* const Window) : Window(Window), Previous(Read()) {}
+
+    bool Poll()
+    {
+        const std::vector<bool> Now = Read();
+        bool bPressed = false;
+        for (size_t Index = 0; Index < Now.size(); ++Index)
+        {
+            bPressed = bPressed || (Now[Index] && !Previous[Index]);
+        }
+
+        Previous = Now;
+        return bPressed;
+    }
+
+private:
+    std::vector<bool> Read() const
+    {
+        std::vector<bool> Down;
+        for (int Key = GLFW_KEY_SPACE; Key <= GLFW_KEY_LAST; ++Key)
+        {
+            Down.push_back(glfwGetKey(Window, Key) == GLFW_PRESS);
+        }
+
+        Down.push_back(glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
+        Down.push_back(glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
+        Down.push_back(IsGamepadConfirmDown());
+        return Down;
+    }
+
+    GLFWwindow* Window;
+    std::vector<bool> Previous;
+};
+
 // ShowImageWait at 00404950: an image centred on the screen for up to 5 seconds; WaitForInput (00404910) ends the wait early on a key or a mouse button.
 void ShowImage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string_view Path)
 {
@@ -1171,24 +1209,13 @@ void ShowImage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& 
     const FSpriteSheet Sheet = Renderer.CreateSpriteSheet(Gaf->Bitmaps);
     const float X = float((int(ScreenWidth) - int(Bitmap.Width)) / 2 - Bitmap.TrimX);
     const float Y = float((int(ScreenHeight) - int(Bitmap.Height)) / 2 - Bitmap.TrimY);
-    const auto AnyInput = [Window]
-    {
-        for (int Key = GLFW_KEY_SPACE; Key <= GLFW_KEY_LAST; ++Key)
-        {
-            if (glfwGetKey(Window, Key) == GLFW_PRESS)
-            {
-                return true;
-            }
-        }
-
-        return glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS || glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-    };
-
+    // A fresh press, so the fire held as the player died does not skip it.
+    FInputPress AnyInput(Window);
     const uint32_t Start = ClockMilliseconds();
     while (!glfwWindowShouldClose(Window) && ClockMilliseconds() - Start < WaitMilliseconds)
     {
         PollEvents(Window);
-        if (AnyInput())
+        if (AnyInput.Poll())
         {
             break;
         }
@@ -1266,44 +1293,6 @@ void ShowTextPage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchiv
         }
     }
 }
-
-// A key or mouse button going down, as WaitForInput (00404910) and FUN_00401880 wait for one.
-class FInputPress
-{
-public:
-    explicit FInputPress(GLFWwindow* const Window) : Window(Window), Previous(Read()) {}
-
-    bool Poll()
-    {
-        const std::vector<bool> Now = Read();
-        bool bPressed = false;
-        for (size_t Index = 0; Index < Now.size(); ++Index)
-        {
-            bPressed = bPressed || (Now[Index] && !Previous[Index]);
-        }
-
-        Previous = Now;
-        return bPressed;
-    }
-
-private:
-    std::vector<bool> Read() const
-    {
-        std::vector<bool> Down;
-        for (int Key = GLFW_KEY_SPACE; Key <= GLFW_KEY_LAST; ++Key)
-        {
-            Down.push_back(glfwGetKey(Window, Key) == GLFW_PRESS);
-        }
-
-        Down.push_back(glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
-        Down.push_back(glfwGetMouseButton(Window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
-        Down.push_back(IsGamepadConfirmDown());
-        return Down;
-    }
-
-    GLFWwindow* Window;
-    std::vector<bool> Previous;
-};
 
 // FUN_00446120 when the finale ends: over a black screen the lines of PTR_s_____GENERAL_NETWORK_FAILURE_____0050d740 type out at 100, from 100 and 20 apart, one a second, until 10 seconds pass or a key or button goes down.
 void ShowNetworkFailure(GLFWwindow* const Window, FRenderer& Renderer, const FPanel& Panel)

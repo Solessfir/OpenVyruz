@@ -139,7 +139,7 @@ struct FGamepadMenuInput
     bool bBack = false;
 };
 FGamepadMenuInput GamepadMenuInput();
-// Whether A, B or Start is down, which the screens that wait for any key take as one.
+// Whether any pad button or trigger is down, which the screens that wait for any key take as one.
 bool IsGamepadConfirmDown();
 // Whether a code is down now; joypad codes never are.
 bool IsCodeDown(GLFWwindow* Window, uint32_t Code);
