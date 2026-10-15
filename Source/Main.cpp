@@ -1296,7 +1296,7 @@ void ShowTextPage(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchiv
     }
 }
 
-// FUN_00446120 when the finale ends: over a black screen the lines of PTR_s_____GENERAL_NETWORK_FAILURE_____0050d740 type out at 100, from 100 and 20 apart, one a second, until 10 seconds pass or a key or button goes down.
+// ShowNetworkFailure (00446120) when the finale ends: over a black screen the lines of PTR_s_____GENERAL_NETWORK_FAILURE_____0050d740 type out at 100, from 100 and 20 apart, one a second, until 10 seconds pass or a key or button goes down.
 void ShowNetworkFailure(GLFWwindow* const Window, FRenderer& Renderer, const FPanel& Panel)
 {
     constexpr std::array<std::string_view, 5> Lines = { "... GENERAL NETWORK FAILURE ...", "", "... DISCONNECTED ...", "", "... SYSTEM HALTED ..." };
@@ -6773,6 +6773,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         // EngineRunLevel ends the game after a starred lift: the registered game's two ending pages over theend.tga (FUN_00402890), then the score table and the menu.
         if (NextLevel && NextLevel->starts_with('*'))
         {
+            // The finale's fade leaves the ramp black; ShowNetworkFailure (00446120) starts by setting the user's gamma (GammaSet at 0045ffc0), and the pages keep it.
+            Renderer.ResetGamma();
             if (bShowNetworkFailure && Panel)
             {
                 ShowNetworkFailure(Window, Renderer, *Panel);
@@ -6783,8 +6785,6 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 GameAudio->PlayFade();
             }
 
-            // The finale's fade leaves the ramp black; the pages are drawn with the user's gamma, as the game-over image is.
-            Renderer.ResetGamma();
             constexpr int32_t FirstPageLeft = 0x46;
             constexpr int32_t SecondPageLeft = 0x8c;
             if (Panel)

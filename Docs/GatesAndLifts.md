@@ -71,7 +71,7 @@ Each page (`FUN_004027f0` with the callback at `00402640`) draws the 640x480 Tar
 
 The port plays the registered game. With no menu yet, a new game starts at the first level after the pages.
 
-Once the final object dies, the port also takes the player's controls and fire away, stops the actors, turrets and generators, and keeps the player's energy and shield from dropping, so nothing during the flashes can kill the player. Shots and explosions already under way still finish. The original keeps the level running until the fade ends.
+Once the final object dies, the port takes the player's motor and fire away as the original's ignored action keys do, and it also stops the actors, turrets and generators and keeps the player's energy and shield from dropping, so nothing during the flashes can kill the player. Shots and explosions already under way still finish. The original keeps the rest of the level running until the fade ends.
 
 `LoopLevels` (`004467d0`) runs `VzPlayLevel`, then keeps the player object if it is still alive. `LevelReload` (`00420430`) loads the next level from scratch through `VzLoadLevel`, so a level left and entered again starts over. Before the next `VzPlayLevel`, `LoopLevels` replaces the new level's player object with the kept one:
 
