@@ -272,7 +272,9 @@ void FPanel::CyclePanels(const bool bReverse)
 {
     constexpr int TopMode = ScreenMode;
     const int Next = Mode + (bReverse ? -ModeStep : ModeStep);
-    Mode = Next < 0 ? -Next : Next > TopMode ? 2 * TopMode - Next : Next;
+    // cppcheck reads "Next < 0 ? ... Next > TopMode" as a template argument list.
+    // cppcheck-suppress compareBoolExpressionWithInt
+    Mode =Next < 0 ? -Next : Next > TopMode ? 2 * TopMode - Next : Next;
     if (!bReverse && (Mode == 0 || Mode == TopMode))
     {
         ModeStep = -ModeStep;

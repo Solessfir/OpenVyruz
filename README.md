@@ -17,6 +17,8 @@ The project generators download a pinned Premake on first run. Shaders are Slang
 
 Configurations: `Debug`, `Development` (optimized with symbols), `Shipping`.
 
+GitHub Actions (`.github/workflows/ci.yml`) builds every push and pull request with MSVC on Windows and with GCC and Clang on Ubuntu, and runs cppcheck. Pushing a tag such as `v1.0` also builds `Shipping` for both systems and publishes `OpenVyruz-<tag>-windows-x64.zip` and `OpenVyruz-<tag>-linux-x64.tar.gz` as a GitHub release. The archives hold the executable only; the game data stays the player's own.
+
 ### Windows
 
 Requirements:

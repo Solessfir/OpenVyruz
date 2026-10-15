@@ -1,0 +1,210 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VULKAN_SDK_VERSION: 1.4.363.0
+  SLANG_VERSION: 2026.19
+  SLANG_SHA256: bd6cfc47b7353b2cffa36a866b1584749f76f4b2dbebf6dda26bc3fb40dc3c0e
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows MSVC Development
+            runner: windows-2025-vs2026
+            platform: windows
+            configuration: Development
+          - name: Windows MSVC Shipping
+            runner: windows-2025-vs2026
+            platform: windows
+            configuration: Shipping
+            package: true
+          - name: Linux Clang Development
+            runner: ubuntu-24.04
+            platform: linux
+            configuration: Development
+            premake-cc: clang
+            cc: clang-19
+            cxx: clang++-19
+          - name: Linux GCC Shipping
+            runner: ubuntu-24.04
+            platform: linux
+            configuration: Shipping
+            premake-cc: gcc
+            cc: gcc-14
+            cxx: g++-14
+            package: true
+
+    steps:
+      - name: Check out OpenVyruz
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Restore the Vulkan SDK
+        if: matrix.platform == 'windows'
+        id: vulkan-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: C:\VulkanSDK
+          key: windows-vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}
+
+      - name: Install the Vulkan SDK
+        if: matrix.platform == 'windows' && steps.vulkan-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $Installer = Join-Path $env:RUNNER_TEMP 'VulkanSDK.exe'
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_SDK_VERSION.exe" -OutFile $Installer
+          & $Installer --root "C:\VulkanSDK\$env:VULKAN_SDK_VERSION" --accept-licenses --default-answer --confirm-command install | Out-Host
+          if (-not (Test-Path "C:\VulkanSDK\$env:VULKAN_SDK_VERSION\Bin\slangc.exe")) {
+            throw 'The Vulkan SDK install has no slangc.'
+          }
+
+      - name: Build on Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          & .\GenerateProjectFiles.bat vs2026
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $MSBuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          & $MSBuild Vyruz.slnx /m /t:Vyruz /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 /verbosity:minimal
+          exit $LASTEXITCODE
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          # Clang builds against the newest installed libstdc++, so both jobs need GCC 14's for C++23.
+          sudo apt-get install --yes gcc-14 g++-14 clang-19 libvulkan-dev libwayland-dev libwayland-bin libxkbcommon-dev xorg-dev
+
+      - name: Restore Slang
+        if: matrix.platform == 'linux'
+        id: slang-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/slang
+          key: linux-slang-${{ env.SLANG_VERSION }}
+
+      # Ubuntu packages no slangc; the shaders compile with the release build of Slang.
+      - name: Install Slang
+        if: matrix.platform == 'linux' && steps.slang-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          Archive="${RUNNER_TEMP}/slang.tar.gz"
+          curl -fsSL -o "${Archive}" "https://github.com/shader-slang/slang/releases/download/v${SLANG_VERSION}/slang-${SLANG_VERSION}-linux-x86_64.tar.gz"
+          echo "${SLANG_SHA256}  ${Archive}" | sha256sum -c --quiet
+          mkdir -p ~/slang
+          tar -xzf "${Archive}" -C ~/slang
+
+      - name: Build on Linux
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          export PATH="${HOME}/slang/bin:${PATH}"
+          ./GenerateProjectFiles.sh gmake --cc=${{ matrix.premake-cc }}
+          Configuration="${{ matrix.configuration }}"
+          make --jobs="$(nproc)" config="${Configuration,,}" Vyruz
+          "./Binaries/linux/${Configuration}/Vyruz" --help > /dev/null
+
+      - name: Package for Windows
+        if: matrix.platform == 'windows' && matrix.package && startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $Package = "OpenVyruz-${{ github.ref_name }}-windows-x64"
+          New-Item -ItemType Directory -Path "Intermediate/Packages/$Package" | Out-Null
+          Copy-Item 'Binaries/windows/Shipping/Vyruz.exe', 'LICENSE', 'README.md' "Intermediate/Packages/$Package"
+          Compress-Archive -Path "Intermediate/Packages/$Package" -DestinationPath "Intermediate/Packages/$Package.zip"
+
+      - name: Package for Linux
+        if: matrix.platform == 'linux' && matrix.package && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          Package="OpenVyruz-${{ github.ref_name }}-linux-x64"
+          mkdir -p "Intermediate/Packages/${Package}"
+          cp Binaries/linux/Shipping/Vyruz LICENSE README.md Resources/Linux/openvyruz.desktop Resources/Linux/openvyruz.png "Intermediate/Packages/${Package}/"
+          tar -czf "Intermediate/Packages/${Package}.tar.gz" -C Intermediate/Packages "${Package}"
+
+      - name: Upload the package
+        if: matrix.package && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: OpenVyruz-${{ matrix.platform }}
+          path: |
+            Intermediate/Packages/*.zip
+            Intermediate/Packages/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  cppcheck:
+    name: Cppcheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Arch carries the current cppcheck; Ubuntu's is too old for C++23.
+    container: archlinux:latest
+    steps:
+      - name: Check out OpenVyruz
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install cppcheck
+        run: pacman -Syu --noconfirm cppcheck
+
+      # Style notes stay advisory for the local run; they mostly flag reads cppcheck cannot see, such as through lambdas.
+      - name: Run cppcheck
+        run: >-
+          cppcheck --std=c++23 --enable=warning,performance,portability --inline-suppr
+          --suppress=missingIncludeSystem --error-exitcode=1
+          -j "$(nproc)" -q -I Source -D_WIN32 -D_M_X64 Source
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build
+      - cppcheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download the packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: OpenVyruz-*
+          merge-multiple: true
+          path: Packages
+
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" Packages/* --repo "${{ github.repository }}" --title "OpenVyruz ${{ github.ref_name }}" --generate-notes --verify-tag
