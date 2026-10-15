@@ -64,7 +64,7 @@ Comments explain why: original-game quirks, format constraints, engine behavior,
 
 ## Git
 
-- Work directly on `main`; do not create feature branches. Committing and amending unpushed commits is allowed. Never push, force-push, or rewrite pushed history without an explicit request.
+- Work directly on `main`; do not create feature branches. `classic` holds the original-rules version (the OG state); it changes only on request. Committing and amending unpushed commits is allowed. Never push, force-push, or rewrite pushed history without an explicit request.
 - Commit messages are short natural titles, no `feat:`-style prefixes, no body, no `Co-authored-by` trailers.
 - Submodule revisions are intentional locks.
 
