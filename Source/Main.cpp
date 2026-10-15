@@ -4327,8 +4327,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     bool bShowNetworkFailure = false;
     // FUN_0041e5a0 after the game menu closes on a running level: five steps from black, 50 ms apart with Gamma FX and 25 ms with scanlines otherwise, while the game stands still.
     constexpr int MenuFadeSteps = 5;
-    int MenuFadeStep = MenuFadeSteps;
-    uint32_t MenuFadeTime = 0;
+    // A lift's level change fades out and the next level fades in, the same steps as the game menu's fade, which the original does not have (its level change shows the loading screen).
+    // The arrival starts black; the departure counts its own steps and ends the level once the screen is black.
+    int MenuFadeStep = Carried ? 0 : MenuFadeSteps;
+    uint32_t MenuFadeTime = ClockMilliseconds();
+    std::optional<int> LiftFadeStep;
     int32_t FinaleTimer = 0;
     int32_t FinaleFlashTimer = 0;
     bool bFinaleFlash = false;
@@ -5140,7 +5143,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
-        if (bPaused || !PageText.empty() || MenuFadeStep < MenuFadeSteps)
+        if (bPaused || !PageText.empty() || MenuFadeStep < MenuFadeSteps || LiftFadeStep)
         {
             RemainingMilliseconds = 0;
         }
@@ -6605,13 +6608,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         // The level's fade in after the game menu: each step darkens by a quarter less, the ramp (step - 4) * 255 / 4 on its own, or without Gamma FX the rows at or past the step in every four turned black.
-        // MenuGame then gives the ramp the user's gamma back (FUN_00420990).
-        if (MenuFadeStep < MenuFadeSteps)
+        // MenuGame then gives the ramp the user's gamma back (FUN_00420990). A lift's departure runs the same steps the other way, a quarter darker each.
+        if (MenuFadeStep < MenuFadeSteps || LiftFadeStep)
         {
             constexpr int FadeQuarters = 4;
+            const int DarkQuarters = LiftFadeStep ? std::min(*LiftFadeStep + 1, FadeQuarters) : FadeQuarters - MenuFadeStep;
             if (Settings.Details.bGammaFx)
             {
-                const int32_t Ramp = (MenuFadeStep - FadeQuarters) * 0xff / FadeQuarters;
+                const int32_t Ramp = -DarkQuarters * 0xff / FadeQuarters;
                 Renderer.SetGamma({ Ramp, Ramp, Ramp });
             }
             else
@@ -6625,7 +6629,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 constexpr uint32_t Black = 0;
                 for (int Row = 0; Row < int(ScreenHeight); ++Row)
                 {
-                    if (Row % FadeQuarters >= MenuFadeStep)
+                    if (Row % FadeQuarters >= FadeQuarters - DarkQuarters)
                     {
                         Renderer.DrawSprite(*WhiteSheet, 0, 0.f, float(Row), false, false, ESpriteBlend::Opaque, float(ScreenWidth), 1.f, UINT32_MAX, Black);
                     }
@@ -6636,7 +6640,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             constexpr uint32_t GammaFadeStepMilliseconds = 50;
             constexpr uint32_t LineFadeStepMilliseconds = 25;
             const uint32_t FadeStepMilliseconds = Settings.Details.bGammaFx ? GammaFadeStepMilliseconds : LineFadeStepMilliseconds;
-            if (ClockMilliseconds() - MenuFadeTime >= FadeStepMilliseconds)
+            if (!LiftFadeStep && ClockMilliseconds() - MenuFadeTime >= FadeStepMilliseconds)
             {
                 MenuFadeTime = ClockMilliseconds();
                 if (++MenuFadeStep == MenuFadeSteps)
@@ -6769,11 +6773,28 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             return FLevelEnd{ .Kind = ELevelEnd::Menu };
         }
 
-        // The level ends after the frame in which the player took a lift.
+        // The level ends once the frame in which the player took a lift has faded to black.
         if (NextLevel && Player && PlayerObject)
         {
-            Carried = CarriedNow();
-            return FLevelEnd{ .Kind = ELevelEnd::Lift, .NextLevel = *NextLevel };
+            constexpr int FadeQuarters = 4;
+            constexpr uint32_t GammaFadeStepMilliseconds = 50;
+            constexpr uint32_t LineFadeStepMilliseconds = 25;
+            if (!LiftFadeStep)
+            {
+                LiftFadeStep = 0;
+                MenuFadeTime = ClockMilliseconds();
+            }
+            else if (ClockMilliseconds() - MenuFadeTime >= (Settings.Details.bGammaFx ? GammaFadeStepMilliseconds : LineFadeStepMilliseconds))
+            {
+                MenuFadeTime = ClockMilliseconds();
+                ++*LiftFadeStep;
+            }
+
+            if (*LiftFadeStep >= FadeQuarters)
+            {
+                Carried = CarriedNow();
+                return FLevelEnd{ .Kind = ELevelEnd::Lift, .NextLevel = *NextLevel };
+            }
         }
     }
 

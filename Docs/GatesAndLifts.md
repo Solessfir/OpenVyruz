@@ -94,6 +94,8 @@ A code item's `TYPE Item` can carry a timeout (item attribute `+0x28` to `+0x7c`
 
 ## Port
 
+A level change through a lift fades out and the next level fades in, in the game menu's fade steps (`FUN_0041e5a0`: four quarters, 50 ms apart with Gamma FX, 25 ms with scanlines otherwise) while the game stands still. The original has no such transition; its level change shows the loading screen for as long as loading takes, which on current machines is no time at all.
+
 `CreateDoors` and `StepDoors` in `Source/Game/Engine` follow these updates after the actors' step. `--verify-game` checks them:
 
 - With the player far away, every level's sensing gates are run until they close.
