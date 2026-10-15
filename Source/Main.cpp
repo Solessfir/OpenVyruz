@@ -6358,7 +6358,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 return;
             }
 
+            // ObjectDraw drops a fading object's shadow, lights and overlays and draws only its body by alpha; a shadow by alpha would show as a light blob.
             const bool bFadingObject = ObjectFade < FullFade;
+            if ((bFadingPlayer || bFadingObject) && (Sprite.bShadow || Sprite.bGeneratorLight))
+            {
+                return;
+            }
+
             // DrawAnimationFrame at 0045eab0: a frame's event flag 4 sets the diffuse colour to the event value, scaled by the colour the draw passes.
             // The player's light layers fade by pose this way.
             constexpr uint32_t DiffuseEventFlag = 4;
