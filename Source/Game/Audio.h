@@ -12,6 +12,8 @@
 
 class FResourceArchive;
 struct FPlayerState;
+struct FSoundEmitter;
+struct FSoundTrack;
 struct FWeaponClass;
 
 // The audio options vzconf.txt sets (ConfigLoad at 0042f570): music (option flag 0x400), sound-fx (0x800) and voices (0x1000), and their volumes at session +0x27e4, +0x27e8 and +0x27ec.
@@ -160,10 +162,11 @@ public:
     // Letting go plays Fire-end-sound.
     // An empty stock plays No-ammo-sound. bFiring is object flag 2, which a jammed weapon, a blocked motor and invisibility clear; bStock tells whether a stock is bound (object +0x248) and Rounds what it holds.
     void UpdatePlayerWeapon(const FWeaponClass& Weapon, bool bFiring, bool bStock, float Rounds);
-    // The same for any other armed object, on its weapon class's Sample-channel-range at its Sample-channel-priority, never looping.
-    // The original's playing checks and stops name no channel then, so they see nothing playing and stop nothing. bStarting and bSounding are its object flags 0x10000 and 0x20000.
-    void UpdateWeapon(const FWeaponClass& Weapon, bool& bStarting, bool& bSounding, bool bFiring, bool bStock, float Rounds, uint32_t Channel,
-        uint32_t Mask, uint32_t Priority, bool bMayLoop);
+    // Any other armed object, on its weapon class's Sample-channel-range at its Sample-channel-priority, each frame; bShot tells whether it fired since the last.
+    // The original names no channel for these, so its playing checks see nothing and a sound starts on another channel each frame of firing, piling up at full volume wherever the object is.
+    // The port gives the object one positional sound (SoundTrack) instead: a shot restarts it, a looping weapon's fire sound plays through and its end sound follows the last shot, and an empty stock plays No-ammo-sound.
+    // bSounding is the object flag 0x20000.
+    void UpdateObjectWeapon(const FWeaponClass& Weapon, bool& bSounding, FSoundTrack& SoundTrack, bool bShot, float Rounds, const FSoundEmitter& Emitter);
     // PlayerSelectWeapon (00437740): weapon-switch.wav on channel 2, which also ends the weapon's sound states.
     void PlayWeaponSwitch();
     // The player's death cry, aaaa.wav, on channel 2 (EngineUpdateObjects at 004406e0).
@@ -188,6 +191,9 @@ private:
     std::shared_ptr<const Sound::FSample> Load(std::string_view Name);
     // SoundPlayOnChannel (00403f80): restarts a channel with the sample.
     void PlayOnChannel(const std::shared_ptr<const Sound::FSample>& Sample, uint32_t Channel, bool bLoop, bool bHighPriority);
+    // ObjectsUpdateWeaponSounds' state machine; bStarting and bSounding are the object flags 0x10000 and 0x20000.
+    void UpdateWeapon(const FWeaponClass& Weapon, bool& bStarting, bool& bSounding, bool bFiring, bool bStock, float Rounds, uint32_t Channel,
+        uint32_t Mask, uint32_t Priority, bool bMayLoop);
 
     static constexpr int TrackCount = 3;
 

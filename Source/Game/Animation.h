@@ -3,6 +3,7 @@
 #include "Pg/Gaf.h"
 
 #include <cstdint>
+#include <memory>
 #include <string_view>
 
 namespace Sound
@@ -59,6 +60,9 @@ void PlayFrameSound(const Gaf::FAnimation& Animation, const Gaf::FAnimationFrame
 void FollowFrameSound(FSoundTrack& Track, const FSoundEmitter* Emitter);
 // The mixer that frames with a sound event play on; none leaves animations silent, as the verify modes run them.
 void SetAnimationMixer(Sound::FMixer* Mixer);
+// The port's sound for an object's weapon: positional like a frame's sound, and while the Track's last sound still plays it takes that channel, so a new shot cuts the last one short instead of piling onto another channel.
+void PlayTrackedSound(std::shared_ptr<const Sound::FSample> Sample, FSoundTrack& Track, const FSoundEmitter& Emitter);
+bool IsTrackPlaying(const FSoundTrack& Track);
 // SoundSetListener (0045edb0): EngineUpdateObjects puts the listener at the player's position and altitude on each update.
 void SetSoundListener(float X, float Y, float Altitude);
 // The class's Sample-channel-range ("first, last", 1-based, FUN_00407b70) as a channel mask and its Sample-channel-priority.

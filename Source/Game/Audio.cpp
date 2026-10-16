@@ -503,6 +503,50 @@ void FAudio::UpdateWeapon(const FWeaponClass& Weapon, bool& bStarting, bool& bSo
     }
 }
 
+void FAudio::UpdateObjectWeapon(const FWeaponClass& Weapon, bool& bSounding, FSoundTrack& SoundTrack, const bool bShot, const float Rounds, const FSoundEmitter& Emitter)
+{
+    FollowFrameSound(SoundTrack, &Emitter);
+    const bool bPlaying = IsTrackPlaying(SoundTrack);
+    const auto Play = [&](const std::string& Name)
+    {
+        if (!Name.empty())
+        {
+            PlayTrackedSound(Load(Name), SoundTrack, Emitter);
+        }
+    };
+
+    if (!bShot)
+    {
+        if (bSounding && !bPlaying)
+        {
+            bSounding = false;
+            if (Weapon.bFireSoundLoops)
+            {
+                Play(Weapon.FireEndSound);
+            }
+        }
+
+        return;
+    }
+
+    if (Rounds == 0.f)
+    {
+        if (!bPlaying)
+        {
+            Play(Weapon.NoAmmoSound);
+        }
+
+        return;
+    }
+
+    // Every weapon names a Fire-sound or a Fire-start-sound, never both.
+    if (!Weapon.bFireSoundLoops || !bPlaying)
+    {
+        bSounding = true;
+        Play(Weapon.FireSound.empty() ? Weapon.FireStartSound : Weapon.FireSound);
+    }
+}
+
 void FAudio::PlayWeaponSwitch()
 {
     bWeaponStarting = bWeaponFiring = false;

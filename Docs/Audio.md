@@ -32,6 +32,7 @@ The port always mixes positional sounds its own way:
 - A positional sound fades between the descriptor's inner box (400) and outer box (800), as their radii were meant to make it, instead of cutting off at the inner box. The distance is the farthest of the three axes, as the boxes measure it.
 - Past the inner box, which spans the screen, a one-pole low-pass closes from 8 kHz toward 700 Hz at the outer box, so off-screen sounds come muffled.
 - Volume and pan glide toward each new setting with a 5 ms time constant, and a sound that is stopped or replaced fades out over a few milliseconds instead of being cut, so neither clicks.
+- Every armed object other than the player has one positional weapon sound at a time, which follows it like its other sounds ([Weapons](#weapons)).
 - A Freeverb plays over every channel but music and voices, with a room by the level's zone, the first folder of its path: long and dark in `cave`, a little shorter in `underground`, short and bright in `hitek` and `cpu`. The menus outside a level have none.
 
 ## Channels
@@ -81,7 +82,7 @@ The `TYPE Weapon` block names its sounds (`LoadObjectClassLibrary`, keywords `0x
 
 `PlayerSelectWeapon` (`00437740`) ends both states and plays `weapon-switch.wav` on channel 2.
 
-The pass covers every object of the level (session `+0x2010`) except ammo, FX, items, lifts, gates and things. Other objects never loop their fire sound. With no ADD Weapon channel they play on the weapon class's `Sample-channel-range` (weapons: 9 to 16) at its `Sample-channel-priority` (129). Their "channel" is then 0, so every playing check sees nothing and every stop stops nothing: a fire sound starts again on each frame of firing. The port takes a turret's or actor's trigger as the shots its weapon took since the last frame.
+The pass covers every object of the level (session `+0x2010`) except ammo, FX, items, lifts, gates and things. Other objects never loop their fire sound. With no ADD Weapon channel they play on the weapon class's `Sample-channel-range` (weapons: 9 to 16) at its `Sample-channel-priority` (129). Their "channel" is then 0, so every playing check sees nothing and every stop stops nothing: a fire sound starts again on each frame of firing, on another channel each time and at the channel's volume and pan wherever the object is, so a few enemies firing at once fill the weapon channels. The port takes a turret's or actor's trigger as the shots its weapon took since the last frame and gives each object one positional sound instead (`FAudio::UpdateObjectWeapon`): a shot restarts it on its own channel, a looping weapon's fire sound plays through while the shots go on and `Fire-end-sound` follows once it ends with no shot, and an empty stock plays `No-ammo-sound`. The sound fades, pans and muffles with distance like any positional sound and follows the object while it plays.
 
 ## Other sounds
 

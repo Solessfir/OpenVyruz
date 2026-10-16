@@ -3849,6 +3849,30 @@ void PlayFrameSound(const Gaf::FAnimation& Animation, const Gaf::FAnimationFrame
     Track = { .Channel = Channel, .Serial = Channel == 0 ? 0 : AnimationMixer->GetSerial(Channel) };
 }
 
+bool IsTrackPlaying(const FSoundTrack& Track)
+{
+    return AnimationMixer && Track.Channel != 0 && AnimationMixer->GetSerial(Track.Channel) == Track.Serial;
+}
+
+void PlayTrackedSound(std::shared_ptr<const Sound::FSample> Sample, FSoundTrack& Track, const FSoundEmitter& Emitter)
+{
+    constexpr uint32_t SoundFxChannel = 2;
+    if (!AnimationMixer || !Sample)
+    {
+        return;
+    }
+
+    const int Volume = PositionalVolume(Emitter, AnimationMixer->GetVolume(SoundFxChannel));
+    if (Volume <= 0)
+    {
+        return;
+    }
+
+    const uint32_t Mask = IsTrackPlaying(Track) ? 1u << (Track.Channel - 1) : Emitter.ChannelMask;
+    const uint32_t Channel = AnimationMixer->Play(std::move(Sample), false, Emitter.Priority, Mask, Volume, PositionalPan(Emitter), PositionalMuffle(Emitter));
+    Track = { .Channel = Channel, .Serial = Channel == 0 ? 0 : AnimationMixer->GetSerial(Channel) };
+}
+
 // UpdateAnimation keeps a positional sound's volume and pan on its emitter while the sound plays, and stops it once out of range.
 void FollowFrameSound(FSoundTrack& Track, const FSoundEmitter* const Emitter)
 {

@@ -6190,8 +6190,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
 
                     const FWeaponClass& Weapon = Combat->Weapons[State->Weapon];
-                    GameAudio->UpdateWeapon(Weapon, State->bSoundStarting, State->bSoundFiring, State->bSoundTrigger && !Body.State.bInvisible, true, Stock->Count, 0,
-                        Weapon.SoundChannelMask, Weapon.SoundPriority, false);
+                    const FSoundEmitter Emitter{
+                        .X = Body.State.Position.X,
+                        .Y = Body.State.Position.Y,
+                        .Altitude = Level->Objects[Body.ObjectIndex].Altitude,
+                        .ChannelMask = Weapon.SoundChannelMask,
+                        .Priority = Weapon.SoundPriority,
+                    };
+                    GameAudio->UpdateObjectWeapon(Weapon, State->bSoundFiring, State->SoundTrack, State->bSoundTrigger && !Body.State.bInvisible, Stock->Count, Emitter);
                     State->bSoundTrigger = false;
                 }
             }
