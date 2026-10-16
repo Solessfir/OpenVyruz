@@ -4,7 +4,7 @@
 
 Native reimplementation of *Vyruz: Destruction of the Untel Empire* (2001, Metropolis Software / C2V) for Windows 11 and Linux (Wayland/X11). It reads the original game data; no game files are included.
 
-The single-player campaign is playable with the intro and menus, and its saves and scores are shared with the original. On top of that come wide screens without stretching, a gamepad, modern audio (distance fade, muffling, zone reverb), a blurred map overlay and modding through `--extract` and `--compress`. The `classic` branch keeps the original's rules.
+It matches the original one to one, so the whole game is there and can be completed. On top of that come wide screens without stretching, a gamepad, modern audio (distance fade, muffling, zone reverb), a blurred map overlay and modding through `--extract` and `--compress`. The `classic` branch keeps the original's rules.
 
 ## Quick start
 
