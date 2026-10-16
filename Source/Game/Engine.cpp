@@ -2170,8 +2170,7 @@ namespace
 {
 bool CarriesKey(const std::vector<FCarriedKey>& Keys, int Id);
 
-// The view size at session +0xf84 and +0xf88, from which the screen messages are placed.
-constexpr int32_t MessageViewWidth = 640;
+// The view's height at session +0xf88, from which the screen messages are placed; FMessages holds its width.
 constexpr int32_t MessageViewHeight = 480;
 
 // The floating texts of the item pickup branch: world messages that rise from the item and type themselves out.
@@ -2202,7 +2201,7 @@ void AddCentreMessage(FMessages& Messages, std::string Text, const uint32_t Diff
     constexpr uint32_t Font = 6;
     Messages.Add({
         .Text = std::move(Text),
-        .X = float((MessageViewWidth >> 1) + CentreOffset),
+        .X = float((Messages.ViewWidth >> 1) + CentreOffset),
         .Y = float((MessageViewHeight >> 1) + CentreOffset),
         .LifeMilliseconds = LifeMilliseconds,
         .Font = Font,
@@ -2251,7 +2250,7 @@ void CollectSurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Typ
     const int32_t Shown = std::max(MinShown, (Timeout < ShortTimeout ? ShortTimeoutShown : Timeout) + StartDelay);
     Messages.Add({
         .Text = std::string(SurpriseText(Type)),
-        .X = float((MessageViewWidth >> 1) + TextOffset),
+        .X = float((Messages.ViewWidth >> 1) + TextOffset),
         .Y = float((MessageViewHeight >> 1) + TextOffset),
         .LifeMilliseconds = uint32_t(Shown),
         .Font = Font,
@@ -2262,7 +2261,7 @@ void CollectSurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Typ
     if (const uint32_t Icon = SurpriseIcon(Type); Icon != 0 && Icon <= Combat.SurpriseIcons.size())
     {
         Carried.IconMessage = Messages.Add({
-            .X = float(MessageViewWidth + IconX),
+            .X = float(Messages.ViewWidth + IconX),
             .Y = float(MessageViewHeight + IconY),
             .LifeMilliseconds = uint32_t(Shown),
             .Gaf = EMessageGaf::Surprise,
@@ -3089,10 +3088,12 @@ constexpr std::array<std::string_view, 4> PinballSparks = { "flipper-bong-up-lef
 
 // FUN_00436690: a point within a screen of the view each way, which the view, centred on the player, gives as within a screen and a half of the player.
 // ponytail: measured from the player rather than the clamped camera; at the level's edges the margin is a half screen wider on that side.
-bool IsNearView(const FCollisionPoint Point, const FCollisionPoint Viewer)
+bool IsNearView(const FCollisionPoint Point, const FCollisionPoint Viewer, const float ViewWidth)
 {
-    constexpr float NearX = 640.f + 320.f;
-    constexpr float NearY = 480.f + 240.f;
+    constexpr float ViewHeight = 480.f;
+    constexpr float ScreensAndAHalf = 1.5f;
+    const float NearX = ViewWidth * ScreensAndAHalf;
+    constexpr float NearY = ViewHeight * ScreensAndAHalf;
     return std::abs(Point.X - Viewer.X) < NearX && std::abs(Point.Y - Viewer.Y) < NearY;
 }
 
@@ -3100,7 +3101,7 @@ bool IsNearView(const FCollisionPoint Point, const FCollisionPoint Viewer)
 // Up-left of the struck point, the spark is the down-right one, and so on; it appears 8 pixels above the point, at whole pixels, unless one of its class already stands in that map cell.
 void ThrowBounceSpark(FCombat& Combat, const std::array<std::string, 4>& Sides, const FCollisionPoint Mover, const FCollisionPoint Point, const FCollisionPoint Viewer)
 {
-    if (!IsNearView(Mover, Viewer))
+    if (!IsNearView(Mover, Viewer, Combat.ViewWidth))
     {
         return;
     }
@@ -6744,7 +6745,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
                     {
                         return Effect.ClassIndex == size_t(Class - Combat.EffectClasses.begin()) && !Effect.bFinished && Effect.Position.X == Spot.X && Effect.Position.Y == Spot.Y;
                     });
-                if (!bTaken && IsNearView(Spot, Player.State.Position))
+                if (!bTaken && IsNearView(Spot, Player.State.Position, Combat.ViewWidth))
                 {
                     SpawnEffect(Combat, Name, Spot, bHit ? float(Shot.Altitude) : 0.f);
                 }

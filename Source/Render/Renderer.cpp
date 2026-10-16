@@ -10,12 +10,25 @@ namespace
 {
 #include "Sprite.vert.h"
 #include "Sprite.frag.h"
+#include "Blur.vert.h"
+#include "Blur.frag.h"
 
 // ponytail: fixed pool, one set per sprite sheet; grow or go bindless when levels load more sheets than this.
 constexpr uint32_t MaxTextures = 1024;
 // Each frame sits inside a border of copies of its own edge pixels: at a non-integer letterbox scale a pixel centre on a frame edge can sample one texel past it, which must not be a neighbour or a transparent gap.
 constexpr uint32_t SheetBorder = 1;
 constexpr uint32_t SheetPadding = 2 * SheetBorder;
+// The blur halves the view four times, to a sixteenth, and comes back up; the spread widens each pass's taps.
+constexpr uint32_t BlurLevelCount = 4;
+constexpr float BlurSpread = 1.5f;
+
+struct FBlurPush
+{
+    float HalfTexel[2] = {};
+    float Up = 0.f;
+    float Padding = 0.f;
+    float Tint[4] = {};
+};
 
 void Check(const VkResult Result, const char* const What)
 {
@@ -84,6 +97,15 @@ void TransitionImage(const VkCommandBuffer Cmd, const VkImage Image, const VkIma
     };
     vkCmdPipelineBarrier2(Cmd, &Dependency);
 }
+}
+
+float WideViewWidth(GLFWwindow* const Window)
+{
+    int Width = 0;
+    int Height = 0;
+    glfwGetFramebufferSize(Window, &Width, &Height);
+    // Whole columns, so the view's pixels stay on the sprites' whole-pixel grid.
+    return Height <= 0 ? ScreenWidth : std::max(ScreenWidth, std::floor(ScreenHeight * float(Width) / float(Height)));
 }
 
 bool FRenderer::Init(GLFWwindow* const InWindow)
@@ -271,6 +293,37 @@ void FRenderer::CreateDevice()
         .pPushConstantRanges = &PushRange,
     };
     Check(vkCreatePipelineLayout(Device, &PipelineLayoutInfo, nullptr, &PipelineLayout), "vkCreatePipelineLayout");
+
+    // The blur averages neighbours, so it samples linearly where the sprites stay nearest.
+    VkSamplerCreateInfo LinearInfo = SamplerInfo;
+    LinearInfo.magFilter = VK_FILTER_LINEAR;
+    LinearInfo.minFilter = VK_FILTER_LINEAR;
+    Check(vkCreateSampler(Device, &LinearInfo, nullptr, &LinearSampler), "vkCreateSampler");
+    VkDescriptorSetLayoutBinding BlurBinding = Binding;
+    BlurBinding.pImmutableSamplers = &LinearSampler;
+    const VkDescriptorSetLayoutCreateInfo BlurSetInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &BlurBinding,
+    };
+    Check(vkCreateDescriptorSetLayout(Device, &BlurSetInfo, nullptr, &BlurSetLayout), "vkCreateDescriptorSetLayout");
+    const VkDescriptorPoolSize BlurPoolSize{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, BlurLevelCount };
+    const VkDescriptorPoolCreateInfo BlurPoolInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = BlurLevelCount,
+        .poolSizeCount = 1,
+        .pPoolSizes = &BlurPoolSize,
+    };
+    Check(vkCreateDescriptorPool(Device, &BlurPoolInfo, nullptr, &BlurPool), "vkCreateDescriptorPool");
+    const VkPushConstantRange BlurPushRange{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FBlurPush) };
+    const VkPipelineLayoutCreateInfo BlurLayoutInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &BlurSetLayout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &BlurPushRange,
+    };
+    Check(vkCreatePipelineLayout(Device, &BlurLayoutInfo, nullptr, &BlurLayout), "vkCreatePipelineLayout");
 }
 
 void FRenderer::CreatePipeline()
@@ -374,6 +427,37 @@ void FRenderer::CreatePipeline()
 
     vkDestroyShaderModule(Device, VertexModule, nullptr);
     vkDestroyShaderModule(Device, FragmentModule, nullptr);
+
+    // The blur's passes draw one opaque triangle into its chain or the view, all in the swapchain's format.
+    vkDestroyPipeline(Device, BlurPipeline, nullptr);
+    const VkShaderModuleCreateInfo BlurVertexInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = sizeof(BlurVert),
+        .pCode = BlurVert,
+    };
+    const VkShaderModuleCreateInfo BlurFragmentInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = sizeof(BlurFrag),
+        .pCode = BlurFrag,
+    };
+    Check(vkCreateShaderModule(Device, &BlurVertexInfo, nullptr, &VertexModule), "vkCreateShaderModule");
+    Check(vkCreateShaderModule(Device, &BlurFragmentInfo, nullptr, &FragmentModule), "vkCreateShaderModule");
+    const VkPipelineShaderStageCreateInfo BlurStages[] = {
+        { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = VertexModule, .pName = "main" },
+        { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = FragmentModule, .pName = "main" },
+    };
+    const VkPipelineInputAssemblyStateCreateInfo TriangleList{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    };
+    BlendAttachment.blendEnable = VK_FALSE;
+    VkGraphicsPipelineCreateInfo BlurInfo = PipelineInfo;
+    BlurInfo.pStages = BlurStages;
+    BlurInfo.pInputAssemblyState = &TriangleList;
+    BlurInfo.layout = BlurLayout;
+    Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &BlurInfo, nullptr, &BlurPipeline), "vkCreateGraphicsPipelines");
+    vkDestroyShaderModule(Device, VertexModule, nullptr);
+    vkDestroyShaderModule(Device, FragmentModule, nullptr);
     PipelineFormat = SwapchainFormat;
 }
 
@@ -460,6 +544,12 @@ bool FRenderer::CreateSwapchain()
 
     SwapchainFormat = Format.format;
     SwapchainExtent = Extent;
+    // The blur copies the view out of the swapchain image with a filtered blit and draws its chain in the same format.
+    constexpr VkFormatFeatureFlags BlurFeatures = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+                                                  VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    VkFormatProperties FormatProperties{};
+    vkGetPhysicalDeviceFormatProperties(PhysicalDevice, SwapchainFormat, &FormatProperties);
+    bCanBlur = bCanCapture && (FormatProperties.optimalTilingFeatures & BlurFeatures) == BlurFeatures;
     vkGetSwapchainImagesKHR(Device, Swapchain, &ImageCount, nullptr);
     SwapchainImages.resize(ImageCount);
     vkGetSwapchainImagesKHR(Device, Swapchain, &ImageCount, SwapchainImages.data());
@@ -730,8 +820,9 @@ void FRenderer::UpdateVideoSheet(const FSpriteSheet& Sheet, const std::span<cons
     UploadTexture(Texture.Image, Texture.Width, Texture.Height, Rgba, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
-bool FRenderer::BeginFrame()
+bool FRenderer::BeginFrame(const float Width)
 {
+    ViewWidth = Width;
     if (!bSwapchainValid)
     {
         vkDeviceWaitIdle(Device);
@@ -790,21 +881,21 @@ void FRenderer::BeginRendering(const VkAttachmentLoadOp LoadOp)
     };
     vkCmdBeginRendering(Cmd, &RenderingInfo);
 
-    // Letterbox the 4:3 original screen into the window; bars stay at the clear color.
-    const float Scale = std::min(SwapchainExtent.width / ScreenWidth, SwapchainExtent.height / ScreenHeight);
-    const float ViewWidth = ScreenWidth * Scale;
-    const float ViewHeight = ScreenHeight * Scale;
+    // Letterbox the view into the window; bars stay at the clear color.
+    const float Scale = std::min(SwapchainExtent.width / ViewWidth, SwapchainExtent.height / ScreenHeight);
+    const float ScaledWidth = ViewWidth * Scale;
+    const float ScaledHeight = ScreenHeight * Scale;
     const VkViewport Viewport{
-        .x = (SwapchainExtent.width - ViewWidth) * 0.5f,
-        .y = (SwapchainExtent.height - ViewHeight) * 0.5f,
-        .width = ViewWidth,
-        .height = ViewHeight,
+        .x = (SwapchainExtent.width - ScaledWidth) * 0.5f,
+        .y = (SwapchainExtent.height - ScaledHeight) * 0.5f,
+        .width = ScaledWidth,
+        .height = ScaledHeight,
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
     };
     const VkRect2D Scissor{
         { static_cast<int32_t>(Viewport.x), static_cast<int32_t>(Viewport.y) },
-        { static_cast<uint32_t>(ViewWidth), static_cast<uint32_t>(ViewHeight) },
+        { static_cast<uint32_t>(ScaledWidth), static_cast<uint32_t>(ScaledHeight) },
     };
     vkCmdSetViewport(Cmd, 0, 1, &Viewport);
     vkCmdSetScissor(Cmd, 0, 1, &Scissor);
@@ -835,8 +926,8 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
     const float Top = Y + (bMirrorY ? -float(Frame.TrimY) * ScaleY - Height : float(Frame.TrimY) * ScaleY);
     // A turned frame may reach anywhere within its farthest corner's distance of the pivot.
     const float Reach = RotationDegrees != 0.f ? std::max(std::hypot(Left - PivotX, Top - PivotY), std::hypot(Left + Width - PivotX, Top + Height - PivotY)) : 0.f;
-    if (RotationDegrees != 0.f ? PivotX - Reach >= ScreenWidth || PivotY - Reach >= ScreenHeight || PivotX + Reach <= 0.f || PivotY + Reach <= 0.f
-                               : Left >= ScreenWidth || Top >= ScreenHeight || Left + Width <= 0.f || Top + Height <= 0.f)
+    if (RotationDegrees != 0.f ? PivotX - Reach >= ViewWidth || PivotY - Reach >= ScreenHeight || PivotX + Reach <= 0.f || PivotY + Reach <= 0.f
+                               : Left >= ViewWidth || Top >= ScreenHeight || Left + Width <= 0.f || Top + Height <= 0.f)
     {
         return;
     }
@@ -844,7 +935,7 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
     FSpritePush Push{
         .Rect = { Left, Top, Width, Height },
         .UvRect = { bMirrorX ? U1 : Frame.U0, bMirrorY ? Frame.V1 : Frame.V0, bMirrorX ? Frame.U0 : U1, bMirrorY ? Frame.V0 : Frame.V1 },
-        .ScreenSize = { ScreenWidth, ScreenHeight },
+        .ScreenSize = { ViewWidth, ScreenHeight },
     };
     UnpackColor(Diffuse, Push.Diffuse, Alpha);
     UnpackColor(Specular, Push.Specular);
@@ -912,21 +1003,200 @@ void FRenderer::DrawGamma()
         return;
     }
 
+    if (Lift != 0)
+    {
+        DrawSprite(WhitePixel(), 0, 0.f, 0.f, false, false, ESpriteBlend::Screen, ViewWidth, ScreenHeight, UINT32_MAX, Lift);
+    }
+
+    if (Darken != 0)
+    {
+        DrawSprite(WhitePixel(), 0, 0.f, 0.f, false, false, ESpriteBlend::InverseSourceColor, ViewWidth, ScreenHeight, UINT32_MAX, Darken);
+    }
+}
+
+const FSpriteSheet& FRenderer::WhitePixel()
+{
     if (!GammaSheet)
     {
         constexpr uint16_t White = 0x7fff;
         GammaSheet = CreateSpriteSheet({ Gaf::FFrame{ .Width = 1, .Height = 1, .Pixels = { White } } });
     }
 
-    if (Lift != 0)
+    return *GammaSheet;
+}
+
+void FRenderer::DestroyBlurTargets()
+{
+    for (const FTexture& Level : BlurLevels)
     {
-        DrawSprite(*GammaSheet, 0, 0.f, 0.f, false, false, ESpriteBlend::Screen, ScreenWidth, ScreenHeight, UINT32_MAX, Lift);
+        vkDestroyImageView(Device, Level.View, nullptr);
+        vkDestroyImage(Device, Level.Image, nullptr);
+        vkFreeMemory(Device, Level.Memory, nullptr);
     }
 
-    if (Darken != 0)
+    BlurLevels.clear();
+    Check(vkResetDescriptorPool(Device, BlurPool, 0), "vkResetDescriptorPool");
+}
+
+void FRenderer::CreateBlurTargets(const VkExtent2D Size)
+{
+    // The previous frame may still read the old chain.
+    vkDeviceWaitIdle(Device);
+    DestroyBlurTargets();
+    for (uint32_t Index = 0; Index < BlurLevelCount; ++Index)
     {
-        DrawSprite(*GammaSheet, 0, 0.f, 0.f, false, false, ESpriteBlend::InverseSourceColor, ScreenWidth, ScreenHeight, UINT32_MAX, Darken);
+        FTexture Level{ .Width = std::max(1u, Size.width >> Index), .Height = std::max(1u, Size.height >> Index) };
+        const VkImageCreateInfo ImageInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = SwapchainFormat,
+            .extent = { Level.Width, Level.Height, 1 },
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        Check(vkCreateImage(Device, &ImageInfo, nullptr, &Level.Image), "vkCreateImage");
+        VkMemoryRequirements Requirements;
+        vkGetImageMemoryRequirements(Device, Level.Image, &Requirements);
+        const VkMemoryAllocateInfo Alloc{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = Requirements.size,
+            .memoryTypeIndex = FindMemoryType(Requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+        };
+        Check(vkAllocateMemory(Device, &Alloc, nullptr, &Level.Memory), "vkAllocateMemory");
+        vkBindImageMemory(Device, Level.Image, Level.Memory, 0);
+        const VkImageViewCreateInfo ViewInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = Level.Image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = SwapchainFormat,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        Check(vkCreateImageView(Device, &ViewInfo, nullptr, &Level.View), "vkCreateImageView");
+        const VkDescriptorSetAllocateInfo SetAlloc{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = BlurPool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &BlurSetLayout,
+        };
+        Check(vkAllocateDescriptorSets(Device, &SetAlloc, &Level.DescriptorSet), "vkAllocateDescriptorSets");
+        const VkDescriptorImageInfo DescriptorImage{
+            .imageView = Level.View,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        const VkWriteDescriptorSet Write{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = Level.DescriptorSet,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &DescriptorImage,
+        };
+        vkUpdateDescriptorSets(Device, 1, &Write, 0, nullptr);
+        BlurLevels.push_back(Level);
     }
+}
+
+void FRenderer::DrawBlurPass(const FTexture& From, const bool bUp, const uint32_t Tint)
+{
+    const VkCommandBuffer Cmd = Frames[FrameIndex].CommandBuffer;
+    FBlurPush Push{
+        .HalfTexel = { BlurSpread * 0.5f / float(From.Width), BlurSpread * 0.5f / float(From.Height) },
+        .Up = bUp ? 1.f : 0.f,
+    };
+    UnpackColor(Tint, Push.Tint);
+    vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, BlurPipeline);
+    vkCmdBindDescriptorSets(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, BlurLayout, 0, 1, &From.DescriptorSet, 0, nullptr);
+    vkCmdPushConstants(Cmd, BlurLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &Push);
+    vkCmdDraw(Cmd, 3, 1, 0, 0);
+}
+
+void FRenderer::BlurView(const uint32_t Tint)
+{
+    constexpr uint32_t ChannelMask = 0xffffff;
+    if (!bCanBlur)
+    {
+        // An inverse-source blend of the tint's complement scales what lies under it by the tint.
+        DrawSprite(WhitePixel(), 0, 0.f, 0.f, false, false, ESpriteBlend::InverseSourceColor, ViewWidth, ScreenHeight, UINT32_MAX, ~Tint & ChannelMask);
+        return;
+    }
+
+    // The view as BeginRendering placed it.
+    const float Scale = std::min(SwapchainExtent.width / ViewWidth, SwapchainExtent.height / ScreenHeight);
+    const int32_t Left = int32_t((SwapchainExtent.width - ViewWidth * Scale) * 0.5f);
+    const int32_t Top = int32_t((SwapchainExtent.height - ScreenHeight * Scale) * 0.5f);
+    const VkExtent2D View{ std::max(1u, uint32_t(ViewWidth * Scale)), std::max(1u, uint32_t(ScreenHeight * Scale)) };
+    const VkExtent2D Half{ std::max(1u, View.width / 2), std::max(1u, View.height / 2) };
+    if (BlurLevels.empty() || BlurLevels.front().Width != Half.width || BlurLevels.front().Height != Half.height)
+    {
+        CreateBlurTargets(Half);
+    }
+
+    const VkCommandBuffer Cmd = Frames[FrameIndex].CommandBuffer;
+    const VkImage Image = SwapchainImages[ImageIndex];
+    vkCmdEndRendering(Cmd);
+    // The first halving is a filtered blit of the view.
+    const FTexture& First = BlurLevels.front();
+    TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    TransitionImage(Cmd, First.Image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    const VkImageBlit Blit{
+        .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .srcOffsets = { { std::max(0, Left), std::max(0, Top), 0 }, { std::max(0, Left) + int32_t(View.width), std::max(0, Top) + int32_t(View.height), 1 } },
+        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .dstOffsets = { { 0, 0, 0 }, { int32_t(First.Width), int32_t(First.Height), 1 } },
+    };
+    vkCmdBlitImage(Cmd, Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, First.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &Blit, VK_FILTER_LINEAR);
+    TransitionImage(Cmd, First.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+        VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+
+    constexpr uint32_t White = 0xffffff;
+    const auto Pass = [&](const FTexture& From, const FTexture& To, const bool bUp)
+    {
+        TransitionImage(Cmd, To.Image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        const VkRenderingAttachmentInfo Attachment{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = To.View,
+            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        };
+        const VkRenderingInfo Rendering{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .renderArea = { { 0, 0 }, { To.Width, To.Height } },
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &Attachment,
+        };
+        vkCmdBeginRendering(Cmd, &Rendering);
+        const VkViewport Viewport{ .width = float(To.Width), .height = float(To.Height), .maxDepth = 1.f };
+        const VkRect2D Scissor{ { 0, 0 }, { To.Width, To.Height } };
+        vkCmdSetViewport(Cmd, 0, 1, &Viewport);
+        vkCmdSetScissor(Cmd, 0, 1, &Scissor);
+        DrawBlurPass(From, bUp, White);
+        vkCmdEndRendering(Cmd);
+        TransitionImage(Cmd, To.Image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    };
+    for (size_t Index = 1; Index < BlurLevels.size(); ++Index)
+    {
+        Pass(BlurLevels[Index - 1], BlurLevels[Index], false);
+    }
+
+    for (size_t Index = BlurLevels.size() - 1; Index-- > 0;)
+    {
+        Pass(BlurLevels[Index + 1], BlurLevels[Index], true);
+    }
+
+    // The last doubling lands in the view, tinted.
+    BeginRendering(VK_ATTACHMENT_LOAD_OP_LOAD);
+    DrawBlurPass(First, true, Tint & ChannelMask);
 }
 
 void FRenderer::RequestCapture(const uint32_t Width, const uint32_t Height)
@@ -996,8 +1266,8 @@ void FRenderer::EndFrame()
     if (CaptureSize && bCanCapture && CaptureBuffer == VK_NULL_HANDLE)
     {
         vkCmdEndRendering(Cmd);
-        // The letterboxed view, as BeginFrame placed it.
-        const float Scale = std::min(SwapchainExtent.width / ScreenWidth, SwapchainExtent.height / ScreenHeight);
+        // The middle 640x480 of the letterboxed view, as BeginFrame placed it.
+        const float Scale = std::min(SwapchainExtent.width / ViewWidth, SwapchainExtent.height / ScreenHeight);
         CaptureRegion = { std::max(1u, uint32_t(ScreenWidth * Scale)), std::max(1u, uint32_t(ScreenHeight * Scale)) };
         const int32_t OffsetX = int32_t((SwapchainExtent.width - ScreenWidth * Scale) * 0.5f);
         const int32_t OffsetY = int32_t((SwapchainExtent.height - ScreenHeight * Scale) * 0.5f);
@@ -1098,10 +1368,17 @@ void FRenderer::ReleaseSpriteSheets()
 void FRenderer::Shutdown()
 {
     ReleaseSpriteSheets();
+    DestroyBlurTargets();
     for (const VkPipeline Pipeline : SpritePipelines)
     {
         vkDestroyPipeline(Device, Pipeline, nullptr);
     }
+
+    vkDestroyPipeline(Device, BlurPipeline, nullptr);
+    vkDestroyPipelineLayout(Device, BlurLayout, nullptr);
+    vkDestroyDescriptorPool(Device, BlurPool, nullptr);
+    vkDestroyDescriptorSetLayout(Device, BlurSetLayout, nullptr);
+    vkDestroySampler(Device, LinearSampler, nullptr);
 
     vkDestroyPipelineLayout(Device, PipelineLayout, nullptr);
     vkDestroyDescriptorPool(Device, DescriptorPool, nullptr);

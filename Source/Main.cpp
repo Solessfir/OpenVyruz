@@ -707,8 +707,8 @@ void AnimateActors(std::vector<std::optional<FActorAnimation>>& Actors, const st
     }
 }
 
-// EngineVisitViewObjects at 00433b30 visits from one column left of the view and two rows above it, 13 columns and 20 rows, clamped to the grid.
-FViewCells ViewCellsAround(const int CameraX, const int CameraY, const FLevel& Level)
+// EngineVisitViewObjects at 00433b30 visits from one column left of the view and two rows above it, to three columns and five rows past its size (13 by 20 at 640x480), clamped to the grid.
+FViewCells ViewCellsAround(const int CameraX, const int CameraY, const int ViewWidth, const FLevel& Level)
 {
     constexpr int ExtraColumns = 3;
     constexpr int ExtraRows = 5;
@@ -719,7 +719,7 @@ FViewCells ViewCellsAround(const int CameraX, const int CameraY, const FLevel& L
     return {
         .Left = Left,
         .Top = Top,
-        .Right = std::min(Left + int(ScreenWidth) / int(BlockWidth) + ExtraColumns, int(Level.GridWidth)),
+        .Right = std::min(Left + ViewWidth / int(BlockWidth) + ExtraColumns, int(Level.GridWidth)),
         .Bottom = std::min(Top + int(ScreenHeight) / int(BlockHeight) + ExtraRows, int(Level.GridHeight)),
     };
 }
@@ -791,26 +791,89 @@ void DrawHudSprite(FRenderer& Renderer, const FSpriteSheet& Sheet, const FHudSpr
     }
 }
 
-// The map's picture (MapToggle at 00436460 with GobRenderMap at 0046b120): every MAP_ layer from the first, each block stretched into its cell's share of a screen-sized bitmap, which starts black; pixels left at 0x800 are transparent. ponytail: point-samples the level instead of stretching block by block, so cell edges may round a pixel differently.
-Gaf::FFrame RenderLevelMap(const FLevel& Level)
+struct FMapBox
+{
+    // Where the map lies in the view.
+    float Left = 0.f;
+    float Top = 0.f;
+    float Width = 0.f;
+    float Height = 0.f;
+    // The part of the level it shows, in world pixels.
+    float WorldLeft = 0.f;
+    float WorldTop = 0.f;
+    float WorldWidth = 0.f;
+    float WorldHeight = 0.f;
+};
+
+// The port's map shows the cells that hold blocks, in the level's shape, as large as fits the view inside a margin and centred, where the original stretches the whole grid over the screen.
+FMapBox LevelMapBox(const FLevel& Level, const float ViewWidth)
+{
+    const size_t CellCount = size_t(Level.GridWidth) * Level.GridHeight;
+    uint32_t Left = Level.GridWidth;
+    uint32_t Top = Level.GridHeight;
+    uint32_t Right = 0;
+    uint32_t Bottom = 0;
+    for (size_t Cell = 0; Cell < CellCount; ++Cell)
+    {
+        for (uint32_t Layer = 0; Layer < Level.LayerCount; ++Layer)
+        {
+            const size_t Index = size_t(Layer) * CellCount + Cell;
+            if (Index < Level.Map.size() && Level.Map[Index] != 0 && Level.Map[Index] <= Level.Blocks.size())
+            {
+                const uint32_t X = uint32_t(Cell % Level.GridWidth);
+                const uint32_t Y = uint32_t(Cell / Level.GridWidth);
+                Left = std::min(Left, X);
+                Top = std::min(Top, Y);
+                Right = std::max(Right, X + 1);
+                Bottom = std::max(Bottom, Y + 1);
+                break;
+            }
+        }
+    }
+
+    if (Right <= Left || Bottom <= Top)
+    {
+        return {};
+    }
+
+    constexpr float Margin = 40.f;
+    FMapBox Box{
+        .WorldLeft = float(Left * BlockWidth),
+        .WorldTop = float(Top * BlockHeight),
+        .WorldWidth = float((Right - Left) * BlockWidth),
+        .WorldHeight = float((Bottom - Top) * BlockHeight),
+    };
+    const float Scale = std::min((ViewWidth - 2.f * Margin) / Box.WorldWidth, (ScreenHeight - 2.f * Margin) / Box.WorldHeight);
+    Box.Width = std::floor(Box.WorldWidth * Scale);
+    Box.Height = std::floor(Box.WorldHeight * Scale);
+    Box.Left = std::floor((ViewWidth - Box.Width) / 2.f);
+    Box.Top = std::floor((ScreenHeight - Box.Height) / 2.f);
+    return Box;
+}
+
+// The map's picture (MapToggle at 00436460 with GobRenderMap at 0046b120): every MAP_ layer from the first, each block stretched into its cell's share of a screen-sized bitmap, which starts black; pixels left at 0x800 are transparent.
+// The port's starts transparent instead, so the map lies over the blurred game. ponytail: point-samples the level instead of stretching block by block, so cell edges may round a pixel differently.
+Gaf::FFrame RenderLevelMap(const FLevel& Level, const FMapBox& Box)
 {
     constexpr uint16_t MapColorKey = 0x800;
-    const uint32_t Width = uint32_t(ScreenWidth);
-    const uint32_t Height = uint32_t(ScreenHeight);
-    Gaf::FFrame Map{ .Width = Width, .Height = Height, .ColorKey = MapColorKey, .Pixels = std::vector<uint16_t>(size_t(Width) * Height, 0) };
-    const uint64_t MapWidth = uint64_t(Level.GridWidth) * BlockWidth;
-    const uint64_t MapHeight = uint64_t(Level.GridHeight) * BlockHeight;
-    if (MapWidth == 0 || MapHeight == 0)
+    const uint32_t Width = uint32_t(Box.Width);
+    const uint32_t Height = uint32_t(Box.Height);
+    Gaf::FFrame Map{ .Width = Width, .Height = Height, .ColorKey = MapColorKey, .Pixels = std::vector<uint16_t>(size_t(Width) * Height, MapColorKey) };
+    const uint64_t MapLeft = uint64_t(Box.WorldLeft);
+    const uint64_t MapTop = uint64_t(Box.WorldTop);
+    const uint64_t MapWidth = uint64_t(Box.WorldWidth);
+    const uint64_t MapHeight = uint64_t(Box.WorldHeight);
+    if (MapWidth == 0 || MapHeight == 0 || Width == 0 || Height == 0)
     {
         return Map;
     }
 
     for (uint32_t Y = 0; Y < Height; ++Y)
     {
-        const uint64_t WorldY = Y * MapHeight / Height;
+        const uint64_t WorldY = MapTop + Y * MapHeight / Height;
         for (uint32_t X = 0; X < Width; ++X)
         {
-            const uint64_t WorldX = X * MapWidth / Width;
+            const uint64_t WorldX = MapLeft + X * MapWidth / Width;
             const size_t Cell = size_t(WorldY / BlockHeight) * Level.GridWidth + size_t(WorldX / BlockWidth);
             for (uint32_t Layer = 0; Layer < Level.LayerCount; ++Layer)
             {
@@ -1471,24 +1534,24 @@ struct FLetterbox
     double Top = 0.0;
 };
 
-FLetterbox WindowLetterbox(GLFWwindow* const Window)
+FLetterbox WindowLetterbox(GLFWwindow* const Window, const float ViewWidth)
 {
     int Width = 0;
     int Height = 0;
     glfwGetWindowSize(Window, &Width, &Height);
-    const double Scale = std::min(Width / double(ScreenWidth), Height / double(ScreenHeight));
-    return Scale <= 0.0 ? FLetterbox{} : FLetterbox{ .Scale = Scale, .Left = (Width - ScreenWidth * Scale) / 2, .Top = (Height - ScreenHeight * Scale) / 2 };
+    const double Scale = std::min(Width / double(ViewWidth), Height / double(ScreenHeight));
+    return Scale <= 0.0 ? FLetterbox{} : FLetterbox{ .Scale = Scale, .Left = (Width - ViewWidth * Scale) / 2, .Top = (Height - ScreenHeight * Scale) / 2 };
 }
 
-// The mouse in the 640x480 screen, kept inside it as FUN_00451950 keeps the cursor.
-std::pair<int32_t, int32_t> ScreenCursor(GLFWwindow* const Window)
+// The mouse in the 640x480 screen, or the level's wide view, kept inside it as FUN_00451950 keeps the cursor.
+std::pair<int32_t, int32_t> ScreenCursor(GLFWwindow* const Window, const float ViewWidth = ScreenWidth)
 {
-    const FLetterbox Box = WindowLetterbox(Window);
+    const FLetterbox Box = WindowLetterbox(Window, ViewWidth);
     double X = 0.0;
     double Y = 0.0;
     glfwGetCursorPos(Window, &X, &Y);
     return {
-        std::clamp(int32_t(std::floor((X - Box.Left) / Box.Scale)), 0, int32_t(ScreenWidth) - 1),
+        std::clamp(int32_t(std::floor((X - Box.Left) / Box.Scale)), 0, int32_t(ViewWidth) - 1),
         std::clamp(int32_t(std::floor((Y - Box.Top) / Box.Scale)), 0, int32_t(ScreenHeight) - 1),
     };
 }
@@ -1496,7 +1559,7 @@ std::pair<int32_t, int32_t> ScreenCursor(GLFWwindow* const Window)
 void SetScreenCursor(GLFWwindow* const Window, const int32_t X, const int32_t Y)
 {
     constexpr double PixelCentre = 0.5;
-    const FLetterbox Box = WindowLetterbox(Window);
+    const FLetterbox Box = WindowLetterbox(Window, ScreenWidth);
     glfwSetCursorPos(Window, Box.Left + (X + PixelCentre) * Box.Scale, Box.Top + (Y + PixelCentre) * Box.Scale);
 }
 
@@ -4049,6 +4112,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     constexpr double ScrollSpeed = 600.0;
     const float MapWidth = float(Level->GridWidth * BlockWidth);
     const float MapHeight = float(Level->GridHeight * BlockHeight);
+    // The port's wide view, which every view-bound pass follows; a demo keeps the original's, so its recorded steps meet the same objects.
+    const auto LevelViewWidth = [&] { return Demo ? ScreenWidth : WideViewWidth(Window); };
+    float GameViewWidth = LevelViewWidth();
     std::optional<FMovementClass> PlayerClass;
     std::optional<FPlayerState> Player;
     std::optional<FTerrainCollision> Terrain;
@@ -4307,7 +4373,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         constexpr uint32_t Font = 6;
         Messages.Add({
             .Text = Format("%s,\n   you need MORE Cash\n     to see the Map !", Settings.PlayerName),
-            .X = float((int32_t(ScreenWidth) >> 1) + TextX),
+            .X = float((int32_t(GameViewWidth) >> 1) + TextX),
             .Y = float(int32_t(ScreenHeight) >> 1),
             .LifeMilliseconds = LifeMilliseconds,
             .Font = Font,
@@ -4327,7 +4393,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         bMapShown = !bMapShown;
         if (bMapShown && !MapSheet)
         {
-            MapSheet = Renderer.CreateSpriteSheet({ RenderLevelMap(*Level) });
+            const FMapBox Box = LevelMapBox(*Level, GameViewWidth);
+            MapSheet = Renderer.CreateSpriteSheet({ RenderLevelMap(*Level, Box) });
         }
 
         if (Panel)
@@ -4420,7 +4487,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // EngineReadActionKeys (0043b5c0) and InputActionPressed (0041d4c0) read the actions through the device's bindings (InputActionDown at 0041d650).
     const auto ActionDown = [&](const EAction Action) { return IsActionDown(Window, Settings.Controls(), Action) || IsGamepadActionDown(Action); };
     bool bEscapeDown = ActionDown(EAction::Menu);
-    double CameraX = PlayerObject ? PlayerObject->X - ScreenWidth * 0.5 : 0.0;
+    double CameraX = PlayerObject ? PlayerObject->X - GameViewWidth * 0.5 : 0.0;
     double CameraY = PlayerObject ? PlayerObject->Y - ScreenHeight * 0.5 : 0.0;
     std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
     std::fflush(stdout);
@@ -4523,7 +4590,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         constexpr uint32_t NameColor = 0xffe010;
         Messages.Add({
             .Text = Level->Name,
-            .X = float((int32_t(ScreenWidth) >> 1) + NameX),
+            .X = float((int32_t(GameViewWidth) >> 1) + NameX),
             .Y = float(ScreenHeight),
             .VelocityY = NameVelocityY,
             .LifeMilliseconds = NameLifeMilliseconds,
@@ -4630,7 +4697,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 Renderer.DrawSprite(*WhiteSheet, 0, float(X0), float(Y0), false, false, ESpriteBlend::Opaque, float(X1 - X0), float(Y1 - Y0), UINT32_MAX, Black);
             }
         };
-        const int Width = int(ScreenWidth);
+        const int Width = int(GameViewWidth);
         const int Height = int(ScreenHeight);
         Fill(0, 0, Width, std::max(Top, 0));
         Fill(0, std::min(Bottom, Height), Width, Height);
@@ -5023,6 +5090,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     while (!glfwWindowShouldClose(Window))
     {
         PollEvents(Window);
+        GameViewWidth = LevelViewWidth();
+        Messages.ViewWidth = int32_t(GameViewWidth);
+        if (Combat)
+        {
+            Combat->ViewWidth = GameViewWidth;
+        }
+
         // EnginePause (0043b8d0): action-pause (P) closes an open map, or freezes the game (session +0x20 bit 0x1000000) under pause.gaf until P again; meanwhile only P is read and the clock's time is dropped.
         const bool bPausePressed = ActionDown(EAction::Pause) && !bPauseKeyDown;
         bPauseKeyDown = ActionDown(EAction::Pause);
@@ -5384,7 +5458,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     bool bForwardKey = ActionDown(EAction::Forward);
                     bool bBackwardKey = ActionDown(EAction::Backward);
                     // Moving the mouse hands the steering to the sight and a turn key hands it back; a demo steers by its records.
-                    const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window);
+                    const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window, GameViewWidth);
                     // With the absolute direction the keys alone steer, so the mouse neither turns the ship nor shows the sight.
                     if (LastMouse && Mouse != *LastMouse && !Demo)
                     {
@@ -5460,7 +5534,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             const float X = Body.State.Position.X - float(std::floor(CameraX));
                             const float Y = Body.State.Position.Y - float(std::floor(CameraY));
                             constexpr float SightRadius = 1.f;
-                            return IsAutoAimTarget(Body, *Level) && X >= 0.f && Y >= 0.f && X < float(ScreenWidth) && Y < float(ScreenHeight) &&
+                            return IsAutoAimTarget(Body, *Level) && X >= 0.f && Y >= 0.f && X < GameViewWidth && Y < float(ScreenHeight) &&
                                    !QueryTerrainCollision(*Terrain, { .Center = Player->Center, .Radius = SightRadius }, { .Center = Body.State.Center, .Radius = SightRadius }, true);
                         };
                         const auto Toward = [&](const FObjectBody& Body)
@@ -5875,7 +5949,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 Messages.Update(int32_t(StepMilliseconds), 0, 0, nullptr);
 
                 // The update pass after each step uses the view the previous frame scrolled to.
-                const FViewCells View = ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level);
+                const FViewCells View = ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), int(GameViewWidth), *Level);
                 if (Combat)
                 {
                     StepObjectBobs(*Combat, *Level, Bodies, StepMilliseconds, View);
@@ -5926,7 +6000,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         {
             SyncObjects();
             // Match the sprite's rounding so fractional movement cannot shift the ship against the camera.
-            const int ViewWidth = int(ScreenWidth);
+            const int ViewWidth = int(GameViewWidth);
             const int ViewHeight = int(ScreenHeight);
             const double TargetX = std::clamp(int(SpriteCoordinate(Player->Position.X)) - ViewWidth / 2, 0, std::max(0, int(Level->WorldExtentX) - ViewWidth));
             const double TargetY = std::clamp(int(SpriteCoordinate(Player->Position.Y)) - ViewHeight / 2, 0, std::max(0, int(Level->WorldExtentY) - ViewHeight));
@@ -5948,7 +6022,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             DeathCameraAt = DeathTimer ? std::optional(Now) : std::nullopt;
         }
 
-        CameraX = std::clamp(CameraX, 0.0, std::max(0.0, double(MapWidth - ScreenWidth)));
+        CameraX = std::clamp(CameraX, 0.0, std::max(0.0, double(MapWidth - GameViewWidth)));
         CameraY = std::clamp(CameraY, 0.0, std::max(0.0, double(MapHeight - ScreenHeight)));
         // EngineRunLevel moves the screen shake of a trap, Destroy-around or a blast on the player (session +0x2200 and +0x2204) one step toward still and flips its side every frame, and adds it to the view after the clamp.
         const auto StepShake = [](int& Offset)
@@ -5963,10 +6037,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         CameraX -= StepShake(Inventory.Surprises.ShakeX);
         CameraY -= StepShake(Inventory.Surprises.ShakeY);
         const uint32_t DrawStepMilliseconds = bRecordedSteps ? RecordedDrawStep.value_or(0) : LastStepMilliseconds;
-        AnimateActors(ActorAnimations, Bodies, *Level, *Objects, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level),
+        AnimateActors(ActorAnimations, Bodies, *Level, *Objects, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), int(GameViewWidth), *Level),
             int32_t(DrawStepMilliseconds));
         SyncGeneratorLights(PlacedAnimations, *Objects, Bodies);
-        StepPlacedAnimations(PlacedAnimations, *Objects, *Level, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), *Level), int32_t(DrawStepMilliseconds), true);
+        StepPlacedAnimations(PlacedAnimations, *Objects, *Level, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), int(GameViewWidth), *Level), int32_t(DrawStepMilliseconds), true);
         UpdateObjectSprites(*Objects, *Level, ActorAnimations, *Doors, PlacedAnimations);
         if (Player)
         {
@@ -6109,7 +6183,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
-        if (!Renderer.BeginFrame())
+        if (!Renderer.BeginFrame(GameViewWidth))
         {
             glfwWaitEventsTimeout(0.1);
             continue;
@@ -6119,7 +6193,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         const int OriginY = int(std::floor(CameraY));
         const uint32_t FirstX = uint32_t(OriginX) / BlockWidth;
         const uint32_t FirstY = uint32_t(OriginY) / BlockHeight;
-        const uint32_t EndX = std::min(Level->GridWidth, (uint32_t(OriginX) + uint32_t(ScreenWidth) - 1) / BlockWidth + 1);
+        const uint32_t EndX = std::min(Level->GridWidth, (uint32_t(OriginX) + uint32_t(GameViewWidth) - 1) / BlockWidth + 1);
         const uint32_t EndY = std::min(Level->GridHeight, (uint32_t(OriginY) + uint32_t(ScreenHeight) - 1) / BlockHeight + 1);
         // Runtime FX join the placed objects in the original depth order.
         std::vector<FObjectSprite> Sprites = Objects->Sprites;
@@ -6257,7 +6331,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
             if (!Settings.Details.bLowDetails)
             {
-                AddDecorSprites(Sprites, Combat->DecorAnimations, *Objects, ViewCellsAround(OriginX, OriginY, *Level));
+                AddDecorSprites(Sprites, Combat->DecorAnimations, *Objects, ViewCellsAround(OriginX, OriginY, int(GameViewWidth), *Level));
             }
 
             std::stable_sort(Sprites.begin(), Sprites.end(), [](const FObjectSprite& A, const FObjectSprite& B) { return SpriteDrawsBefore(A.Depth, B.Depth); });
@@ -6594,13 +6668,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         if (Panel && !PageText.empty())
         {
-            DrawHud(Panel->DrawShade(int(ScreenWidth), int(ScreenHeight)));
+            DrawHud(Panel->DrawShade(int(GameViewWidth), int(ScreenHeight)));
         }
 
         if (Panel && Player)
         {
             const std::vector<FRadarDot> Radar = FindRadarDots(*Level, Bodies, Player->Position, PlayerIndex, int(ScreenHeight));
-            DrawHud(Panel->Draw(PanelValues(), Radar, int(ScreenWidth), int(ScreenHeight), Combat ? Combat->MiscRandom : NoMiscRandom));
+            DrawHud(Panel->Draw(PanelValues(), Radar, int(GameViewWidth), int(ScreenHeight), Combat ? Combat->MiscRandom : NoMiscRandom));
             Panel->PostWarnings(PanelValues(), Messages);
             PayForMap();
             // PanelUpdate with HUD Green Info: while locked, one of four warnings by the game clock, held ten seconds; with the bars showing a shield at 1% or less, Shield Low, held fifteen.
@@ -6636,12 +6710,20 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             constexpr size_t PlayerIcon = 21;
             constexpr size_t LiftIcon = 23;
             constexpr size_t SavingIcon = 25;
-            Renderer.DrawSprite(*MapSheet, 0, 0.f, 0.f);
-            const double ScaleX = double(ScreenWidth) / double(Level->GridWidth * BlockWidth);
-            const double ScaleY = double(ScreenHeight) / double(Level->GridHeight * BlockHeight);
+            // The game behind the map blurs and darkens; a picture made for another view width is scaled into this one's box.
+            constexpr uint32_t MapBackdropTint = 0x707078;
+            Renderer.BlurView(MapBackdropTint);
+            const FMapBox Box = LevelMapBox(*Level, GameViewWidth);
+            const FSpriteFrame& Picture = MapSheet->Frames.front();
+            const float PictureScale = Picture.Width == 0 ? 1.f : Box.Width / float(Picture.Width);
+            Renderer.DrawSprite(*MapSheet, 0, Box.Left, Box.Top, false, false, ESpriteBlend::Opaque, PictureScale, PictureScale);
+            const double ScaleX = Box.WorldWidth > 0.f ? double(Box.Width) / double(Box.WorldWidth) : 0.;
+            const double ScaleY = Box.WorldHeight > 0.f ? double(Box.Height) / double(Box.WorldHeight) : 0.;
             const auto Icon = [&](const size_t Animation, const float X, const float Y)
             {
-                if (const std::optional<FHudSprite> Sprite = Panel->DrawAnimation(Animation, float(TruncateLow(double(X) * ScaleX)), float(TruncateLow(double(Y) * ScaleY))))
+                const float IconX = Box.Left + float(TruncateLow(double(X - Box.WorldLeft) * ScaleX));
+                const float IconY = Box.Top + float(TruncateLow(double(Y - Box.WorldTop) * ScaleY));
+                if (const std::optional<FHudSprite> Sprite = Panel->DrawAnimation(Animation, IconX, IconY))
                 {
                     DrawHud(std::span(&*Sprite, 1));
                 }
@@ -6667,7 +6749,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         if (Panel && !PageText.empty())
         {
             constexpr size_t PageFont = 3;
-            DrawHud(Panel->DrawTypedPage(PageFont, PageText, PageTyped, int(ScreenWidth), int(ScreenHeight)));
+            DrawHud(Panel->DrawTypedPage(PageFont, PageText, PageTyped, int(GameViewWidth), int(ScreenHeight)));
         }
 
         if (DeathTimer && FailedGaf && FailedGaf->Animations.size() >= 2)
@@ -6677,7 +6759,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 FailedSheet = Renderer.CreateSpriteSheet(FailedGaf->Bitmaps);
             }
 
-            const float CentreX = float(int32_t(ScreenWidth) >> 1);
+            const float CentreX = float(int32_t(GameViewWidth) >> 1);
             const float CentreY = float(int32_t(ScreenHeight) >> 1);
             for (const size_t Animation : { size_t(1), size_t(0) })
             {
@@ -6724,7 +6806,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         // EngineRunLevel draws the panel help last.
         if (bPanelHelp && Panel)
         {
-            DrawHud(Panel->DrawHelp(int(ScreenWidth), int(ScreenHeight)));
+            DrawHud(Panel->DrawHelp(int(GameViewWidth), int(ScreenHeight)));
         }
 
         if (bPaused && PauseGaf && !PauseGaf->Animations.empty() && !PauseGaf->Animations.front().Frames.empty())
@@ -6740,7 +6822,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             if (Frame.BitmapIndex != 0 && Frame.BitmapIndex <= PauseGaf->Bitmaps.size())
             {
                 const Gaf::FFrame& Bitmap = PauseGaf->Bitmaps[Frame.BitmapIndex - 1];
-                const float X = float((int32_t(ScreenWidth) - int32_t(Bitmap.Width)) / 2 - Bitmap.TrimX);
+                const float X = float((int32_t(GameViewWidth) - int32_t(Bitmap.Width)) / 2 - Bitmap.TrimX);
                 const float Y = float((int32_t(ScreenHeight) - int32_t(Bitmap.Height)) / 2 - Bitmap.TrimY);
                 Renderer.DrawSprite(*PauseSheet, Frame.BitmapIndex - 1, X, Y, false, false, FrameBlend(Frame));
             }
@@ -6770,7 +6852,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 {
                     if (Row % FadeQuarters >= FadeQuarters - DarkQuarters)
                     {
-                        Renderer.DrawSprite(*WhiteSheet, 0, 0.f, float(Row), false, false, ESpriteBlend::Opaque, float(ScreenWidth), 1.f, UINT32_MAX, Black);
+                        Renderer.DrawSprite(*WhiteSheet, 0, 0.f, float(Row), false, false, ESpriteBlend::Opaque, GameViewWidth, 1.f, UINT32_MAX, Black);
                     }
                 }
             }

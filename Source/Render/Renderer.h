@@ -15,6 +15,9 @@
 inline constexpr float ScreenWidth = 640.0f;
 inline constexpr float ScreenHeight = 480.0f;
 
+// The port's wide view: the original's 480 rows across as many columns as the window's shape gives, never fewer than 640, so a wide window shows more of the level instead of stretching it.
+float WideViewWidth(GLFWwindow* Window);
+
 struct FSpriteFrame
 {
     float U0 = 0.0f;
@@ -61,13 +64,16 @@ public:
     void UpdateVideoSheet(const FSpriteSheet& Sheet, std::span<const uint32_t> Rgba);
 
     // Returns false when nothing can be drawn this frame (minimized or swapchain being rebuilt).
-    bool BeginFrame();
+    // ViewWidth is the frame's width in screen pixels over the original 480 rows; the screens other than the level keep the 640 of the original.
+    bool BeginFrame(float ViewWidth = ScreenWidth);
     // X/Y is the top-left of the untrimmed sprite cell in screen pixels.
     // VisibleColumns keeps only that many columns of the bitmap from its left edge, as a clipped panel bar.
     // Diffuse multiplies the bitmap and Specular is added to it, both as 0xRRGGBB.
     void DrawSprite(const FSpriteSheet& Sheet, size_t FrameIndex, float X, float Y, bool bMirrorX = false, bool bMirrorY = false,
         ESpriteBlend Blend = ESpriteBlend::Opaque, float ScaleX = 1.f, float ScaleY = 1.f, uint32_t VisibleColumns = UINT32_MAX,
         uint32_t Diffuse = 0xffffff, uint32_t Specular = 0, float Alpha = 1.f, float RotationDegrees = 0.f, float PivotX = 0.f, float PivotY = 0.f);
+    // Blurs what this frame has drawn so far and multiplies it by Tint (0xRRGGBB), for an overlay over the game; without the device support it only darkens.
+    void BlurView(uint32_t Tint);
     // Draws the gamma ramp over the frame and presents it.
     void EndFrame();
 
@@ -80,7 +86,7 @@ public:
     const std::array<int32_t, 3>& GetUserGamma() const;
     // The Vulkan device's name, which the Video menu shows as its device.
     std::string GetDeviceName() const;
-    // Copies the next finished frame's 640x480 view for TakeCapture, which shrinks it to Width by Height.
+    // Copies the middle 640x480 of the next finished frame's view for TakeCapture, which shrinks it to Width by Height.
     // The copy is taken before the gamma, which the original's hardware ramp kept out of its surfaces.
     void RequestCapture(uint32_t Width, uint32_t Height);
     // The requested picture as RGB555 from the top row down once a frame has been drawn; nullopt before then or when the window cannot be read back.
@@ -115,6 +121,10 @@ private:
     uint32_t CreateTexture(uint32_t Width, uint32_t Height, const std::vector<uint32_t>& Rgba);
     void UploadTexture(VkImage Image, uint32_t Width, uint32_t Height, std::span<const uint32_t> Rgba, VkImageLayout From);
     void DrawGamma();
+    const FSpriteSheet& WhitePixel();
+    void CreateBlurTargets(VkExtent2D Size);
+    void DestroyBlurTargets();
+    void DrawBlurPass(const FTexture& From, bool bUp, uint32_t Tint);
     // Starts drawing into the acquired image, letterboxed; a capture resumes it to add the gamma after the copy.
     void BeginRendering(VkAttachmentLoadOp LoadOp);
 
@@ -147,11 +157,21 @@ private:
     FFrame Frames[FramesInFlight];
     uint32_t FrameIndex = 0;
     uint32_t ImageIndex = 0;
+    float ViewWidth = ScreenWidth;
 
     std::array<int32_t, 3> Gamma{};
     std::array<int32_t, 3> UserGamma{};
     // A white pixel for the gamma pass, made again after ReleaseSpriteSheets.
     std::optional<FSpriteSheet> GammaSheet;
+
+    // The blur's chain, from half the view down, with its own linear sampler and descriptor pool, which outlive the sprite sheets.
+    bool bCanBlur = false;
+    VkSampler LinearSampler = VK_NULL_HANDLE;
+    VkDescriptorSetLayout BlurSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool BlurPool = VK_NULL_HANDLE;
+    VkPipelineLayout BlurLayout = VK_NULL_HANDLE;
+    VkPipeline BlurPipeline = VK_NULL_HANDLE;
+    std::vector<FTexture> BlurLevels;
 
     // A capture: requested, then copied into a host buffer by EndFrame.
     bool bCanCapture = false;

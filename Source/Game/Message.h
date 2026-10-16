@@ -82,6 +82,9 @@ public:
     // Both passes move and type the messages by the step; the update pass also ages them and the draw pass prints them with the scroll origin.
     void Update(int32_t StepMilliseconds, int32_t OriginX, int32_t OriginY, const FDraw* Draw);
 
+    // The view's width at session +0xf84, from which the screen messages are placed: 640 in the original, wider in the port's wide view.
+    int32_t ViewWidth = 640;
+
 private:
     // Removed messages leave an empty slot, which the next message takes when it is the last one freed or visited (g_MessageFreeSlot).
     std::vector<std::optional<FMessage>> Slots;

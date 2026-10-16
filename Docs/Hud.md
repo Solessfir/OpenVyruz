@@ -40,6 +40,8 @@ After the modes, in any mode, a surprise in effect prints each carried surprise'
 
 Opening renders the level into a screen-sized bitmap (session `+0x1ff0`): `GobRenderMap` (`0046b120`) stretches every block of every `MAP_` layer, first to last, into its cell's share of the bitmap, which starts black; pixels at 0x800 are transparent. `PanelDrawBigRadar` (`004362a0`) runs after the panel's draw pass: it copies the bitmap over the view, then draws, scaled by the view size over the map's, the player's icon (animation 21, `hud`), each lift's (23, `lift`; 24, `asc`, in French) and each saving plot's (25, `saveuk`; 26, `savfr`) from session lists `+0x25b0` and `+0x25b4`, each from its last entry.
 
+Port deviation: the port's map lies over the game instead of covering it. It shows only the cells that hold blocks, keeps the level's shape, fits the view inside a 40-pixel margin and is centred. Its empty pixels are transparent, and the game behind it is blurred with a dual Kawase filter (four halvings) and darkened to `0x707078`. Where the device cannot blit the swapchain image, the game is only darkened.
+
 While the map is open, every pass of `PanelUpdate` in modes 1 to 5 takes 30 cash; below 30 it closes the map, says it needs cash, and leaves the panel in mode 1.
 
 ## Radar
@@ -98,7 +100,7 @@ Every one replaces a message at its position. The lift and gate texts come from 
 
 `MessagesUpdate` also draws a type 1, a still bitmap, but nothing creates one: `MessageCreate` is called only by `MessageAddText` (type 3) and `MessageAddAnimation` (`004310b0`, type 2), so the port leaves it out.
 
-`Source/Pg/Font` loads and lays out fonts. `Source/Game/Panel` keeps the slots and returns the sprites to draw. `Source/Game/Message` keeps the floating messages, which the panel prints. The window draws them after the objects at the 640x480 corners; the sprite shader multiplies by the diffuse colour and adds the specular one.
+`Source/Pg/Font` loads and lays out fonts. `Source/Game/Panel` keeps the slots and returns the sprites to draw. `Source/Game/Message` keeps the floating messages, which the panel prints. The window draws them after the objects at the view's corners, 640x480 in the original and as wide as the screen in the port's wide view; the sprite shader multiplies by the diffuse colour and adds the specular one.
 
 Not ported yet:
 

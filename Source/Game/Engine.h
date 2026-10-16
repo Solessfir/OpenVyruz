@@ -888,6 +888,8 @@ struct FVideoDetails
 struct FCombat
 {
     FVideoDetails Details;
+    // The view's width in screen pixels, 640 in the original; the port's wide view widens it.
+    float ViewWidth = 640.f;
     std::vector<FWeaponClass> Weapons;
     std::vector<FAmmoClass> AmmoClasses;
     // The player's ADD Weapon entries, as indices into Weapons, and the one in hand.

@@ -90,7 +90,7 @@ The finale after `Final-PC` falls has its own flashes and fade ([Combat.md](Comb
 
 ## Object passes
 
-`EngineVisitViewObjects` (`00433b30`) visits the objects of the grid cells around the view: from one column left of it and two rows above it, 13 columns and 20 rows, clamped to the grid. Objects elsewhere are neither updated nor drawn. It runs twice:
+`EngineVisitViewObjects` (`00433b30`) visits the objects of the grid cells around the view: from one column left of it and two rows above it, 13 columns and 20 rows, clamped to the grid. Objects elsewhere are neither updated nor drawn. (Port deviation: the visit spans three columns past the view's width rather than a fixed 13, so the wide view's objects update as on screen; it also widens the near-view test of `FUN_00436690` for sparks and impacts. The demo keeps the 640-wide view and so its recorded outcome.) It runs twice:
 
 - After every sub-step, as the update pass: each object's bob plays (`ObjectSelectBobMode`, `00433f40`, and `ObjectPlayBob`, `0043c090`), then `ObjectDraw` (`00431ae0`) updates its animations without drawing.
 - Once per frame, as the draw pass. `ObjectDraw` advances animations again by the last sub-step before drawing, except for classes with `Graphic-update-needed`, which only the game update advances.
