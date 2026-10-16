@@ -7367,6 +7367,11 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
     glfwWindowHintString(GLFW_X11_CLASS_NAME, AppId);
     // Fullscreen stays up when another window takes the focus; the game pauses instead, as it does in a window.
     glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
+#ifdef _WIN32
+    // Hidden until it has gone fullscreen and shown a black frame, so the desktop never sees its white windowed client area.
+    // Wayland maps a surface only once it is shown, so there the window starts visible.
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+#endif
     GLFWwindow* const Window = glfwCreateWindow(WindowedPlace.Width, WindowedPlace.Height, "Vyruz", nullptr, nullptr);
     if (!Window)
     {
@@ -7383,6 +7388,16 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
 
     FRenderer Renderer;
     Renderer.Init(Window);
+#ifdef _WIN32
+    if (Renderer.BeginFrame())
+    {
+        Renderer.EndFrame();
+    }
+
+    // Shown late, it does not come to the front by itself, and the game stands still without the focus.
+    glfwShowWindow(Window);
+    glfwFocusWindow(Window);
+#endif
     std::expected<FPanel, std::string> Panel = FPanel::Load(Archive);
     if (!Panel)
     {
