@@ -15,7 +15,7 @@ OpenVyruz is a functional (non-matching) reimplementation of `Vyruz.exe` 1.31.01
 ## Reverse-engineering workflow
 
 - `Vyruz.exe` is analyzed in Ghidra through GhidraMCP (`.mcp.json`, server `vyruz-ghidra`): it connects over HTTP to `http://127.0.0.1:8082/mcp`, a headless `ghidra_mcp` server kept running by a scheduled task, which opens `Vyruz.exe` in the Ghidra project; `AGENTS.local.md` holds the machine's paths. Close that program in the Ghidra GUI first, since the project cannot be opened twice.
-- The binary is MSVC C++ written in C style (almost no methods, no RTTI). Recover structure from `__FILE__` anchors; see the module map in README.
+- The binary is MSVC C++ written in C style (almost no methods, no RTTI). Recover structure from `__FILE__` anchors; see the module map in [Docs/Development.md](Docs/Development.md).
 - Read the decompiled code to understand behavior, then write clean, idiomatic port code. Never paste raw decompiler output into the repository.
 - When a function's behavior is understood, rename it in Ghidra (and its key globals), and confirm with `get_program_info` at the start of a session that the server has `Vyruz.exe` open; the headless server saves the project only on a graceful shutdown with `--save`. Reference the original address in a short comment on the port code that reimplements it, e.g. `RscFileRead at 004559f0`.
 - The binary is the ground truth. The Python scripts and notes in the original-data repository are hypotheses: verify every format detail against the exe or raw bytes before relying on it. Correct `Docs/DataFormats.md` when either turns out wrong. The same applies to the older Godot-port notes in that repository's `Docs\` (`Reverse Engineering Reference.html`).
@@ -58,9 +58,9 @@ Comments explain why: original-game quirks, format constraints, engine behavior,
 
 ## Documentation and writing
 
-- Keep `README.md` current for build, run, and layout changes; put format knowledge in `Docs/DataFormats.md` and other docs under `Docs/` with PascalCase names.
+- Keep `README.md` short: what the project is, a quick start and links to the docs. Build steps go in `Docs/Building.md`, running and controls in `Docs/Running.md`, tools and checks in `Docs/Tools.md`, layout in `Docs/Development.md`; put format knowledge in `Docs/DataFormats.md` and other docs under `Docs/` with PascalCase names.
 - Never use em dashes or en dashes; use a hyphen or rewrite.
-- Every command-line argument is listed with a description in `--help` (the `Help` text at the top of `main` in `Source/Main.cpp`); add or change an argument there in the same change, and in README's Running section.
+- Every command-line argument is listed with a description in `--help` (the `Help` text at the top of `main` in `Source/Main.cpp`); add or change an argument there in the same change, and in `Docs/Running.md` (or `Docs/Tools.md` for a tool).
 - Preserve exact path casing for Linux.
 
 ## Git
