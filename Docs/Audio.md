@@ -22,17 +22,8 @@ The port mixes the channels itself in miniaudio's callback at the format's rate 
 `AnimationPlaySound` (`0045e6e0`) makes a sound positional when its descriptor's channel mask (`+0x1c`) is set, and plays it on that mask at the descriptor's priority (`+0x24`). `SoundSetListener` (`0045edb0`) puts the listener at the player's position and altitude on each update of the player.
 
 - **Volume** (`SoundDistanceVolume`, `0045e4e0`): the descriptor's volume (`+0x20`) while the emitter lies within its inner box (`+0x28`) of the listener on every axis, and nothing beyond its outer box (`+0x34`). In between the original scales by the distance between two radii (`+0x40`, `+0x44`), measured from `|listener - position| - position` on each axis rather than the difference. Nothing sets those radii, so the division by zero gives no volume there either: a positional sound is heard only inside the inner box.
-- **Pan** (`SoundScreenPan`, `0045e630`): the emitter's horizontal offset from the listener over half the screen width (320), full at the edge, where the far ear goes silent. The port pans by direction instead, with either positional setting: the emitter's sideways offset over its distance from the listener, with a floor of 160 so a close sound does not jump from side to side, and at most 80% of a full pan, which leaves the far ear about 13 dB down. A sound beside the player sits to that side, one above or below it near the middle, whatever the view's width.
+- **Pan** (`SoundScreenPan`, `0045e630`): the emitter's horizontal offset from the listener over half the screen width (320), full at the edge.
 - **Following**: while the sound plays, each `UpdateAnimation` call on its animation sets the channel's volume and pan again, and stops the channel once the volume drops to zero. It recognises its sound by the channel's serial (`+0x3c`), so a channel taken by another sound is let go.
-
-### Port enhancements
-
-The port always mixes positional sounds its own way:
-
-- A positional sound fades between the descriptor's inner box (400) and outer box (800), as their radii were meant to make it, instead of cutting off at the inner box. The distance is the farthest of the three axes, as the boxes measure it.
-- Past the inner box, which spans the screen, a one-pole low-pass closes from 8 kHz toward 700 Hz at the outer box, so off-screen sounds come muffled.
-- Volume and pan glide toward each new setting with a 5 ms time constant, and a sound that is stopped or replaced fades out over a few milliseconds instead of being cut, so neither clicks.
-- A Freeverb plays over every channel but music and voices, with a room by the level's zone, the first folder of its path: long and dark in `cave`, a little shorter in `underground`, short and bright in `hitek` and `cpu`. The menus outside a level have none.
 
 ## Channels
 

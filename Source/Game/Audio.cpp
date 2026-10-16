@@ -6,7 +6,6 @@
 #include "Pg/ResourceArchive.h"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <format>
 
@@ -206,39 +205,6 @@ void FAudio::CenterPans()
     {
         Mixer.SetPan(Channel, 0);
     }
-}
-
-void FAudio::SetLevelZone(const std::string_view LevelPath)
-{
-    const std::string_view Folder = LevelPath.substr(0, LevelPath.find_first_of("\\/"));
-    std::string Lowered(Folder);
-    std::ranges::transform(Folder, Lowered.begin(), [](const unsigned char Character) { return char(std::tolower(Character)); });
-    if (Lowered != Zone)
-    {
-        Zone = std::move(Lowered);
-        ApplyReverb();
-    }
-}
-
-void FAudio::ApplyReverb()
-{
-    // The zones' rooms: long and dark in the caves, a little shorter underground, short and bright among the metal of hitek and the CPU.
-    // The wet shares keep the reverb about 10 dB under the effects it takes, so it carries over the music and the busy gameplay mix without washing it out.
-    struct FZoneReverb
-    {
-        std::string_view Zone;
-        Sound::FReverbPreset Preset;
-    };
-    constexpr std::array ZoneReverbs{
-        FZoneReverb{ .Zone = "cave", .Preset = { .RoomSize = 0.85f, .Damping = 0.6f, .Wet = 0.45f } },
-        FZoneReverb{ .Zone = "underground", .Preset = { .RoomSize = 0.7f, .Damping = 0.5f, .Wet = 0.38f } },
-        FZoneReverb{ .Zone = "hitek", .Preset = { .RoomSize = 0.45f, .Damping = 0.2f, .Wet = 0.3f } },
-        FZoneReverb{ .Zone = "cpu", .Preset = { .RoomSize = 0.4f, .Damping = 0.15f, .Wet = 0.3f } },
-    };
-    // Music and voices stay dry.
-    constexpr uint32_t SendMask = Sound::FMixer::AllChannels & ~ChannelBit(MusicChannel) & ~ChannelBit(VoiceChannel);
-    const auto Found = std::ranges::find(ZoneReverbs, Zone, &FZoneReverb::Zone);
-    Mixer.SetReverb(Found != ZoneReverbs.end() ? std::optional(Found->Preset) : std::nullopt, SendMask);
 }
 
 void FAudio::StartMusic()

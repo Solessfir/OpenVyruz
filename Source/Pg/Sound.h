@@ -50,14 +50,6 @@ struct FOutputFormat
     bool operator==(const FOutputFormat&) const = default;
 };
 
-// A Freeverb room for the port's optional reverb: its size and damping from 0 to 1, and the share of the reverb in the output.
-struct FReverbPreset
-{
-    float RoomSize = 0.5f;
-    float Damping = 0.5f;
-    float Wet = 0.2f;
-};
-
 // SoundOpen (0045f300) sets up 16 channels; each plays one sample at a time.
 class FMixer
 {
@@ -74,10 +66,10 @@ public:
     bool Open(const FOutputFormat& InFormat);
 
     // SoundPlay (0045f7e0): the first idle channel of Mask, else the one playing the lowest priority not above Priority (the one closest to its end on a tie).
-    // Volume and pan replace the channel's own when given; Muffle starts the sound behind the distance filter (see SetMuffle).
+    // Volume and pan replace the channel's own when given.
     // Returns the 1-based channel, or 0 when none could take it.
     uint32_t Play(std::shared_ptr<const FSample> Sample, bool bLoop, uint32_t Priority, uint32_t Mask, std::optional<int> Volume = std::nullopt,
-        std::optional<int> Pan = std::nullopt, float Muffle = 0.f);
+        std::optional<int> Pan = std::nullopt);
     // SoundChannelPlaying (0045fb70).
     bool IsPlaying(uint32_t Channel) const;
     // SoundStop (0045fa00): stops every channel in Mask.
@@ -89,24 +81,10 @@ public:
     // SoundSetVolume (0045fe00) and SoundSetPan (0045ff00): the setting stays with the channel for later samples.
     void SetVolume(uint32_t Channel, int Volume);
     void SetPan(uint32_t Channel, int Pan);
-    // The port's distance filter: 0 leaves the channel clear, 1 closes its low-pass to the farthest setting.
-    // Unlike the original, volume and pan glide instead of jumping and a stopped or replaced sound fades out over a few milliseconds instead of being cut.
-    void SetMuffle(uint32_t Channel, float Muffle);
-    // The port's reverb over the channels of SendMask; none turns it off.
-    void SetReverb(const std::optional<FReverbPreset>& Preset, uint32_t SendMask);
     // Holds every channel where it is and outputs silence, while the game stands still.
     void SetPaused(bool bInPaused);
 
 private:
-    // What the mix carries from one buffer to the next for a playing sound: its gains as they glide and its filter's memory.
-    struct FVoiceState
-    {
-        float LeftGain = 0.f;
-        float RightGain = 0.f;
-        bool bStarted = false;
-        float LeftLow = 0.f;
-        float RightLow = 0.f;
-    };
     struct FChannel
     {
         std::shared_ptr<const FSample> Sample;
@@ -116,28 +94,11 @@ private:
         int Volume = MaxVolume;
         int Pan = 0;
         uint32_t Serial = 0;
-        float Muffle = 0.f;
-        FVoiceState State;
-    };
-    // A sound the mix let go of, fading out where it was.
-    struct FTail
-    {
-        std::shared_ptr<const FSample> Sample;
-        double Position = 0.;
-        bool bLoop = false;
-        float Muffle = 0.f;
-        bool bReverb = false;
-        FVoiceState State;
     };
     struct FDevice;
-    struct FReverb;
 
     static void Mix(FMixer& Mixer, float* Output, uint32_t FrameCount);
     void CloseDevice();
-    // Moves a playing channel's sound to the fading tails, so cutting it does not click.
-    void Release(uint32_t Index);
-    // Builds the reverb for the preset at the output rate.
-    void RebuildReverb();
     // Time left in a playing channel, the tie breaker between equal priorities (channel +0x24, which SoundPoll (0045f6b0) keeps).
     static double SecondsLeft(const FChannel& Channel);
 
@@ -147,12 +108,6 @@ private:
     FOutputFormat Format;
     uint32_t NextSerial = 1;
     bool bPaused = false;
-    std::vector<FTail> Tails;
-    std::optional<FReverbPreset> ReverbPreset;
-    uint32_t ReverbMask = 0;
-    std::unique_ptr<FReverb> Reverb;
-    // The reverb's input for the buffer being mixed, stereo interleaved.
-    std::vector<float> ReverbSend;
     std::unique_ptr<FDevice> Device;
 };
 }

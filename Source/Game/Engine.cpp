@@ -3742,48 +3742,30 @@ namespace
 Sound::FMixer* AnimationMixer = nullptr;
 // SoundSetListener's position, which the positional sounds measure from (DAT_00519430).
 FSoundEmitter Listener;
-// The descriptor's boxes, DAT_0050d420 (400 on each axis) and DAT_0050d430 (800).
-constexpr float InnerBox = 400.f;
-constexpr float OuterBox = 800.f;
-
-// How far the emitter is from the listener, as the boxes measure it: the farthest of the three axes.
-float BoxDistance(const FSoundEmitter& Emitter)
-{
-    return std::max({ std::abs(Listener.X - Emitter.X), std::abs(Listener.Y - Emitter.Y), std::abs(Listener.Altitude - Emitter.Altitude) });
-}
 
 // SoundDistanceVolume at 0045e4e0: full volume while the emitter lies within the descriptor's inner box (+0x28) on every axis, nothing beyond its outer box (+0x34).
 // In between the original scales by the distance between two radii (+0x40, +0x44) that AnimStampSoundChannels (00417a20) never sets, so the division by zero leaves nothing there either.
-// The port fades between the two boxes, as they were meant to.
+// The boxes are DAT_0050d420 (400 on each axis) and DAT_0050d430 (800).
 int PositionalVolume(const FSoundEmitter& Emitter, const int Volume)
 {
-    const float Distance = BoxDistance(Emitter);
-    if (Distance <= InnerBox)
-    {
-        return Volume;
-    }
-
-    return Distance >= OuterBox ? 0 : int(float(Volume) * (OuterBox - Distance) / (OuterBox - InnerBox));
+    constexpr float InnerBox = 400.f;
+    const bool bInside = std::abs(Listener.X - Emitter.X) <= InnerBox && std::abs(Listener.Y - Emitter.Y) <= InnerBox &&
+        std::abs(Listener.Altitude - Emitter.Altitude) <= InnerBox;
+    return bInside ? Volume : 0;
 }
 
-// The port's distance filter: clear inside the inner box, which spans the screen, and closing toward the outer box.
-float PositionalMuffle(const FSoundEmitter& Emitter)
-{
-    return std::clamp((BoxDistance(Emitter) - InnerBox) / (OuterBox - InnerBox), 0.f, 1.f);
-}
-
-// SoundScreenPan at 0045e630 pans by the emitter's offset over half the 640-pixel screen, fully at the edge with the far ear silent.
-// The port pans by direction instead: the offset over the emitter's distance, so a sound beside the player sits to that side and one above or below it near the middle, whatever the screen's width.
+// SoundScreenPan at 0045e630: the emitter's offset right of the listener over half the 640-pixel screen, as a full pan at the edge.
 int PositionalPan(const FSoundEmitter& Emitter)
 {
-    // Closer than NearDistance a sound moves toward the middle instead of jumping from side to side, and MaxShare keeps the far ear about 13 dB down rather than silent.
-    constexpr float NearDistance = 160.f;
-    constexpr float MaxShare = 0.8f;
+    constexpr float HalfScreen = 320.f;
+    constexpr float FullPan = float(Sound::MaxPan);
     const float Offset = Listener.X - Emitter.X;
-    const float Depth = Listener.Y - Emitter.Y;
-    const float Altitude = Listener.Altitude - Emitter.Altitude;
-    const float Distance = std::sqrt(Offset * Offset + Depth * Depth + Altitude * Altitude + NearDistance * NearDistance);
-    return int(-Offset / Distance * MaxShare * float(Sound::MaxPan));
+    if (Offset < 0.f)
+    {
+        return -Offset < HalfScreen ? TruncateLow(double(Offset) * double(-FullPan) / double(HalfScreen)) : Sound::MaxPan;
+    }
+
+    return Offset < HalfScreen ? TruncateLow(double(Offset) * double(-FullPan) / double(HalfScreen)) : -Sound::MaxPan;
 }
 }
 
@@ -3844,7 +3826,7 @@ void PlayFrameSound(const Gaf::FAnimation& Animation, const Gaf::FAnimationFrame
         return;
     }
 
-    const uint32_t Channel = AnimationMixer->Play(Sample, false, Emitter->Priority, Emitter->ChannelMask, Volume, PositionalPan(*Emitter), PositionalMuffle(*Emitter));
+    const uint32_t Channel = AnimationMixer->Play(Sample, false, Emitter->Priority, Emitter->ChannelMask, Volume, PositionalPan(*Emitter));
     Track = { .Channel = Channel, .Serial = Channel == 0 ? 0 : AnimationMixer->GetSerial(Channel) };
 }
 
@@ -3863,7 +3845,6 @@ void FollowFrameSound(FSoundTrack& Track, const FSoundEmitter* const Emitter)
         {
             AnimationMixer->SetVolume(Track.Channel, Volume);
             AnimationMixer->SetPan(Track.Channel, PositionalPan(*Emitter));
-            AnimationMixer->SetMuffle(Track.Channel, PositionalMuffle(*Emitter));
             return;
         }
 

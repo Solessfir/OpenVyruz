@@ -7437,7 +7437,6 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
         // The level's fade in (FUN_0041e5a0) centres the pans.
         if (GameAudio)
         {
-            GameAudio->SetLevelZone(Path);
             GameAudio->CenterPans();
         }
 
@@ -7449,7 +7448,6 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
         // EngineRunLevel stops the player's weapon and motor, and LoopLevels brings the first tune back.
         if (GameAudio)
         {
-            GameAudio->SetLevelZone({});
             GameAudio->StopLevelChannels();
             if (GameAudio->GetMusicTrack() > 1)
             {

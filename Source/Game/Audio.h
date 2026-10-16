@@ -146,8 +146,6 @@ public:
     // MenuMain (004271a0), MenuGame (004223e0) and the menu fade FUN_0041e5a0, which also fades each level in, set every channel's pan back to the middle (SoundSetPan at 0045ff00).
     // Without it a channel keeps the last pan given to a sound on it, such as the menu flash's hard left on channel 2, the player's weapon channel.
     void CenterPans();
-    // The reverb follows the zone of the level playing (its path's folder: cave, hitek, underground or cpu); an empty path, as in the menus, has none.
-    void SetLevelZone(std::string_view LevelPath);
 
     // PlayerUpdateMotorSound (00445c50), every frame of a level: while the player's motor works its loop plays on channel 4, louder with speed, from a third of the sound-fx volume up; a blocked motor tries start-engine.wav when the player thrusts.
     void UpdateMotor(const FPlayerState& Player, float ThrustMax, bool bBlockedMotor, bool bThrusting);
@@ -193,11 +191,7 @@ private:
 
     FResourceArchive& Archive;
     Sound::FMixer Mixer;
-    // Applies the reverb option to the zone in play.
-    void ApplyReverb();
-
     FAudioSettings Settings;
-    std::string Zone;
     std::unordered_map<std::string, std::shared_ptr<const Sound::FSample>> Bank;
     std::array<std::shared_ptr<const Sound::FSample>, TrackCount + 1> Tracks;
     // DAT_005237c8 and DAT_005237cc: the tune playing (1 to 3, zero for none) and the one it replaced.

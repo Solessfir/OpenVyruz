@@ -4,7 +4,7 @@
 
 Native reimplementation of *Vyruz: Destruction of the Untel Empire* (2001, Metropolis Software / C2V) for Windows 11 and Linux (Wayland/X11). It reads the original game data; no game files are included.
 
-It matches the original one to one, so the whole game is there and can be completed. On top of that come a gamepad, modern audio (distance fade, muffling, zone reverb) and modding through `--extract` and `--compress`. This is the `classic` branch, which keeps the original's rules; [`main`](https://github.com/Solessfir/OpenVyruz/tree/main) adds wide screens without stretching, a blurred map overlay and a difficulty that can change mid-game.
+It matches the original one to one, so the whole game is there and can be completed. On top of that come a gamepad and modding through `--extract` and `--compress`. This is the `classic` branch, which keeps the original's rules and sound; [`main`](https://github.com/Solessfir/OpenVyruz/tree/main) adds wide screens without stretching, modern audio (distance fade, muffling, zone reverb), a blurred map overlay and a difficulty that can change mid-game.
 
 ## Quick start
 

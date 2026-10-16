@@ -4,7 +4,6 @@
 #include "Pg/Gaf.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstring>
 
@@ -302,111 +301,6 @@ struct Sound::FMixer::FDevice
     bool bStarted = false;
 };
 
-namespace
-{
-// The mix's gains glide toward their targets with a 5 ms time constant, and a released sound fades with a 3 ms one until it drops below Silence.
-constexpr float GlideSeconds = 0.005f;
-constexpr float FadeSeconds = 0.003f;
-constexpr float Silence = 1e-4f;
-// More fading sounds than this drop the oldest, which has faded the most.
-constexpr size_t MaxTails = 32;
-// The distance filter: a one-pole low-pass from ClearCutoff Hz with no muffle down to MuffledCutoff Hz at full muffle, on a logarithmic sweep.
-constexpr float ClearCutoff = 8000.f;
-constexpr float MuffledCutoff = 700.f;
-constexpr float TwoPi = 6.28318530718f;
-
-float LowPassCoefficient(const float Muffle, const float Rate)
-{
-    const float Cutoff = ClearCutoff * std::pow(MuffledCutoff / ClearCutoff, std::clamp(Muffle, 0.f, 1.f));
-    return 1.f - std::exp(-TwoPi * Cutoff / Rate);
-}
-
-// Freeverb's tuning, in samples at 44100 Hz.
-constexpr uint32_t TuningRate = 44100;
-constexpr std::array<uint32_t, 8> CombTuning = { 1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617 };
-constexpr std::array<uint32_t, 4> AllPassTuning = { 556, 441, 341, 225 };
-constexpr uint32_t StereoSpread = 23;
-constexpr float InputGain = 0.015f;
-constexpr float RoomScale = 0.28f;
-constexpr float RoomOffset = 0.7f;
-constexpr float DampingScale = 0.4f;
-constexpr float AllPassFeedback = 0.5f;
-// Below this a comb's memory is flushed to zero, so the tail never decays into slow denormals.
-constexpr float Denormal = 1e-15f;
-}
-
-// Freeverb (Jezar at Dreampoint, public domain): eight parallel combs and four all-passes in series on each side, the right side's delays a little longer for width.
-struct Sound::FMixer::FReverb
-{
-    struct FComb
-    {
-        std::vector<float> Buffer;
-        size_t Index = 0;
-        float Store = 0.f;
-    };
-    struct FAllPass
-    {
-        std::vector<float> Buffer;
-        size_t Index = 0;
-    };
-
-    FReverb(const uint32_t Rate, const FReverbPreset& Preset)
-        : Feedback(std::clamp(Preset.RoomSize, 0.f, 1.f) * RoomScale + RoomOffset)
-        , Damping(std::clamp(Preset.Damping, 0.f, 1.f) * DampingScale)
-        , Wet(std::max(Preset.Wet, 0.f))
-    {
-        const auto Length = [Rate](const uint32_t Tuning) { return std::max<size_t>(1, size_t(uint64_t(Tuning) * Rate / TuningRate)); };
-        for (size_t Side = 0; Side < Combs.size(); ++Side)
-        {
-            const uint32_t Spread = Side == 0 ? 0 : StereoSpread;
-            for (size_t Index = 0; Index < CombTuning.size(); ++Index)
-            {
-                Combs[Side][Index].Buffer.assign(Length(CombTuning[Index] + Spread), 0.f);
-            }
-
-            for (size_t Index = 0; Index < AllPassTuning.size(); ++Index)
-            {
-                AllPasses[Side][Index].Buffer.assign(Length(AllPassTuning[Index] + Spread), 0.f);
-            }
-        }
-    }
-
-    // The reverb of one stereo frame, already scaled by the wet share.
-    std::pair<float, float> Process(const float Left, const float Right)
-    {
-        const float Input = (Left + Right) * InputGain;
-        std::array<float, 2> Out{};
-        for (size_t Side = 0; Side < Out.size(); ++Side)
-        {
-            for (FComb& Comb : Combs[Side])
-            {
-                const float Delayed = Comb.Buffer[Comb.Index];
-                Comb.Store = Delayed * (1.f - Damping) + Comb.Store * Damping;
-                Comb.Store = std::abs(Comb.Store) < Denormal ? 0.f : Comb.Store;
-                Comb.Buffer[Comb.Index] = Input + Comb.Store * Feedback;
-                Comb.Index = Comb.Index + 1 == Comb.Buffer.size() ? 0 : Comb.Index + 1;
-                Out[Side] += Delayed;
-            }
-
-            for (FAllPass& AllPass : AllPasses[Side])
-            {
-                const float Delayed = AllPass.Buffer[AllPass.Index];
-                AllPass.Buffer[AllPass.Index] = Out[Side] + Delayed * AllPassFeedback;
-                AllPass.Index = AllPass.Index + 1 == AllPass.Buffer.size() ? 0 : AllPass.Index + 1;
-                Out[Side] = Delayed - Out[Side];
-            }
-        }
-
-        return { Out[0] * Wet, Out[1] * Wet };
-    }
-
-    std::array<std::array<FComb, CombTuning.size()>, 2> Combs;
-    std::array<std::array<FAllPass, AllPassTuning.size()>, 2> AllPasses;
-    float Feedback = 0.f;
-    float Damping = 0.f;
-    float Wet = 0.f;
-};
-
 Sound::FMixer::FMixer() = default;
 
 Sound::FMixer::~FMixer()
@@ -449,12 +343,7 @@ bool Sound::FMixer::Open(const FOutputFormat& InFormat)
         return false;
     }
 
-    {
-        const std::scoped_lock Lock(Mutex);
-        OutputRate = Device->Device.sampleRate;
-        RebuildReverb();
-    }
-
+    OutputRate = Device->Device.sampleRate;
     if (ma_device_start(&Device->Device) != MA_SUCCESS)
     {
         ma_device_uninit(&Device->Device);
@@ -473,7 +362,7 @@ double Sound::FMixer::SecondsLeft(const FChannel& Channel)
 }
 
 uint32_t Sound::FMixer::Play(std::shared_ptr<const FSample> Sample, const bool bLoop, const uint32_t Priority, const uint32_t Mask,
-    const std::optional<int> Volume, const std::optional<int> Pan, const float Muffle)
+    const std::optional<int> Volume, const std::optional<int> Pan)
 {
     if (!Device || !Sample || Sample->FrameCount() == 0)
     {
@@ -517,11 +406,8 @@ uint32_t Sound::FMixer::Play(std::shared_ptr<const FSample> Sample, const bool b
         Chosen = Best;
     }
 
-    Release(*Chosen);
     FChannel& Channel = Channels[*Chosen];
     Channel.Sample = std::move(Sample);
-    Channel.Muffle = std::clamp(Muffle, 0.f, 1.f);
-    Channel.State = {};
     Channel.Position = 0.;
     Channel.bLoop = bLoop;
     Channel.Priority = Priority;
@@ -556,7 +442,6 @@ void Sound::FMixer::Stop(const uint32_t Mask)
     {
         if ((Mask & (1u << Index)) != 0)
         {
-            Release(Index);
             Channels[Index].Sample.reset();
         }
     }
@@ -580,51 +465,6 @@ void Sound::FMixer::SetPan(const uint32_t Channel, const int Pan)
     }
 }
 
-void Sound::FMixer::SetMuffle(const uint32_t Channel, const float Muffle)
-{
-    const std::scoped_lock Lock(Mutex);
-    if (Channel >= 1 && Channel <= ChannelCount)
-    {
-        Channels[Channel - 1].Muffle = std::clamp(Muffle, 0.f, 1.f);
-    }
-}
-
-void Sound::FMixer::SetReverb(const std::optional<FReverbPreset>& Preset, const uint32_t SendMask)
-{
-    const std::scoped_lock Lock(Mutex);
-    ReverbPreset = Preset;
-    ReverbMask = SendMask;
-    RebuildReverb();
-}
-
-void Sound::FMixer::RebuildReverb()
-{
-    Reverb = ReverbPreset && OutputRate != 0 ? std::make_unique<FReverb>(OutputRate, *ReverbPreset) : nullptr;
-}
-
-void Sound::FMixer::Release(const uint32_t Index)
-{
-    const FChannel& Channel = Channels[Index];
-    if (!Channel.Sample || !Channel.State.bStarted)
-    {
-        return;
-    }
-
-    if (Tails.size() >= MaxTails)
-    {
-        Tails.erase(Tails.begin());
-    }
-
-    Tails.push_back({
-        .Sample = Channel.Sample,
-        .Position = Channel.Position,
-        .bLoop = Channel.bLoop,
-        .Muffle = Channel.Muffle,
-        .bReverb = (ReverbMask & (1u << Index)) != 0,
-        .State = Channel.State,
-    });
-}
-
 void Sound::FMixer::SetPaused(const bool bInPaused)
 {
     const std::scoped_lock Lock(Mutex);
@@ -641,137 +481,56 @@ void Sound::FMixer::Mix(FMixer& Mixer, float* const Output, const uint32_t Frame
         return;
     }
 
-    const float Rate = float(Mixer.OutputRate);
-    const float Glide = 1.f - std::exp(-1.f / (GlideSeconds * Rate));
-    const float Fade = std::exp(-1.f / (FadeSeconds * Rate));
-    float* Send = nullptr;
-    if (Mixer.Reverb)
+    for (FChannel& Channel : Mixer.Channels)
     {
-        Mixer.ReverbSend.assign(size_t(FrameCount) * StereoChannels, 0.f);
-        Send = Mixer.ReverbSend.data();
-    }
-
-    // Mixes a sound into the output from where it stands; false once it has ended, or, fading, gone silent.
-    const auto MixVoice = [&](const FSample& Sample, double& Position, const bool bLoop, const float LeftTarget, const float RightTarget, const float Muffle,
-                              FVoiceState& State, float* const SendTo, const bool bFading)
-    {
-        if (!State.bStarted)
-        {
-            State.LeftGain = LeftTarget;
-            State.RightGain = RightTarget;
-            State.bStarted = true;
-        }
-
-        const bool bFilter = Muffle > 0.f;
-        const float LowPass = bFilter ? LowPassCoefficient(Muffle, Rate) : 1.f;
-        const double Step = double(Sample.Rate) / double(Mixer.OutputRate);
-        const size_t SampleFrames = Sample.FrameCount();
-        for (uint32_t Frame = 0; Frame < FrameCount; ++Frame)
-        {
-            if (Position >= double(SampleFrames))
-            {
-                if (!bLoop)
-                {
-                    return false;
-                }
-
-                Position = std::fmod(Position, double(SampleFrames));
-            }
-
-            // Linear interpolation between neighbouring frames, the next one wrapping only for a loop.
-            const size_t First = size_t(Position);
-            const size_t Next = First + 1 < SampleFrames ? First + 1 : bLoop ? 0 : First;
-            const float Blend = float(Position - double(First));
-            const auto At = [&](const size_t Index, const uint32_t Side)
-            {
-                return Sample.Data[Index * Sample.ChannelCount + std::min(Side, Sample.ChannelCount - 1)];
-            };
-            float Left = At(First, 0) + (At(Next, 0) - At(First, 0)) * Blend;
-            float Right = At(First, 1) + (At(Next, 1) - At(First, 1)) * Blend;
-            if (bFilter)
-            {
-                State.LeftLow += (Left - State.LeftLow) * LowPass;
-                State.RightLow += (Right - State.RightLow) * LowPass;
-                Left = State.LeftLow;
-                Right = State.RightLow;
-            }
-
-            if (bFading)
-            {
-                State.LeftGain *= Fade;
-                State.RightGain *= Fade;
-            }
-            else
-            {
-                State.LeftGain += (LeftTarget - State.LeftGain) * Glide;
-                State.RightGain += (RightTarget - State.RightGain) * Glide;
-            }
-
-            const float LeftOut = Left * State.LeftGain;
-            const float RightOut = Right * State.RightGain;
-            if (OutputChannels == MonoChannels)
-            {
-                constexpr float DownmixGain = 0.5f;
-                Output[Frame] += (LeftOut + RightOut) * DownmixGain;
-            }
-            else
-            {
-                Output[Frame * StereoChannels] += LeftOut;
-                Output[Frame * StereoChannels + 1] += RightOut;
-            }
-
-            if (SendTo)
-            {
-                SendTo[Frame * StereoChannels] += LeftOut;
-                SendTo[Frame * StereoChannels + 1] += RightOut;
-            }
-
-            Position += Step;
-        }
-
-        return !bFading || State.LeftGain >= Silence || State.RightGain >= Silence;
-    };
-
-    for (uint32_t Index = 0; Index < ChannelCount; ++Index)
-    {
-        FChannel& Channel = Mixer.Channels[Index];
         if (!Channel.Sample)
         {
             continue;
         }
 
+        const FSample& Sample = *Channel.Sample;
         const float Gain = HundredthsGain(StepHundredths(Channel.Volume >> VolumeShift));
         const int Pan = PanHundredths(Channel.Pan);
         // A mono primary buffer has no sides to pan between.
         const float LeftGain = Gain * (Pan > 0 && !Mixer.Format.bMono ? HundredthsGain(-Pan) : 1.f);
         const float RightGain = Gain * (Pan < 0 && !Mixer.Format.bMono ? HundredthsGain(Pan) : 1.f);
-        float* const SendTo = (Mixer.ReverbMask & (1u << Index)) != 0 ? Send : nullptr;
-        if (!MixVoice(*Channel.Sample, Channel.Position, Channel.bLoop, LeftGain, RightGain, Channel.Muffle, Channel.State, SendTo, false))
-        {
-            Channel.Sample.reset();
-        }
-    }
-
-    std::erase_if(Mixer.Tails, [&](FTail& Tail)
-    {
-        return !MixVoice(*Tail.Sample, Tail.Position, Tail.bLoop, 0.f, 0.f, Tail.Muffle, Tail.State, Tail.bReverb ? Send : nullptr, true);
-    });
-
-    if (Send)
-    {
+        const double Step = double(Sample.Rate) / double(Mixer.OutputRate);
+        const size_t SampleFrames = Sample.FrameCount();
         for (uint32_t Frame = 0; Frame < FrameCount; ++Frame)
         {
-            const auto [Left, Right] = Mixer.Reverb->Process(Send[Frame * StereoChannels], Send[Frame * StereoChannels + 1]);
+            if (Channel.Position >= double(SampleFrames))
+            {
+                if (!Channel.bLoop)
+                {
+                    Channel.Sample.reset();
+                    break;
+                }
+
+                Channel.Position = std::fmod(Channel.Position, double(SampleFrames));
+            }
+
+            // Linear interpolation between neighbouring frames, the next one wrapping only for a loop.
+            const size_t First = size_t(Channel.Position);
+            const size_t Next = First + 1 < SampleFrames ? First + 1 : Channel.bLoop ? 0 : First;
+            const float Blend = float(Channel.Position - double(First));
+            const auto At = [&](const size_t Index, const uint32_t Side)
+            {
+                return Sample.Data[Index * Sample.ChannelCount + std::min(Side, Sample.ChannelCount - 1)];
+            };
+            const float Left = At(First, 0) + (At(Next, 0) - At(First, 0)) * Blend;
+            const float Right = At(First, 1) + (At(Next, 1) - At(First, 1)) * Blend;
             if (OutputChannels == MonoChannels)
             {
                 constexpr float DownmixGain = 0.5f;
-                Output[Frame] += (Left + Right) * DownmixGain;
+                Output[Frame] += (Left * LeftGain + Right * RightGain) * DownmixGain;
             }
             else
             {
-                Output[Frame * StereoChannels] += Left;
-                Output[Frame * StereoChannels + 1] += Right;
+                Output[Frame * StereoChannels] += Left * LeftGain;
+                Output[Frame * StereoChannels + 1] += Right * RightGain;
             }
+
+            Channel.Position += Step;
         }
     }
 
