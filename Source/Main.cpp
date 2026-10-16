@@ -2295,6 +2295,9 @@ std::string_view LanguageKeyword(const uint32_t Language)
     return Language == SecondLanguage ? "French" : "English";
 }
 
+// The name editor's buffer holds 16 bytes with the caret and the terminator.
+constexpr size_t MaxPlayerNameLength = 14;
+
 // A name that can be a session folder.
 bool IsValidPlayerName(const std::string_view Name)
 {
@@ -2309,9 +2312,8 @@ std::string LoginPlayerName()
 #else
     constexpr const char* LoginVariable = "USER";
 #endif
-    constexpr size_t MaxNameLength = 14;
     const char* const Login = std::getenv(LoginVariable);
-    const std::string Name = Login ? std::string(Login).substr(0, MaxNameLength) : std::string();
+    const std::string Name = Login ? std::string(Login).substr(0, MaxPlayerNameLength) : std::string();
     return IsValidPlayerName(Name) ? Name : std::string("Player");
 }
 
@@ -3356,8 +3358,6 @@ void RunNameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& 
         DeleteItem,
     };
     constexpr size_t MaxNames = 7;
-    // The name's buffer holds 16 bytes with the caret and the terminator.
-    constexpr size_t MaxNameLength = 14;
     std::vector<std::string> Names = SessionNames(Settings);
     FMenu Menu = OptionsMenu("/Session", "/Name");
     const auto Update = [&]
@@ -3381,7 +3381,7 @@ void RunNameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& 
         }
         else if (*Item == AddItem)
         {
-            const std::optional<std::string> Name = EditText(Window, Renderer, Art, Sheets, Menu, Random, AddItem, Localize("New name : "), "", MaxNameLength);
+            const std::optional<std::string> Name = EditText(Window, Renderer, Art, Sheets, Menu, Random, AddItem, Localize("New name : "), "", MaxPlayerNameLength);
             if (Name && !std::ranges::contains(Names, *Name))
             {
                 Names.push_back(*Name);
