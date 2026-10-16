@@ -43,7 +43,7 @@ Cheats, which the original does not take this way, combine freely and never touc
 
 ## Display
 
-The game runs fullscreen at the desktop resolution; Alt+Enter or F11 switches between fullscreen and a window. A level keeps the original's 480 rows and widens its view to the screen's shape, so a wide screen shows more of the level instead of stretching it, with the panel at the screen's corners. The menus, the other screens and the demo keep the original 4:3 picture, letterboxed. The scaling keeps every original pixel sharp and the same size at any resolution, blending only the screen pixel across each seam, so the picture does not shimmer as it scrolls and turned sprites have smooth edges.
+The game runs fullscreen at the desktop resolution; Alt+Enter or F11 switches between fullscreen and a window. A level keeps the original's 480 rows and widens its view to the screen's shape, so a wide screen shows more of the level instead of stretching it, with the panel at the screen's corners. The menus, the other screens and the demo keep the original 4:3 picture, letterboxed. The scaling keeps every original pixel sharp and the same size at any resolution, blending only the screen pixel across each seam, so the picture does not shimmer as it scrolls and turned sprites have smooth edges. Explosions, shots and other lights glow softly onto their surroundings (bloom), unless something is drawn over them.
 
 Like the original, the game stands still while its window is minimized or unfocused, and while active it keeps the mouse cursor inside the window.
 

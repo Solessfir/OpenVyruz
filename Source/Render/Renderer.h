@@ -88,6 +88,8 @@ public:
         uint32_t Diffuse = 0xffffff, uint32_t Specular = 0, float Alpha = 1.f, float RotationDegrees = 0.f, float PivotX = 0.f, float PivotY = 0.f);
     // Blurs what this frame has drawn so far and multiplies it by Tint (0xRRGGBB), for an overlay over the game; without the device support it only darkens.
     void BlurView(uint32_t Tint);
+    // Adds a soft glow around what additive sprites drew this frame and nothing has covered since, as the view's alpha marks it.
+    void Bloom();
     // ScoreHighlightRow at 00401410: blends what is drawn in the rectangle onto itself, twice as bright, saturating.
     void DoubleRect(float X, float Y, float Width, float Height);
     // Draws the gamma ramp over the frame and presents it.
@@ -143,7 +145,9 @@ private:
     const FSpriteSheet& WhitePixel();
     void CreateBlurTargets(VkExtent2D Size);
     void DestroyBlurTargets();
-    void DrawBlurPass(const FTexture& From, bool bUp, uint32_t Tint, VkPipeline Pipeline);
+    void DrawBlurPass(const FTexture& From, bool bUp, uint32_t Tint, VkPipeline Pipeline, bool bExtract = false);
+    // Copies the view down the blur's chain and back up to its first level, then resumes the view for the caller's last pass; a glow takes only the marked part.
+    void RunBlurChain(bool bGlow);
     void CreateStencil();
     void DestroyStencil();
     void ApplyStencilMode();
@@ -195,6 +199,7 @@ private:
     VkPipeline BlurPipeline = VK_NULL_HANDLE;
     // The blur's last pass draws into the view, whose rendering carries the stencil.
     VkPipeline BlurViewPipeline = VK_NULL_HANDLE;
+    VkPipeline BloomPipeline = VK_NULL_HANDLE;
 
     // The stencil beside the swapchain image, the size of the window.
     VkFormat StencilFormat = VK_FORMAT_UNDEFINED;

@@ -26,7 +26,7 @@ struct FBlurPush
 {
     float HalfTexel[2] = {};
     float Up = 0.f;
-    float Padding = 0.f;
+    float Extract = 0.f;
     float Tint[4] = {};
 };
 
@@ -480,17 +480,21 @@ void FRenderer::CreatePipeline()
         const bool bAlpha = Index == static_cast<size_t>(ESpriteBlend::Alpha);
         const bool bScreen = Index == static_cast<size_t>(ESpriteBlend::Screen);
         const bool bDouble = Index == static_cast<size_t>(ESpriteBlend::Double);
-        BlendAttachment.blendEnable = Index != static_cast<size_t>(ESpriteBlend::Opaque);
-        BlendAttachment.srcColorBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE
+        const bool bOpaque = Index == static_cast<size_t>(ESpriteBlend::Opaque);
+        // Opaque blends too, only to keep its colour as it is and clear the alpha.
+        BlendAttachment.blendEnable = VK_TRUE;
+        BlendAttachment.srcColorBlendFactor = bAdditive || bOpaque ? VK_BLEND_FACTOR_ONE
                                               : bAlpha  ? VK_BLEND_FACTOR_SRC_ALPHA
                                               : bScreen ? VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR
                                               : bDouble ? VK_BLEND_FACTOR_DST_COLOR
                                                         : VK_BLEND_FACTOR_ZERO;
         BlendAttachment.dstColorBlendFactor = bAdditive || bScreen || bDouble ? VK_BLEND_FACTOR_ONE
                                               : bAlpha             ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+                                              : bOpaque            ? VK_BLEND_FACTOR_ZERO
                                                                    : VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
-        BlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-        BlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        // The view's alpha marks what glows for Bloom: an additive sprite sets it, an opaque one clears it, and one blended by alpha covers it by as much.
+        BlendAttachment.srcAlphaBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO;
+        BlendAttachment.dstAlphaBlendFactor = bOpaque ? VK_BLEND_FACTOR_ZERO : bAlpha ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE;
         Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &PipelineInfo, nullptr, &SpritePipelines[Index]), "vkCreateGraphicsPipelines");
     }
 
@@ -500,6 +504,7 @@ void FRenderer::CreatePipeline()
     // The blur's passes draw one opaque triangle into its chain or the view, all in the swapchain's format.
     vkDestroyPipeline(Device, BlurPipeline, nullptr);
     vkDestroyPipeline(Device, BlurViewPipeline, nullptr);
+    vkDestroyPipeline(Device, BloomPipeline, nullptr);
     const VkShaderModuleCreateInfo BlurVertexInfo{
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = sizeof(BlurVert),
@@ -526,6 +531,18 @@ void FRenderer::CreatePipeline()
     BlurInfo.pInputAssemblyState = &TriangleList;
     BlurInfo.layout = BlurLayout;
     Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &BlurInfo, nullptr, &BlurViewPipeline), "vkCreateGraphicsPipelines");
+    // Bloom adds its last pass onto the view's colour.
+    BlendAttachment = {
+        .blendEnable = VK_TRUE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT,
+    };
+    Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &BlurInfo, nullptr, &BloomPipeline), "vkCreateGraphicsPipelines");
+    BlendAttachment.blendEnable = VK_FALSE;
+    BlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     BlurInfo.pNext = &ChainRenderingInfo;
     BlurInfo.pDepthStencilState = nullptr;
     BlurInfo.pDynamicState = &ChainDynamicState;
@@ -1027,7 +1044,7 @@ void FRenderer::BeginRendering(const VkAttachmentLoadOp LoadOp)
         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .loadOp = LoadOp,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue = { .color = { { 0.0f, 0.0f, 0.0f, 1.0f } } },
+        .clearValue = { .color = { { 0.0f, 0.0f, 0.0f, 0.0f } } },
     };
     // The stencil starts each frame clear and carries over when the rendering resumes.
     const VkRenderingAttachmentInfo StencilAttachment{
@@ -1280,12 +1297,13 @@ void FRenderer::CreateBlurTargets(const VkExtent2D Size)
     }
 }
 
-void FRenderer::DrawBlurPass(const FTexture& From, const bool bUp, const uint32_t Tint, const VkPipeline Pipeline)
+void FRenderer::DrawBlurPass(const FTexture& From, const bool bUp, const uint32_t Tint, const VkPipeline Pipeline, const bool bExtract)
 {
     const VkCommandBuffer Cmd = Frames[FrameIndex].CommandBuffer;
     FBlurPush Push{
         .HalfTexel = { BlurSpread * 0.5f / float(From.Width), BlurSpread * 0.5f / float(From.Height) },
         .Up = bUp ? 1.f : 0.f,
+        .Extract = bExtract ? 1.f : 0.f,
     };
     UnpackColor(Tint, Push.Tint);
     vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline);
@@ -1305,6 +1323,26 @@ void FRenderer::BlurView(const uint32_t Tint)
         return;
     }
 
+    RunBlurChain(false);
+    DrawBlurPass(BlurLevels.front(), true, Tint & ChannelMask, BlurViewPipeline);
+}
+
+void FRenderer::Bloom()
+{
+    if (!bCanBlur)
+    {
+        return;
+    }
+
+    // How much of the blurred glow comes back over the view, per channel.
+    constexpr uint32_t BloomStrength = 0x383838;
+    SetStencilMode(EStencilMode::Off);
+    RunBlurChain(true);
+    DrawBlurPass(BlurLevels.front(), true, BloomStrength, BloomPipeline);
+}
+
+void FRenderer::RunBlurChain(const bool bGlow)
+{
     // The view as BeginRendering placed it.
     const float Scale = std::min(SwapchainExtent.width / ViewWidth, SwapchainExtent.height / ScreenHeight);
     const int32_t Left = int32_t((SwapchainExtent.width - ViewWidth * Scale) * 0.5f);
@@ -1338,7 +1376,7 @@ void FRenderer::BlurView(const uint32_t Tint)
         VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
     constexpr uint32_t White = 0xffffff;
-    const auto Pass = [&](const FTexture& From, const FTexture& To, const bool bUp)
+    const auto Pass = [&](const FTexture& From, const FTexture& To, const bool bUp, const bool bExtract)
     {
         TransitionImage(Cmd, To.Image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
@@ -1361,24 +1399,24 @@ void FRenderer::BlurView(const uint32_t Tint)
         const VkRect2D Scissor{ { 0, 0 }, { To.Width, To.Height } };
         vkCmdSetViewport(Cmd, 0, 1, &Viewport);
         vkCmdSetScissor(Cmd, 0, 1, &Scissor);
-        DrawBlurPass(From, bUp, White, BlurPipeline);
+        DrawBlurPass(From, bUp, White, BlurPipeline, bExtract);
         vkCmdEndRendering(Cmd);
         TransitionImage(Cmd, To.Image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     };
+    // A glow keeps only what the view's alpha marks, from the first pass down.
     for (size_t Index = 1; Index < BlurLevels.size(); ++Index)
     {
-        Pass(BlurLevels[Index - 1], BlurLevels[Index], false);
+        Pass(BlurLevels[Index - 1], BlurLevels[Index], false, bGlow && Index == 1);
     }
 
     for (size_t Index = BlurLevels.size() - 1; Index-- > 0;)
     {
-        Pass(BlurLevels[Index + 1], BlurLevels[Index], true);
+        Pass(BlurLevels[Index + 1], BlurLevels[Index], true, false);
     }
 
-    // The last doubling lands in the view, tinted.
+    // The caller's last doubling lands in the view.
     BeginRendering(VK_ATTACHMENT_LOAD_OP_LOAD);
-    DrawBlurPass(First, true, Tint & ChannelMask, BlurViewPipeline);
 }
 
 void FRenderer::RequestCapture(const uint32_t Width, const uint32_t Height)
@@ -1558,6 +1596,7 @@ void FRenderer::Shutdown()
     }
 
     vkDestroyPipeline(Device, BlurPipeline, nullptr);
+    vkDestroyPipeline(Device, BloomPipeline, nullptr);
     vkDestroyPipeline(Device, BlurViewPipeline, nullptr);
     vkDestroyPipelineLayout(Device, BlurLayout, nullptr);
     vkDestroyDescriptorPool(Device, BlurPool, nullptr);

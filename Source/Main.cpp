@@ -6752,6 +6752,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         };
 
+        // The port's bloom glows around the level's lights, under the messages and the panel.
+        Renderer.Bloom();
+
         // The messages' draw pass comes after the objects and before the panel, with the last step; the frame that opens the inventory or the help skips it.
         if (Panel && !bInventoryPending && !bHelpPending)
         {
