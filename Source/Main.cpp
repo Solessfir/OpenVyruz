@@ -6703,8 +6703,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         // EngineRunLevel at 0043fe5b, after the panel and the map: while the living player's sprite centre lies under terrain (FUN_00420200), the arrow marks it,
-        // 32 pixels above its ground position and turned by its direction, over everything else.
-        if (Player && HiddenArrow && HiddenArrow->BitmapIndex != 0 && Inventory.Energy > 0.f)
+        // 32 pixels above its ground position and turned by its direction, over everything else. The original draws it over its map too; the port leaves it out while the map is open.
+        if (Player && HiddenArrow && HiddenArrow->BitmapIndex != 0 && Inventory.Energy > 0.f && !bMapShown)
         {
             const auto Body = std::ranges::find_if(Sprites, [&](const FObjectSprite& Sprite) { return Sprite.ObjectIndex == PlayerIndex && !Sprite.bShadow && Sprite.Frame.BitmapIndex != 0; });
             const std::vector<FSpriteFrame>* const BodyFrames = Body != Sprites.end() ? &Objects->Sheets[Body->SheetIndex].Frames : nullptr;
