@@ -2295,6 +2295,26 @@ std::string_view LanguageKeyword(const uint32_t Language)
     return Language == SecondLanguage ? "French" : "English";
 }
 
+// A name that can be a session folder.
+bool IsValidPlayerName(const std::string_view Name)
+{
+    return !Name.empty() && Name.find_first_of("\\/:*?\"<>|.") == std::string_view::npos;
+}
+
+// The port's default player name: the OS login name in place of the original's Jack, cut to what the name editor allows.
+std::string LoginPlayerName()
+{
+#ifdef _WIN32
+    constexpr const char* LoginVariable = "USERNAME";
+#else
+    constexpr const char* LoginVariable = "USER";
+#endif
+    constexpr size_t MaxNameLength = 14;
+    const char* const Login = std::getenv(LoginVariable);
+    const std::string Name = Login ? std::string(Login).substr(0, MaxNameLength) : std::string();
+    return IsValidPlayerName(Name) ? Name : std::string("Player");
+}
+
 // ConfigLoad (0042f570) reads vzconf.txt from the game folder, else the archive's VZCONF.TXT. A line is a keyword, an optional '=' and a value; a flag is set when its value reads as a non-zero number (atoi).
 // Keyboard-Settings, Mouse-Settings and Joypad-Settings start a device's bindings, each line an action keyword and its code and modifier.
 FSettings LoadSettings(FResourceArchive& Archive, const std::filesystem::path& ConfigFolder)
@@ -2369,7 +2389,7 @@ FSettings LoadSettings(FResourceArchive& Archive, const std::filesystem::path& C
         return Result;
     };
 
-    FSettings Settings{ .ConfigPath = ConfigFolder / "vzconf.txt", .PlayerName = "Player" };
+    FSettings Settings{ .ConfigPath = ConfigFolder / "vzconf.txt", .PlayerName = LoginPlayerName() };
     const std::optional<std::vector<uint8_t>> DifficultyFile = Archive.Read("common\\difficulty.3dc");
     Settings.Difficulties = LoadDifficulties(DifficultyFile ? std::string_view(reinterpret_cast<const char*>(DifficultyFile->data()), DifficultyFile->size()) : std::string_view());
     Settings.DifficultyLevel = Settings.Difficulties.DefaultLevel;
@@ -2405,7 +2425,7 @@ FSettings LoadSettings(FResourceArchive& Archive, const std::filesystem::path& C
         }
 
         const bool bSet = Number(Value) != 0;
-        if (Key == "session-name" && !Value.empty() && Value.find_first_of("\\/:*?\"<>|.") == std::string_view::npos)
+        if (Key == "session-name" && IsValidPlayerName(Value))
         {
             Settings.PlayerName = std::string(Value);
         }
@@ -2473,6 +2493,12 @@ FSettings LoadSettings(FResourceArchive& Archive, const std::filesystem::path& C
                 }
             }
         }
+    }
+
+    // The archive's VZCONF.TXT and every vzconf.txt the original writes before a rename name the player Jack.
+    if (Settings.PlayerName == "Jack")
+    {
+        Settings.PlayerName = LoginPlayerName();
     }
 
     return Settings;
@@ -5758,7 +5784,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         }
 
                         StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies,
-                            { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
+                            { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex, .Name = Settings.PlayerName }, Messages);
                     }
 
                     Player->Velocity = { .X = Player->Velocity.X + Inventory.Shove.X, .Y = Player->Velocity.Y + Inventory.Shove.Y };

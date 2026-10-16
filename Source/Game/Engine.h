@@ -947,6 +947,8 @@ struct FPlayerTarget
     float Radius = 0.f;
     FPlayerInventory& Inventory;
     size_t ObjectIndex = 0;
+    // The session's player name (session +0x2754), which the original starts as Jack.
+    std::string_view Name = "Jack";
 };
 
 // Live keyboard semantics of ReadPlayerInput (00438540): turning and strafing combine.

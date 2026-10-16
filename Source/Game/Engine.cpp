@@ -6946,7 +6946,6 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
         if (!bFirstOfTwo && HuntsPlayer(Body) && --Hunters == 0)
         {
-            // The player's name at session +0x2754 starts as Jack.
             constexpr int32_t LastKillX = 0x46;
             constexpr int32_t LastKillY = (MessageViewHeight >> 1) - 0x66;
             constexpr uint32_t LastKillLifeMilliseconds = 10000;
@@ -6956,7 +6955,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             Player.Inventory.Money += float(RealKillerBonus);
             Player.Inventory.Earned += float(RealKillerBonus);
             Messages.Add({
-                .Text = Format("You are so professional %s !\nNo more enemy in this level !\n  Real Killer Bonus : +%d $", "Jack", RealKillerBonus),
+                .Text = Format("You are so professional %s !\nNo more enemy in this level !\n  Real Killer Bonus : +%d $", Player.Name, RealKillerBonus),
                 .X = float(LastKillX),
                 .Y = float(LastKillY),
                 .LifeMilliseconds = LastKillLifeMilliseconds,
