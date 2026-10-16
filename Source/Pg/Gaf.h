@@ -13,7 +13,7 @@ namespace Sound
 struct FSample;
 }
 
-// Original pg-engine GAF container (pgga9902.cpp / pggob.cpp). Format notes live in README.md.
+// Original pg-engine GAF container (pgga9902.cpp / pggob.cpp). Format notes live in Docs/DataFormats.md.
 namespace Gaf
 {
 // Decodes the pg LZSS variant (LzssDecode at 0049ace0). Returns nullopt unless exactly OutputSize bytes are produced.
