@@ -3317,7 +3317,8 @@ void RunDifficultyMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMen
     }
 }
 
-// FUN_00425b40, User settings: the player's name and the difficulty, which a running game cannot change, and the registration key.
+// FUN_00425b40, User settings: the player's name, which a running game cannot change, the difficulty and the registration key.
+// The original also locks the difficulty during a game; the port lets it change and applies it as the game resumes.
 // ponytail: the port needs no registration key; the item says there is none and opens nothing.
 void RunUserMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings, const bool bInGame)
 {
@@ -3332,7 +3333,7 @@ void RunUserMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& 
     {
         Menu.Items = {
             { .Text = Format("Name : %s", Settings.PlayerName), .Help = bInGame ? std::string(InGameHelp) : "Add, delete or select player name." },
-            { .Text = Format("Difficulty : %s", Localize(DifficultyNames[Settings.DifficultyLevel])), .Help = bInGame ? std::string(InGameHelp) : "Select to change difficulty level." },
+            { .Text = Format("Difficulty : %s", Localize(DifficultyNames[Settings.DifficultyLevel])), .Help = "Select to change difficulty level." },
             { .Text = "Registration key", .Help = "No key." },
             {},
             {},
@@ -3347,7 +3348,7 @@ void RunUserMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& 
         {
             RunNameMenu(Window, Renderer, Art, Sheets, Random, Settings);
         }
-        else if (*Item == DifficultyItem && !bInGame)
+        else if (*Item == DifficultyItem)
         {
             RunDifficultyMenu(Window, Renderer, Art, Sheets, Random, Settings);
         }
@@ -4125,7 +4126,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 Combat = std::move(*Weapons);
                 Combat->Details = Settings.Details;
                 // EngineActivateObjects applies the difficulty (FUN_0043c4a0) to the player and every hunter as the level starts.
-                ApplyDifficulty(Settings.Difficulty(), *Combat, Bodies, Inventory);
+                ApplyDifficulty(Settings.Difficulty(), *Combat, Bodies, Inventory, true);
                 ActivateGenerators(*Level, Bodies, { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex });
                 // The carried player object brings its weapons, loaded first and in the same order, and the game clock runs on.
                 if (Carried)
@@ -5117,6 +5118,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 if (Combat)
                 {
                     Combat->Details = Settings.Details;
+                    // Unlike the original, the difficulty can change during a game, and takes over at once.
+                    ApplyDifficulty(Settings.Difficulty(), *Combat, Bodies, Inventory, false);
                 }
 
                 // The fade back in (FUN_0041e5a0) centres the pans again.

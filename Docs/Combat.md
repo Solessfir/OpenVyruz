@@ -77,7 +77,9 @@ The exe keeps four difficulty levels of ten values each (`DAT_0050d328`): player
 - Each seeker or tracker: its `Scan-Delay` and `Sensor-Range` are multiplied and truncated.
 - Each hunter: its shield-up step is multiplied, and its first weapon gets its own copy of the class with `Delay` multiplied and truncated.
 
-A ratio of exactly 1 leaves its value alone. Nothing reads the mine count or item value ratios.
+A ratio of exactly 1 leaves its value alone. Nothing reads the mine count or item value ratios. `FUN_0043c4a0` runs only from the level's activation (`FUN_0043c700` and `FUN_0043c150`), so objects born later keep their class values.
+
+The original locks the difficulty during a game. The port lets it change from the game menu's User settings and applies it as the game resumes: `ApplyDifficulty` records, for the player and each hunter the level start reached, the values before the difficulty, and works out the new difficulty's values from those records, so the result is the level start's on the new difficulty. Shield-up steps, which also change during play, are rescaled by the ratio between the two difficulties instead. `--verify-game` switches between every pair of difficulties and compares with a fresh start.
 
 ## Fast kills
 

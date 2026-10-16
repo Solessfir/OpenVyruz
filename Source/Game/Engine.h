@@ -437,6 +437,16 @@ struct FGenerator
     bool bProductHunts = false;
 };
 
+// A hunter's values before the level-start difficulty scaled them, so another difficulty can replace it during the level.
+struct FDifficultyBase
+{
+    int32_t ScanInterval = 0;
+    float SensorRange = 0.f;
+    int32_t TurretScanDelay = 0;
+    float TurretSensorRange = 0.f;
+    float AppliedShieldUpRatio = 1.f;
+};
+
 struct FObjectBody
 {
     size_t ObjectIndex = 0;
@@ -463,6 +473,8 @@ struct FObjectBody
     // The class's Shield.Max and Shield-up-step (object +0xe4): EngineUpdateObjects adds the step to the shield on each update, up to the maximum.
     float ShieldMax = 0.f;
     float ShieldUpStep = 0.f;
+    // Set for the hunters the level-start difficulty reached; objects born later keep their class values, as in the original.
+    std::optional<FDifficultyBase> DifficultyBase;
     // The class's Shield.Min (class +0x6c), which a shield takes back when it breaks.
     float ShieldMin = 0.f;
     std::vector<FAbsorption> Absorptions;
@@ -551,6 +563,10 @@ struct FPlayerInventory
     FCollisionPoint Shove;
     // The player's Shield-up-step (object +0xe4), which the difficulty scales and Auto Shield Up raises by 10.
     float ShieldUpStep = 0.f;
+    // The maxima as the level started, before the difficulty, and the shield-up ratio applied since, so another difficulty can replace it during the level.
+    float BaseShieldMax = 0.f;
+    float BaseEnergyMax = 0.f;
+    float AppliedShieldUpRatio = 1.f;
 };
 
 // A difficulty level's values (DAT_0050d328, ten per level), which COMMON\DIFFICULTY.3DC overrides; ConfigLoad's difficulty-level picks one and copies it to session +0x26b8.
@@ -582,7 +598,8 @@ struct FCombat;
 // The exe's own table, then the file's values over it.
 FDifficultyTable LoadDifficulties(std::string_view Text);
 // FUN_0043c4a0, which EngineActivateObjects runs on the player and on every hunter as a level starts.
-void ApplyDifficulty(const FDifficulty& Difficulty, const FCombat& Combat, std::span<FObjectBody> Bodies, FPlayerInventory& Inventory);
+// bLevelStart records what the difficulty scales; a later call, after the difficulty changed during the level, works from those records instead.
+void ApplyDifficulty(const FDifficulty& Difficulty, const FCombat& Combat, std::span<FObjectBody> Bodies, FPlayerInventory& Inventory, bool bLevelStart);
 // EngineUpdateObjects adds each fighting object's Shield-up-step to its shield, and the player's to its own, every update.
 void StepShields(std::span<FObjectBody> Bodies, const FLevel& Level, FPlayerInventory& Inventory);
 

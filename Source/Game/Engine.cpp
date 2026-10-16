@@ -7776,6 +7776,114 @@ std::expected<std::string, std::string> VerifyOrbiters(FResourceArchive& Archive
 }
 }
 
+// A difficulty changed during a level must leave every value as a level started on it would: switch from each level to another and to the target, and compare with a fresh start on the target.
+std::expected<std::string, std::string> VerifyDifficultySwitch(FResourceArchive& Archive)
+{
+    const std::optional<std::vector<uint8_t>> File = Archive.Read("common\\difficulty.3dc");
+    const FDifficultyTable Table = LoadDifficulties(File ? std::string_view(reinterpret_cast<const char*>(File->data()), File->size()) : std::string_view());
+    struct FHunter
+    {
+        int32_t ScanDelay = 0;
+        float SensorRange = 0.f;
+        float ShieldUpStep = 0.f;
+        uint32_t FireDelay = 0;
+    };
+    struct FValues
+    {
+        float ShieldMax = 0.f;
+        float EnergyMax = 0.f;
+        float ShieldUpStep = 0.f;
+        std::vector<FHunter> Hunters;
+    };
+    // The level started on Start, then switched to each of Through in turn; CreateCombat adds to the level, so each run loads its own.
+    const auto Run = [&](const size_t Start, const std::initializer_list<size_t> Through) -> std::expected<FValues, std::string>
+    {
+        std::expected<FLevel, std::string> Level = LoadLevel(Archive, "cave\\t1c1");
+        const std::optional<size_t> PlayerIndex = Level ? FindPlayerObject(*Level) : std::nullopt;
+        if (!PlayerIndex)
+        {
+            return std::unexpected(Level ? std::string("no player") : Level.error());
+        }
+
+        std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+        std::expected<FCombat, std::string> Combat = CreateCombat(*Level, Level->Objects[*PlayerIndex], Archive, Bodies);
+        if (!Combat)
+        {
+            return std::unexpected(Combat.error());
+        }
+
+        FPlayerInventory Inventory = CreateInventory(Level->Objects[*PlayerIndex]);
+        ApplyDifficulty(Table.Levels[Start], *Combat, Bodies, Inventory, true);
+        for (const size_t Next : Through)
+        {
+            ApplyDifficulty(Table.Levels[Next], *Combat, Bodies, Inventory, false);
+        }
+
+        FValues Values{ .ShieldMax = Inventory.ShieldMax, .EnergyMax = Inventory.EnergyMax, .ShieldUpStep = Inventory.ShieldUpStep };
+        for (const FObjectBody& Body : Bodies)
+        {
+            if (!Body.DifficultyBase)
+            {
+                continue;
+            }
+
+            const FSeeker* const Seeker = Body.Actor && Body.Actor->Seeker ? &*Body.Actor->Seeker : nullptr;
+            const FWeaponState* const Weapon = Seeker ? &Seeker->WeaponState : Body.Turret ? &Body.Turret->Weapon : nullptr;
+            Values.Hunters.push_back({
+                .ScanDelay = Seeker ? Seeker->Work.Interval : Body.Turret ? Body.Turret->ScanDelay : 0,
+                .SensorRange = Seeker ? Seeker->SensorRange : Body.Turret ? Body.Turret->SensorRange : 0.f,
+                .ShieldUpStep = Body.ShieldUpStep,
+                .FireDelay = Weapon && Weapon->Delay ? *Weapon->Delay : 0u,
+            });
+        }
+
+        return Values;
+    };
+    constexpr float StepTolerance = 1e-4f;
+    const auto Close = [](const float A, const float B) { return std::abs(A - B) <= StepTolerance * std::max(1.f, std::abs(B)); };
+    size_t Hunters = 0;
+    for (size_t Target = 0; Target < DifficultyLevelCount; ++Target)
+    {
+        const std::expected<FValues, std::string> Fresh = Run(Target, {});
+        if (!Fresh)
+        {
+            return std::unexpected(Fresh.error());
+        }
+
+        Hunters = Fresh->Hunters.size();
+        for (size_t Start = 0; Start < DifficultyLevelCount; ++Start)
+        {
+            const size_t Other = (Target + 1) % DifficultyLevelCount;
+            const std::expected<FValues, std::string> Switched = Run(Start, { Other, Target });
+            if (!Switched)
+            {
+                return std::unexpected(Switched.error());
+            }
+
+            bool bSame = Switched->ShieldMax == Fresh->ShieldMax && Switched->EnergyMax == Fresh->EnergyMax && Close(Switched->ShieldUpStep, Fresh->ShieldUpStep) &&
+                Switched->Hunters.size() == Fresh->Hunters.size();
+            for (size_t Index = 0; bSame && Index < Fresh->Hunters.size(); ++Index)
+            {
+                const FHunter& Want = Fresh->Hunters[Index];
+                const FHunter& Got = Switched->Hunters[Index];
+                bSame = Got.ScanDelay == Want.ScanDelay && Got.SensorRange == Want.SensorRange && Close(Got.ShieldUpStep, Want.ShieldUpStep) && Got.FireDelay == Want.FireDelay;
+            }
+
+            if (!bSame)
+            {
+                return std::unexpected(std::format("switching from difficulty {} through {} to {} differs from starting on {}", Start, Other, Target, Target));
+            }
+        }
+    }
+
+    if (Hunters == 0)
+    {
+        return std::unexpected("no hunter took the difficulty");
+    }
+
+    return std::format("difficulty switches match fresh starts for the player and {} hunters", Hunters);
+}
+
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
 {
     // The check ignores the floating messages it raises.
@@ -8200,15 +8308,21 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         return std::unexpected(std::format("Weld seams: {}", SeamCheck.error()));
     }
 
+    const std::expected<std::string, std::string> DifficultyCheck = VerifyDifficultySwitch(Archive);
+    if (!DifficultyCheck)
+    {
+        return std::unexpected(std::format("Difficulty: {}", DifficultyCheck.error()));
+    }
+
     if (SparkLevels == 0)
     {
         return std::unexpected("no bouncing grenade threw off a spark");
     }
 
     return std::format("{} levels, {} player shots, {} turret shots while spinning, {} grenades bounced (sparking in {} levels), {} objects destroyed, {} turrets wrecked, {} objects dropped, at least {} effects; "
-        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth; {}; {}; {}; {}; {}",
+        "{} turret duels: {} shots, {:.0f} damage taken; {} cop duels ({} classes): {} shots; {} of {} generators gave birth; {}; {}; {}; {}; {}; {}",
         Levels, Shots, TurretShots, GrenadeBounces, SparkLevels, Destroyed, Wrecks, Dropped, Effects, Duels, DuelShots, DamageTaken, CopDuels, CopNames.size(), CopShots, GeneratorsBirthing, Generators,
-        *Mines, *FireSurprises, *OrbitCheck, *DebrisCheck, *SeamCheck);
+        *Mines, *FireSurprises, *OrbitCheck, *DebrisCheck, *SeamCheck, *DifficultyCheck);
 }
 
 FDifficultyTable LoadDifficulties(const std::string_view Text)
@@ -8272,74 +8386,72 @@ FDifficultyTable LoadDifficulties(const std::string_view Text)
     return Table;
 }
 
-void ApplyDifficulty(const FDifficulty& Difficulty, const FCombat& Combat, const std::span<FObjectBody> Bodies, FPlayerInventory& Inventory)
+void ApplyDifficulty(const FDifficulty& Difficulty, const FCombat& Combat, const std::span<FObjectBody> Bodies, FPlayerInventory& Inventory, const bool bLevelStart)
 {
-    // The player: the class's shield and energy maxima, and its Shield-up-step scaled.
-    if (0.f < Difficulty.PlayerShieldMax)
+    // A shield-up step changes during play (Auto Shield Up), so a new difficulty rescales it by the ratio between the two rather than from a record.
+    const auto Rescale = [](float& Step, float& Applied, const float Ratio)
     {
-        Inventory.ShieldMax = Difficulty.PlayerShieldMax;
-        Inventory.Shield = std::min(Inventory.Shield, Inventory.ShieldMax);
+        if (Ratio != Applied && Applied != 0.f)
+        {
+            Step = Step / Applied * Ratio;
+            Applied = Ratio;
+        }
+    };
+
+    // The player: the class's shield and energy maxima, and its Shield-up-step scaled. The carried player starts each level from what the last one left.
+    if (bLevelStart)
+    {
+        Inventory.BaseShieldMax = Inventory.ShieldMax;
+        Inventory.BaseEnergyMax = Inventory.EnergyMax;
+        Inventory.AppliedShieldUpRatio = 1.f;
     }
 
-    if (Difficulty.PlayerEnergyMax != 1.f)
-    {
-        Inventory.EnergyMax = Difficulty.PlayerEnergyMax;
-        Inventory.Energy = std::min(Inventory.Energy, Inventory.EnergyMax);
-    }
-
-    if (Difficulty.PlayerShieldUpStepRatio != 1.f)
-    {
-        Inventory.ShieldUpStep *= Difficulty.PlayerShieldUpStepRatio;
-    }
+    Inventory.ShieldMax = 0.f < Difficulty.PlayerShieldMax ? Difficulty.PlayerShieldMax : Inventory.BaseShieldMax;
+    Inventory.Shield = std::min(Inventory.Shield, Inventory.ShieldMax);
+    Inventory.EnergyMax = Difficulty.PlayerEnergyMax != 1.f ? Difficulty.PlayerEnergyMax : Inventory.BaseEnergyMax;
+    Inventory.Energy = std::min(Inventory.Energy, Inventory.EnergyMax);
+    Rescale(Inventory.ShieldUpStep, Inventory.AppliedShieldUpRatio, Difficulty.PlayerShieldUpStepRatio);
 
     // Every hunter: a seeker's or tracker's scan delay and sensor range, its Shield-up-step, and its own copy of its weapon's Delay.
     const auto Scaled = [](const float Value, const float Ratio) { return TruncateLow(double(float(Value * Ratio))); };
     for (FObjectBody& Body : Bodies)
     {
-        if (!HuntsPlayer(Body))
+        if (bLevelStart && HuntsPlayer(Body))
+        {
+            Body.DifficultyBase = FDifficultyBase{
+                .ScanInterval = Body.Actor && Body.Actor->Seeker ? Body.Actor->Seeker->Work.Interval : 0,
+                .SensorRange = Body.Actor && Body.Actor->Seeker ? Body.Actor->Seeker->SensorRange : 0.f,
+                .TurretScanDelay = Body.Turret ? Body.Turret->ScanDelay : 0,
+                .TurretSensorRange = Body.Turret ? Body.Turret->SensorRange : 0.f,
+            };
+        }
+
+        if (!Body.DifficultyBase)
         {
             continue;
         }
 
+        FDifficultyBase& Base = *Body.DifficultyBase;
         FWeaponState* Weapon = nullptr;
         if (Body.Actor && Body.Actor->Seeker)
         {
             FSeeker& Seeker = *Body.Actor->Seeker;
-            if (Difficulty.ScanDelayRatio != 1.f)
-            {
-                Seeker.Work.Interval = Scaled(float(Seeker.Work.Interval), Difficulty.ScanDelayRatio);
-            }
-
-            if (Difficulty.ScanRangeRatio != 1.f)
-            {
-                Seeker.SensorRange = float(Scaled(Seeker.SensorRange, Difficulty.ScanRangeRatio));
-            }
-
+            Seeker.Work.Interval = Difficulty.ScanDelayRatio != 1.f ? Scaled(float(Base.ScanInterval), Difficulty.ScanDelayRatio) : Base.ScanInterval;
+            Seeker.SensorRange = Difficulty.ScanRangeRatio != 1.f ? float(Scaled(Base.SensorRange, Difficulty.ScanRangeRatio)) : Base.SensorRange;
             Weapon = Seeker.Weapon ? &Seeker.WeaponState : nullptr;
         }
         else if (Body.Turret)
         {
-            if (Difficulty.ScanDelayRatio != 1.f)
-            {
-                Body.Turret->ScanDelay = Scaled(float(Body.Turret->ScanDelay), Difficulty.ScanDelayRatio);
-            }
-
-            if (Difficulty.ScanRangeRatio != 1.f)
-            {
-                Body.Turret->SensorRange = float(Scaled(Body.Turret->SensorRange, Difficulty.ScanRangeRatio));
-            }
-
+            Body.Turret->ScanDelay = Difficulty.ScanDelayRatio != 1.f ? Scaled(float(Base.TurretScanDelay), Difficulty.ScanDelayRatio) : Base.TurretScanDelay;
+            Body.Turret->SensorRange = Difficulty.ScanRangeRatio != 1.f ? float(Scaled(Base.TurretSensorRange, Difficulty.ScanRangeRatio)) : Base.TurretSensorRange;
             Weapon = &Body.Turret->Weapon;
         }
 
-        if (Difficulty.EnemyShieldUpStepRatio != 1.f)
+        Rescale(Body.ShieldUpStep, Base.AppliedShieldUpRatio, Difficulty.EnemyShieldUpStepRatio);
+        if (Weapon && Weapon->Weapon < Combat.Weapons.size())
         {
-            Body.ShieldUpStep *= Difficulty.EnemyShieldUpStepRatio;
-        }
-
-        if (Weapon && Difficulty.EnemyFireDelayRatio != 1.f && Weapon->Weapon < Combat.Weapons.size())
-        {
-            Weapon->Delay = uint32_t(Scaled(float(Combat.Weapons[Weapon->Weapon].Delay), Difficulty.EnemyFireDelayRatio));
+            const float Ratio = Difficulty.EnemyFireDelayRatio;
+            Weapon->Delay = Ratio != 1.f ? std::optional(uint32_t(Scaled(float(Combat.Weapons[Weapon->Weapon].Delay), Ratio))) : std::nullopt;
         }
     }
 }
