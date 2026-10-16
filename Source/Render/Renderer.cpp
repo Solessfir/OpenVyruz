@@ -44,7 +44,8 @@ struct FSpritePush
     float Rect[4] = {};
     float UvRect[4] = {};
     float ScreenSize[2] = {};
-    float Padding[2] = {};
+    // A texel's size in UV for the outline, which looks at the neighbouring texels; zero draws the sprite as usual.
+    float OutlineTexel[2] = {};
     // D3D's default texture stage modulates by the diffuse colour; a specular colour is added when present.
     float Diffuse[4] = {};
     float Specular[4] = {};
@@ -75,6 +76,33 @@ constexpr uint32_t Rgb555ToRgba8(const uint16_t Pixel)
 }
 static_assert(Rgb555ToRgba8(0x7FFF) == 0xFFFFFFFF);
 static_assert(Rgb555ToRgba8(0x7C00) == 0xFF0000FF);
+
+bool HasDepth(const VkFormat Format)
+{
+    return Format != VK_FORMAT_S8_UINT;
+}
+
+void TransitionStencil(const VkCommandBuffer Cmd, const VkImage Image, const VkFormat Format)
+{
+    constexpr VkPipelineStageFlags2 TestStages = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    const VkImageMemoryBarrier2 Barrier{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = TestStages,
+        .srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .dstStageMask = TestStages,
+        .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        .image = Image,
+        .subresourceRange = { VkImageAspectFlags(VK_IMAGE_ASPECT_STENCIL_BIT | (HasDepth(Format) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0)), 0, 1, 0, 1 },
+    };
+    const VkDependencyInfo Dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &Barrier,
+    };
+    vkCmdPipelineBarrier2(Cmd, &Dependency);
+}
 
 void TransitionImage(const VkCommandBuffer Cmd, const VkImage Image, const VkImageLayout From, const VkImageLayout To,
     const VkPipelineStageFlags2 SrcStage, const VkAccessFlags2 SrcAccess, const VkPipelineStageFlags2 DstStage, const VkAccessFlags2 DstAccess)
@@ -208,8 +236,15 @@ void FRenderer::CreateDevice()
         .queueCount = 1,
         .pQueuePriorities = &Priority,
     };
+    // Slang's SPIR-V declares draw parameters for the vertex index and demotes a discard to a helper invocation.
+    VkPhysicalDeviceVulkan11Features Features11{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+        .shaderDrawParameters = VK_TRUE,
+    };
     VkPhysicalDeviceVulkan13Features Features13{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .pNext = &Features11,
+        .shaderDemoteToHelperInvocation = VK_TRUE,
         .synchronization2 = VK_TRUE,
         .dynamicRendering = VK_TRUE,
     };
@@ -324,6 +359,18 @@ void FRenderer::CreateDevice()
         .pPushConstantRanges = &BlurPushRange,
     };
     Check(vkCreatePipelineLayout(Device, &BlurLayoutInfo, nullptr, &BlurLayout), "vkCreatePipelineLayout");
+
+    // The smallest stencil the device can draw to.
+    for (const VkFormat Candidate : { VK_FORMAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT })
+    {
+        VkFormatProperties Properties{};
+        vkGetPhysicalDeviceFormatProperties(PhysicalDevice, Candidate, &Properties);
+        if ((Properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0)
+        {
+            StencilFormat = Candidate;
+            break;
+        }
+    }
 }
 
 void FRenderer::CreatePipeline()
@@ -381,13 +428,35 @@ void FRenderer::CreatePipeline()
         .attachmentCount = 1,
         .pAttachments = &BlendAttachment,
     };
-    const VkDynamicState DynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    // Draws into the view set the stencil's test and operation per draw (EStencilMode); the blur's own chain has no stencil.
+    const VkDynamicState DynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP,
+        VK_DYNAMIC_STATE_STENCIL_REFERENCE };
+    constexpr uint32_t ViewportStates = 2;
+    const bool bStencil = StencilFormat != VK_FORMAT_UNDEFINED;
     const VkPipelineDynamicStateCreateInfo DynamicState{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-        .dynamicStateCount = 2,
+        .dynamicStateCount = bStencil ? uint32_t(std::size(DynamicStates)) : ViewportStates,
         .pDynamicStates = DynamicStates,
     };
+    const VkPipelineDynamicStateCreateInfo ChainDynamicState{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = ViewportStates,
+        .pDynamicStates = DynamicStates,
+    };
+    constexpr uint32_t AllBits = 0xff;
+    const VkStencilOpState StencilFace{ .compareMask = AllBits, .writeMask = AllBits };
+    const VkPipelineDepthStencilStateCreateInfo DepthStencil{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .front = StencilFace,
+        .back = StencilFace,
+    };
     const VkPipelineRenderingCreateInfo RenderingInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &SwapchainFormat,
+        .stencilAttachmentFormat = StencilFormat,
+    };
+    const VkPipelineRenderingCreateInfo ChainRenderingInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         .colorAttachmentCount = 1,
         .pColorAttachmentFormats = &SwapchainFormat,
@@ -402,6 +471,7 @@ void FRenderer::CreatePipeline()
         .pViewportState = &ViewportState,
         .pRasterizationState = &Rasterization,
         .pMultisampleState = &Multisample,
+        .pDepthStencilState = bStencil ? &DepthStencil : nullptr,
         .pColorBlendState = &ColorBlend,
         .pDynamicState = &DynamicState,
         .layout = PipelineLayout,
@@ -430,6 +500,7 @@ void FRenderer::CreatePipeline()
 
     // The blur's passes draw one opaque triangle into its chain or the view, all in the swapchain's format.
     vkDestroyPipeline(Device, BlurPipeline, nullptr);
+    vkDestroyPipeline(Device, BlurViewPipeline, nullptr);
     const VkShaderModuleCreateInfo BlurVertexInfo{
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = sizeof(BlurVert),
@@ -455,6 +526,10 @@ void FRenderer::CreatePipeline()
     BlurInfo.pStages = BlurStages;
     BlurInfo.pInputAssemblyState = &TriangleList;
     BlurInfo.layout = BlurLayout;
+    Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &BlurInfo, nullptr, &BlurViewPipeline), "vkCreateGraphicsPipelines");
+    BlurInfo.pNext = &ChainRenderingInfo;
+    BlurInfo.pDepthStencilState = nullptr;
+    BlurInfo.pDynamicState = &ChainDynamicState;
     Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &BlurInfo, nullptr, &BlurPipeline), "vkCreateGraphicsPipelines");
     vkDestroyShaderModule(Device, VertexModule, nullptr);
     vkDestroyShaderModule(Device, FragmentModule, nullptr);
@@ -473,6 +548,82 @@ void FRenderer::DestroySwapchainResources()
     }
     SwapchainViews.clear();
     RenderFinished.clear();
+    DestroyStencil();
+}
+
+void FRenderer::DestroyStencil()
+{
+    vkDestroyImageView(Device, StencilView, nullptr);
+    vkDestroyImage(Device, StencilImage, nullptr);
+    vkFreeMemory(Device, StencilMemory, nullptr);
+    StencilView = VK_NULL_HANDLE;
+    StencilImage = VK_NULL_HANDLE;
+    StencilMemory = VK_NULL_HANDLE;
+}
+
+void FRenderer::CreateStencil()
+{
+    if (StencilFormat == VK_FORMAT_UNDEFINED)
+    {
+        return;
+    }
+
+    const VkImageCreateInfo ImageInfo{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = StencilFormat,
+        .extent = { SwapchainExtent.width, SwapchainExtent.height, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    Check(vkCreateImage(Device, &ImageInfo, nullptr, &StencilImage), "vkCreateImage");
+    VkMemoryRequirements Requirements;
+    vkGetImageMemoryRequirements(Device, StencilImage, &Requirements);
+    const VkMemoryAllocateInfo Alloc{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = Requirements.size,
+        .memoryTypeIndex = FindMemoryType(Requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+    };
+    Check(vkAllocateMemory(Device, &Alloc, nullptr, &StencilMemory), "vkAllocateMemory");
+    vkBindImageMemory(Device, StencilImage, StencilMemory, 0);
+    const VkImageViewCreateInfo ViewInfo{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = StencilImage,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = StencilFormat,
+        .subresourceRange = { VkImageAspectFlags(VK_IMAGE_ASPECT_STENCIL_BIT | (HasDepth(StencilFormat) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0)), 0, 1, 0, 1 },
+    };
+    Check(vkCreateImageView(Device, &ViewInfo, nullptr, &StencilView), "vkCreateImageView");
+}
+
+void FRenderer::SetStencilMode(const EStencilMode Mode)
+{
+    if (StencilFormat != VK_FORMAT_UNDEFINED && Mode != StencilMode)
+    {
+        StencilMode = Mode;
+        ApplyStencilMode();
+    }
+}
+
+void FRenderer::ApplyStencilMode()
+{
+    if (StencilFormat == VK_FORMAT_UNDEFINED)
+    {
+        return;
+    }
+
+    const VkCommandBuffer Cmd = Frames[FrameIndex].CommandBuffer;
+    constexpr uint32_t Marked = 1;
+    constexpr uint32_t Unmarked = 0;
+    const bool bOutline = StencilMode == EStencilMode::Outline;
+    vkCmdSetStencilTestEnable(Cmd, StencilMode != EStencilMode::Off);
+    vkCmdSetStencilOp(Cmd, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, bOutline ? VK_STENCIL_OP_KEEP : VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP,
+        bOutline ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_ALWAYS);
+    vkCmdSetStencilReference(Cmd, VK_STENCIL_FACE_FRONT_AND_BACK, StencilMode == EStencilMode::ClearEntity ? Unmarked : Marked);
 }
 
 bool FRenderer::CreateSwapchain()
@@ -573,6 +724,7 @@ bool FRenderer::CreateSwapchain()
         RenderFinished.push_back(Semaphore);
     }
 
+    CreateStencil();
     if (PipelineFormat != SwapchainFormat)
     {
         CreatePipeline();
@@ -857,6 +1009,12 @@ bool FRenderer::BeginFrame(const float Width)
     vkBeginCommandBuffer(Cmd, &BeginInfo);
     TransitionImage(Cmd, SwapchainImages[ImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    if (StencilImage != VK_NULL_HANDLE)
+    {
+        TransitionStencil(Cmd, StencilImage, StencilFormat);
+    }
+
+    StencilMode = EStencilMode::Off;
     BeginRendering(VK_ATTACHMENT_LOAD_OP_CLEAR);
     return true;
 }
@@ -872,14 +1030,25 @@ void FRenderer::BeginRendering(const VkAttachmentLoadOp LoadOp)
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue = { .color = { { 0.0f, 0.0f, 0.0f, 1.0f } } },
     };
+    // The stencil starts each frame clear and carries over when the rendering resumes.
+    const VkRenderingAttachmentInfo StencilAttachment{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = StencilView,
+        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        .loadOp = LoadOp,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = { .depthStencil = { .depth = 1.f, .stencil = 0 } },
+    };
     const VkRenderingInfo RenderingInfo{
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .renderArea = { { 0, 0 }, SwapchainExtent },
         .layerCount = 1,
         .colorAttachmentCount = 1,
         .pColorAttachments = &ColorAttachment,
+        .pStencilAttachment = StencilView != VK_NULL_HANDLE ? &StencilAttachment : nullptr,
     };
     vkCmdBeginRendering(Cmd, &RenderingInfo);
+    ApplyStencilMode();
 
     // Letterbox the view into the window; bars stay at the clear color.
     const float Scale = std::min(SwapchainExtent.width / ViewWidth, SwapchainExtent.height / ScreenHeight);
@@ -948,7 +1117,15 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
         Push.Rotation[2] = PivotX;
         Push.Rotation[3] = PivotY;
     }
-    vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, SpritePipelines[static_cast<size_t>(Blend)]);
+    const bool bOutline = StencilMode == EStencilMode::Outline;
+    if (bOutline)
+    {
+        const FTexture& Texture = Textures[Sheet.Texture];
+        Push.OutlineTexel[0] = 1.f / float(std::max(1u, Texture.Width));
+        Push.OutlineTexel[1] = 1.f / float(std::max(1u, Texture.Height));
+    }
+
+    vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, SpritePipelines[static_cast<size_t>(bOutline ? ESpriteBlend::Alpha : Blend)]);
     vkCmdBindDescriptorSets(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, PipelineLayout, 0, 1, &Textures[Sheet.Texture].DescriptorSet, 0, nullptr);
     vkCmdPushConstants(Cmd, PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &Push);
     vkCmdDraw(Cmd, 4, 1, 0, 0);
@@ -1099,7 +1276,7 @@ void FRenderer::CreateBlurTargets(const VkExtent2D Size)
     }
 }
 
-void FRenderer::DrawBlurPass(const FTexture& From, const bool bUp, const uint32_t Tint)
+void FRenderer::DrawBlurPass(const FTexture& From, const bool bUp, const uint32_t Tint, const VkPipeline Pipeline)
 {
     const VkCommandBuffer Cmd = Frames[FrameIndex].CommandBuffer;
     FBlurPush Push{
@@ -1107,7 +1284,7 @@ void FRenderer::DrawBlurPass(const FTexture& From, const bool bUp, const uint32_
         .Up = bUp ? 1.f : 0.f,
     };
     UnpackColor(Tint, Push.Tint);
-    vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, BlurPipeline);
+    vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline);
     vkCmdBindDescriptorSets(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, BlurLayout, 0, 1, &From.DescriptorSet, 0, nullptr);
     vkCmdPushConstants(Cmd, BlurLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &Push);
     vkCmdDraw(Cmd, 3, 1, 0, 0);
@@ -1115,6 +1292,7 @@ void FRenderer::DrawBlurPass(const FTexture& From, const bool bUp, const uint32_
 
 void FRenderer::BlurView(const uint32_t Tint)
 {
+    SetStencilMode(EStencilMode::Off);
     constexpr uint32_t ChannelMask = 0xffffff;
     if (!bCanBlur)
     {
@@ -1179,7 +1357,7 @@ void FRenderer::BlurView(const uint32_t Tint)
         const VkRect2D Scissor{ { 0, 0 }, { To.Width, To.Height } };
         vkCmdSetViewport(Cmd, 0, 1, &Viewport);
         vkCmdSetScissor(Cmd, 0, 1, &Scissor);
-        DrawBlurPass(From, bUp, White);
+        DrawBlurPass(From, bUp, White, BlurPipeline);
         vkCmdEndRendering(Cmd);
         TransitionImage(Cmd, To.Image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -1196,7 +1374,7 @@ void FRenderer::BlurView(const uint32_t Tint)
 
     // The last doubling lands in the view, tinted.
     BeginRendering(VK_ATTACHMENT_LOAD_OP_LOAD);
-    DrawBlurPass(First, true, Tint & ChannelMask);
+    DrawBlurPass(First, true, Tint & ChannelMask, BlurViewPipeline);
 }
 
 void FRenderer::RequestCapture(const uint32_t Width, const uint32_t Height)
@@ -1301,6 +1479,7 @@ void FRenderer::EndFrame()
         BeginRendering(VK_ATTACHMENT_LOAD_OP_LOAD);
     }
 
+    SetStencilMode(EStencilMode::Off);
     DrawGamma();
     vkCmdEndRendering(Cmd);
     TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1375,6 +1554,7 @@ void FRenderer::Shutdown()
     }
 
     vkDestroyPipeline(Device, BlurPipeline, nullptr);
+    vkDestroyPipeline(Device, BlurViewPipeline, nullptr);
     vkDestroyPipelineLayout(Device, BlurLayout, nullptr);
     vkDestroyDescriptorPool(Device, BlurPool, nullptr);
     vkDestroyDescriptorSetLayout(Device, BlurSetLayout, nullptr);

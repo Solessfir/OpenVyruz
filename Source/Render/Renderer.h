@@ -49,6 +49,18 @@ enum class ESpriteBlend : uint8_t
     Count,
 };
 
+// What draws do to the stencil, which marks the parts of the player and the enemies that the terrain covers.
+enum class EStencilMode : uint8_t
+{
+    Off,
+    // Terrain marks what it covers.
+    MarkTerrain,
+    // The player and the enemies unmark their own pixels, so only terrain drawn after them marks them again.
+    ClearEntity,
+    // Draws a sprite's subtle outline, its edge and a faint fill in the diffuse colour, only where the terrain covers it.
+    Outline,
+};
+
 class FRenderer
 {
 public:
@@ -76,6 +88,9 @@ public:
     void BlurView(uint32_t Tint);
     // Draws the gamma ramp over the frame and presents it.
     void EndFrame();
+    // Each frame starts Off. Without a stencil format on the device the mode stays Off and CanOutline is false.
+    void SetStencilMode(EStencilMode Mode);
+    bool CanOutline() const { return StencilFormat != VK_FORMAT_UNDEFINED; }
 
     // The gamma ramp (FUN_0045ffc0): red, green and blue from -255 to 255 over the whole picture, a positive value lifting its channel toward white by value / 256 of the way and a negative one scaling it by (value + 255) / 256.
     void SetGamma(const std::array<int32_t, 3>& Ramp);
@@ -124,7 +139,10 @@ private:
     const FSpriteSheet& WhitePixel();
     void CreateBlurTargets(VkExtent2D Size);
     void DestroyBlurTargets();
-    void DrawBlurPass(const FTexture& From, bool bUp, uint32_t Tint);
+    void DrawBlurPass(const FTexture& From, bool bUp, uint32_t Tint, VkPipeline Pipeline);
+    void CreateStencil();
+    void DestroyStencil();
+    void ApplyStencilMode();
     // Starts drawing into the acquired image, letterboxed; a capture resumes it to add the gamma after the copy.
     void BeginRendering(VkAttachmentLoadOp LoadOp);
 
@@ -171,6 +189,15 @@ private:
     VkDescriptorPool BlurPool = VK_NULL_HANDLE;
     VkPipelineLayout BlurLayout = VK_NULL_HANDLE;
     VkPipeline BlurPipeline = VK_NULL_HANDLE;
+    // The blur's last pass draws into the view, whose rendering carries the stencil.
+    VkPipeline BlurViewPipeline = VK_NULL_HANDLE;
+
+    // The stencil beside the swapchain image, the size of the window.
+    VkFormat StencilFormat = VK_FORMAT_UNDEFINED;
+    VkImage StencilImage = VK_NULL_HANDLE;
+    VkDeviceMemory StencilMemory = VK_NULL_HANDLE;
+    VkImageView StencilView = VK_NULL_HANDLE;
+    EStencilMode StencilMode = EStencilMode::Off;
     std::vector<FTexture> BlurLevels;
 
     // A capture: requested, then copied into a host buffer by EndFrame.

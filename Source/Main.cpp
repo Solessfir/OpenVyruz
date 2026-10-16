@@ -6557,7 +6557,30 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             TimeWarpAge = 0;
         }
 
-        const auto DrawObject = [&](const FObjectSprite& Sprite)
+        // The port's outlines of the player and the live hunters where the terrain covers them, each object's tint or none; a fading or invisible object keeps none, so it stays hidden.
+        constexpr uint32_t PlayerOutline = 0x5ad2ff;
+        constexpr uint32_t EnemyOutline = 0xff5a46;
+        std::vector<uint32_t> OutlineTints(Level->Objects.size(), 0);
+        if (Renderer.CanOutline())
+        {
+            if (Player && PlayerIndex < OutlineTints.size() && PlayerFade >= FullFade)
+            {
+                OutlineTints[PlayerIndex] = PlayerOutline;
+            }
+
+            for (const FObjectBody& Body : Bodies)
+            {
+                if (Body.ObjectIndex < OutlineTints.size() && IsAutoAimTarget(Body, *Level) && (Body.ObjectIndex >= ObjectFades.size() || ObjectFades[Body.ObjectIndex] >= FullFade))
+                {
+                    OutlineTints[Body.ObjectIndex] = EnemyOutline;
+                }
+            }
+        }
+
+        // Only an outlined object's opaque body parts, not its shadow or its additive glows and lights.
+        const auto IsOutlined = [&](const FObjectSprite& Sprite)
+        { return !Sprite.bShadow && Sprite.Blend == ESpriteBlend::Opaque && Sprite.ObjectIndex < OutlineTints.size() && OutlineTints[Sprite.ObjectIndex] != 0; };
+        const auto DrawObject = [&](const FObjectSprite& Sprite, const uint32_t OutlineTint = 0)
         {
             const Gaf::FAnimationFrame& Frame = Sprite.Frame;
             if (Frame.BitmapIndex == 0 || (Sprite.ObjectIndex != NoObjectIndex && Level->Objects[Sprite.ObjectIndex].bRemoved))
@@ -6595,9 +6618,27 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             constexpr uint32_t DiffuseEventFlag = 4;
             constexpr uint32_t ColorMask = 0xffffff;
             const uint32_t Diffuse = (Frame.EventFlags & DiffuseEventFlag) != 0 ? ModulateColor(uint32_t(Frame.EventValue) & ColorMask, Sprite.Diffuse) : Sprite.Diffuse;
+            if (OutlineTint != 0)
+            {
+                Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + OffsetX - OriginX, Sprite.Y + OffsetY - OriginY, Frame.bMirrorX,
+                    Frame.bMirrorY, ESpriteBlend::Alpha, Scale.X, Scale.Y, UINT32_MAX, OutlineTint, 0, 1.f, Sprite.Rotation, Sprite.X - OriginX, Sprite.Y - OriginY);
+                return;
+            }
+
+            // An outlined object's body unmarks the stencil under it, so only the terrain drawn after it marks what covers it.
+            const bool bOutlined = IsOutlined(Sprite);
+            if (bOutlined)
+            {
+                Renderer.SetStencilMode(EStencilMode::ClearEntity);
+            }
+
             Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + OffsetX - OriginX, Sprite.Y + OffsetY - OriginY,
                 Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer || bFadingObject || Sprite.Alpha < 1.f ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, Diffuse,
                 Sprite.Specular, bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : Sprite.Alpha, Sprite.Rotation, Sprite.X - OriginX, Sprite.Y - OriginY);
+            if (bOutlined)
+            {
+                Renderer.SetStencilMode(EStencilMode::Off);
+            }
         };
         const auto DrawMapRow = [&](const int64_t Row, const std::optional<int32_t> Depth)
         {
@@ -6607,6 +6648,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
 
             // LevelDrawTerrainRow at 0041fd40 leaves the first two planes in the background cache.
+            Renderer.SetStencilMode(EStencilMode::MarkTerrain);
             for (uint32_t Layer = Depth ? FirstOccludingMapLayer : 0; Layer < Level->LayerCount; ++Layer)
             {
                 const uint32_t* const Cells = Level->Map.data() + size_t{ Layer } * Level->GridWidth * Level->GridHeight;
@@ -6619,6 +6661,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
                 }
             }
+
+            Renderer.SetStencilMode(EStencilMode::Off);
         };
         std::array<size_t, SpriteDepthLayerCount> NextSprite{};
         const auto FlushSprites = [&](const int64_t Threshold, const int64_t Layer)
@@ -6679,6 +6723,21 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     DrawObject(Sprite);
                 }
             }
+        }
+
+        // The port's outlines over the drawn level: each outlined object again, as a subtle edge and fill, only where the terrain marked it.
+        if (std::ranges::any_of(OutlineTints, [](const uint32_t Tint) { return Tint != 0; }))
+        {
+            Renderer.SetStencilMode(EStencilMode::Outline);
+            for (const FObjectSprite& Sprite : Sprites)
+            {
+                if (IsOutlined(Sprite))
+                {
+                    DrawObject(Sprite, OutlineTints[Sprite.ObjectIndex]);
+                }
+            }
+
+            Renderer.SetStencilMode(EStencilMode::Off);
         }
 
         const auto DrawHud = [&](const std::span<const FHudSprite> HudSprites)
