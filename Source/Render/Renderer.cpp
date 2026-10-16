@@ -284,11 +284,11 @@ void FRenderer::CreateDevice()
         Check(vkCreateFence(Device, &FenceInfo, nullptr, &Frame.InFlight), "vkCreateFence");
     }
 
-    // Nearest filtering keeps the original pixel art crisp when scaled up.
+    // Linear filtering, which the sprite shader steers so the pixel art stays crisp at any scale.
     const VkSamplerCreateInfo SamplerInfo{
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter = VK_FILTER_NEAREST,
-        .minFilter = VK_FILTER_NEAREST,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
         .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
         .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
@@ -329,11 +329,8 @@ void FRenderer::CreateDevice()
     };
     Check(vkCreatePipelineLayout(Device, &PipelineLayoutInfo, nullptr, &PipelineLayout), "vkCreatePipelineLayout");
 
-    // The blur averages neighbours, so it samples linearly where the sprites stay nearest.
-    VkSamplerCreateInfo LinearInfo = SamplerInfo;
-    LinearInfo.magFilter = VK_FILTER_LINEAR;
-    LinearInfo.minFilter = VK_FILTER_LINEAR;
-    Check(vkCreateSampler(Device, &LinearInfo, nullptr, &LinearSampler), "vkCreateSampler");
+    // The blur has a sampler of its own: the NVIDIA driver 32.0.16.1742 crashed at startup with one immutable sampler in both set layouts.
+    Check(vkCreateSampler(Device, &SamplerInfo, nullptr, &LinearSampler), "vkCreateSampler");
     VkDescriptorSetLayoutBinding BlurBinding = Binding;
     BlurBinding.pImmutableSamplers = &LinearSampler;
     const VkDescriptorSetLayoutCreateInfo BlurSetInfo{

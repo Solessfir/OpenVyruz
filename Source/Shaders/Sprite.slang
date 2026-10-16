@@ -33,16 +33,33 @@ VertexOutput vertexMain(uint VertexIndex : SV_VertexID)
     return Output;
 }
 
+// Where to sample so each texel stays a sharp block at any scale, with only the screen pixel across a texel seam blended.
+// Nearest filtering at a non-integer scale gives texels uneven widths that crawl as the view scrolls; this keeps them even and smooths turned sprites.
+float2 PixelArtUv(float2 Uv)
+{
+    float Width;
+    float Height;
+    SpriteTexture.GetDimensions(Width, Height);
+    const float2 Size = float2(Width, Height);
+    const float2 Texel = Uv * Size;
+    const float2 Seam = floor(Texel + 0.5);
+    const float2 Footprint = max(fwidth(Texel), 1e-5);
+    return (Seam + clamp((Texel - Seam) / Footprint, -0.5, 0.5)) / Size;
+}
+
 [shader("fragment")]
 float4 fragmentMain(VertexOutput Input) : SV_Target
 {
-    const float4 Color = SpriteTexture.Sample(Input.Uv);
+    const float2 Uv = PixelArtUv(Input.Uv);
     if (Push.OutlineTexel.x > 0.0)
     {
-        if (Color.a < 0.5)
+        // The outline covers what the sprite itself covers, which the stencil passes saw, and finds its edge by whole texels.
+        if (SpriteTexture.Sample(Uv).a < 0.5)
         {
             discard;
         }
+
+        const float2 Centre = (floor(Input.Uv / Push.OutlineTexel) + 0.5) * Push.OutlineTexel;
 
         // An opaque texel with a see-through neighbour, or one past the frame's own rectangle, is the edge: drawn soft, the rest a faint fill, neither fully opaque.
         const float EdgeAlpha = 0.55;
@@ -53,7 +70,7 @@ float4 fragmentMain(VertexOutput Input) : SV_Target
         float Edge = 0.0;
         for (int Index = 0; Index < 4; ++Index)
         {
-            const float2 Neighbour = Input.Uv + Steps[Index] * Push.OutlineTexel;
+            const float2 Neighbour = Centre + Steps[Index] * Push.OutlineTexel;
             const bool bInside = all(Neighbour >= Low) && all(Neighbour <= High);
             if (!bInside || SpriteTexture.Sample(Neighbour).a < 0.5)
             {
@@ -64,10 +81,11 @@ float4 fragmentMain(VertexOutput Input) : SV_Target
         return float4(Push.Diffuse.rgb, lerp(FillAlpha, EdgeAlpha, Edge) * Push.Diffuse.a);
     }
 
-    // Color-keyed pixels are uploaded with zero alpha.
+    // Color-keyed pixels are uploaded as zero, so dividing by the alpha takes their share out of a blend with an opaque neighbour, and the cut stays on the texel seam.
+    const float4 Color = SpriteTexture.Sample(Uv);
     if (Color.a < 0.5)
     {
         discard;
     }
-    return float4(Color.rgb * Push.Diffuse.rgb + Push.Specular.rgb, Push.Diffuse.a);
+    return float4(Color.rgb / Color.a * Push.Diffuse.rgb + Push.Specular.rgb, Push.Diffuse.a);
 }
