@@ -8,7 +8,9 @@ The single-player campaign is playable with the intro and menus, and its saves a
 
 ## Quick start
 
-Build (Windows, with Visual Studio 2026 and the Vulkan SDK):
+Prebuilt binaries for Windows and Linux can be downloaded from [Releases](https://github.com/Solessfir/OpenVyruz/releases).
+
+To build it yourself on Windows, with Visual Studio 2026 and the Vulkan SDK:
 
 ```powershell
 git clone --recursive https://github.com/Solessfir/OpenVyruz.git
@@ -17,13 +19,26 @@ cd OpenVyruz
 msbuild Vyruz.slnx /m /t:Vyruz /p:Configuration=Development /p:Platform=x64
 ```
 
-Run with the folder that holds your `vz-data.rsc`; it is remembered for later runs:
+On Linux, with GCC 14+ or Clang 18+, `slangc`, the Vulkan headers and the Wayland and X11 development packages ([the full list](Docs/Building.md#linux)):
+
+```bash
+git clone --recursive https://github.com/Solessfir/OpenVyruz.git
+cd OpenVyruz
+./GenerateProjectFiles.sh gmake
+make config=development Vyruz -j"$(nproc)"
+```
+
+Run it with the folder that holds your `vz-data.rsc`; it is remembered for later runs:
 
 ```powershell
 .\Binaries\windows\Development\Vyruz.exe <path to vz-data.rsc>
 ```
 
-Linux, the Arch package and the other options are in the docs below.
+```bash
+./Binaries/linux/Development/Vyruz <path to vz-data.rsc>
+```
+
+The Arch package and the other options are in the docs below.
 
 ## Docs
 
