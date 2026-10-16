@@ -10,15 +10,15 @@ OpenVyruz is a functional (non-matching) reimplementation of `Vyruz.exe` 1.31.01
 
 - Gameplay must match the original: same frame stepping (a variable millisecond step capped at the display period, 10 ms for demos; see [Docs/MainLoop.md](Docs/MainLoop.md)), RNG, integer and floating-point math, and evaluation order. Only the platform layer (window, input, audio, file I/O, rendering) is redesigned.
 - The original rendered with hardware Direct3D 6 at 640x480x16. The port uses a full Vulkan 1.3 renderer (dynamic rendering, synchronization2) that reproduces the original render states, drawn in the original 640x480 coordinate space and letterboxed; a level widens that space to the screen's shape.
-- No original game files, extracted assets, or decompiler output dumps are ever committed. The data lives in the separate original-data repository (`the original-data repository`, `Game\Vyruz\`).
+- No original game files, extracted assets, or decompiler output dumps are ever committed. The data lives in a separate original-data repository; `AGENTS.local.md` (untracked) says where.
 
 ## Reverse-engineering workflow
 
-- `Vyruz.exe` is analyzed in Ghidra through GhidraMCP (`.mcp.json`, server `vyruz-ghidra`): it connects over HTTP to `http://127.0.0.1:8082/mcp`, a headless `ghidra_mcp` server kept running by the `Ghidra MCP` scheduled task (`the MCP server list`, entry `Vyruz`), which opens `Vyruz.exe` in the project `the Ghidra project`. Close that program in the Ghidra GUI first, since the project cannot be opened twice.
+- `Vyruz.exe` is analyzed in Ghidra through GhidraMCP (`.mcp.json`, server `vyruz-ghidra`): it connects over HTTP to `http://127.0.0.1:8082/mcp`, a headless `ghidra_mcp` server kept running by a scheduled task, which opens `Vyruz.exe` in the Ghidra project; `AGENTS.local.md` holds the machine's paths. Close that program in the Ghidra GUI first, since the project cannot be opened twice.
 - The binary is MSVC C++ written in C style (almost no methods, no RTTI). Recover structure from `__FILE__` anchors; see the module map in [Docs/Development.md](Docs/Development.md).
 - Read the decompiled code to understand behavior, then write clean, idiomatic port code. Never paste raw decompiler output into the repository.
 - When a function's behavior is understood, rename it in Ghidra (and its key globals), and confirm with `get_program_info` at the start of a session that the server has `Vyruz.exe` open; the headless server saves the project only on a graceful shutdown with `--save`. Reference the original address in a short comment on the port code that reimplements it, e.g. `RscFileRead at 004559f0`.
-- The binary is the ground truth. The Python scripts and notes in the original-data repository are hypotheses: verify every format detail against the exe or raw bytes before relying on it. Correct `Docs/DataFormats.md` when either turns out wrong. The same applies to the older Godot-port notes in `the original-data repository's Docs\` (`Reverse Engineering Reference.html`).
+- The binary is the ground truth. The Python scripts and notes in the original-data repository are hypotheses: verify every format detail against the exe or raw bytes before relying on it. Correct `Docs/DataFormats.md` when either turns out wrong. The same applies to the older Godot-port notes in that repository's `Docs\` (`Reverse Engineering Reference.html`).
 - There is no ASLR, so live process memory addresses equal Ghidra addresses; reading a running original game is a valid way to establish ground truth.
 - Name port modules after the original source files (`pg\lib\pg\pgfile.cpp` -> `Source/Pg/...`, `vzed\engine.cpp` -> `Source/Game/...`).
 
@@ -41,7 +41,8 @@ Comments explain why: original-game quirks, format constraints, engine behavior,
 
 - Add dependencies only when the current work needs them. Source dependencies are pinned Git submodules under `External/` (GLFW is upstream `glfw/glfw`; switch to a fork only when a concrete need appears); a single-header library is vendored there instead (miniaudio 0.11.25 in `External/miniaudio`).
 - Premake is downloaded by `GenerateProjectFiles` into ignored `External/Premake/` with a pinned version and SHA-256. Never commit tool binaries.
-- The Vulkan SDK comes from `VULKAN_SDK`, falling back to `%VULKAN_SDK%`.
+- The Vulkan SDK comes from `VULKAN_SDK`, which its installer sets.
+- Machine-specific paths and setup never go into tracked files; they belong in the untracked `AGENTS.local.md`.
 
 ## Verification
 
