@@ -1686,7 +1686,8 @@ constexpr int32_t MenuTop = 90;
 constexpr int32_t MenuStepY = 45;
 
 // MenuAsk at 004228a0: a question with two answers, 30 pixels right of the menu and from 120 down, its title in font 2. True for the first answer.
-// ponytail: MenuExplode at 00421460 sets off explosions over the menu after "Yes, bye.", and the bip sounds wait for audio.
+// MenuExplode at 00421460 sets off explosions over the menu after "Yes, bye."; the port leaves them out and quits at once.
+// ponytail: the bip sounds wait for audio.
 // Gaps leave that many empty rows above the answers.
 std::optional<bool> Confirm(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, std::string Title,
     std::string Yes, std::string No, const size_t DefaultItem, const size_t Gaps = 0)
