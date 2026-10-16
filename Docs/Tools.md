@@ -14,7 +14,7 @@ Each check exits non-zero on any failure.
 - `--verify-levels` loads all 25 levels (`.3DX`, `.3DI`, `.3DO` with resolved `.3DC` class properties, `.3DP` patrol paths, `.3DG`), checks their object and shadow GAFs and animation indices, decodes their animated map GAFs, and parses every object's `Behaviour`.
 - `--verify-game` runs the frame-loop, terrain-collision, route-search and player-movement self-checks and replays `CAVE\DEMO.3DR` through the ported player movement. It fails if fewer than 80% of steps match the recording exactly or fewer than 90% within half a pixel ([PlayerMovement.md](PlayerMovement.md)). It also runs the combat checks:
   - Every level's player weapons load, and the player and the turrets fire for a few seconds.
-  - Destroyed objects drop their contents, every level's first turret leaves a wreck before it is gone, and nine in ten generators give birth within 20 seconds.
+  - Destroyed objects drop their contents, every level's first turret leaves a wreck before it is gone, and nine in ten generators spawn within 20 seconds.
   - Each level puts the player in view of an armed cop, which must route to it and fire.
   - Every level's cops run for 30 seconds: at least half of the patrollers with a `.3DP` path must reach their next patrol point, and at least half of the random movers that found open ground must leave their cell.
   - Every level's sensing gates must close with the player away and open for the player, and the player must ride every usable lift to a level that loads.

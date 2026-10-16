@@ -42,6 +42,7 @@ The Arch package and the other options are in the docs below.
 
 ## Docs
 
+- [Player's manual](Docs/Manual.md): controls, weapons, enemies, pickups and levels
 - [Building](Docs/Building.md): Windows, Linux, the Arch package and CI
 - [Running](Docs/Running.md): the game data, command line, display, controls, settings and saves
 - [Tools and checks](Docs/Tools.md): modding, the archive checks and development aids
