@@ -7372,8 +7372,12 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
     constexpr const char* AppId = "openvyruz";
     glfwWindowHintString(GLFW_WAYLAND_APP_ID, AppId);
     glfwWindowHintString(GLFW_X11_CLASS_NAME, AppId);
+#ifdef _WIN32
+    // GLFW keeps a Win32 fullscreen window topmost, so it must minimize when another window takes the focus, or the paused game covers it.
+#else
     // Fullscreen stays up when another window takes the focus; the game pauses instead, as it does in a window.
     glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
+#endif
 #ifdef _WIN32
     // Hidden until it has gone fullscreen and shown a black frame, so the desktop never sees its white windowed client area.
     // Wayland maps a surface only once it is shown, so there the window starts visible.
