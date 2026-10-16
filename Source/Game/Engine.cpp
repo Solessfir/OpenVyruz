@@ -3346,6 +3346,9 @@ std::expected<void, std::string> LoadAmmoClass(FCombat& Combat, const FLevel& Le
         .ListedArea = ListedArea,
         .bUsableWhenInvisible = ClassNumber(*AmmoBlock, "Usable-when-invisible") != 0.f,
         .bBouncesOffTerrain = ParseLevelFloat(AmmoBlock->Find("On-hit")).value_or(1.f) == 0.f && ClassNumber(*AmmoBlock, "On-object-hit") != 0.f,
+        .bLaunched = Movement.bUseInertia && ClassNumber(*Ammo, "Launched") != 0.f,
+        .bVerticalBounce = ClassNumber(*Ammo, "Vertical-bounce") != 0.f,
+        .BouncePeriod = ClassNumber(*Ammo, "Bounce-period"),
         .Energy = EnergyBlock ? ClassNumber(*EnergyBlock, "Initial") : 0.f,
         .bIndestructible = ClassNumber(*Ammo, "Indestructible") != 0.f,
         .bDropped = Behaviour && (*Behaviour & BehaviourMovementMask) == BehaviourFixed,
@@ -5960,7 +5963,7 @@ bool StartPatrolLeg(FPatrol& Patrol, const FObjectBody& Body, const FLevel& Leve
     return Patrol.Work.Search.Start(Body.State.Center, CollisionFromWorld(Patrol.Goal));
 }
 
-// FUN_0042e040: a destination drawn at random from open ground in the window around the actor, retrying the last one once if its route did not reach its last segment. ponytail: the multiplayer reseed of the generator (session flags 0x18000) and the object check inside FUN_0042c130 are not ported.
+// FUN_0042e040: a destination drawn at random from open ground in the window around the actor, retrying the last one once if its route did not reach its last segment. ponytail: the multiplayer reseed of the generator (session flags 0x18000) and the object check inside CellsHaveMarker (0042c130) are not ported.
 bool StartRandomLeg(FRandomMove& Move, const FObjectBody& Body, const FTerrainCollision& Terrain, FRandom& Random)
 {
     const bool bRouteDone = Move.Work.Route && OnLastSegment(Move.Work);
@@ -6752,7 +6755,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
                 QueueVoice(KillVoices[Pick], KillVoiceDelay, KillVoiceDuration, 0);
             }
 
-            // AmmoImpact (0043d350) puts the Hit-fx where the shot struck; a shot that sank to the ground leaves a Water-Splash on open water (its cell's terrain marker 0x100, FUN_0042c130)
+            // AmmoImpact (0043d350) puts the Hit-fx where the shot struck; a shot that sank to the ground leaves a Water-Splash on open water (its cell's terrain marker 0x100, CellsHaveMarker (0042c130))
             // and a Bullet-Ground-Impact elsewhere. Either goes at the spot clamped into the level, only near the view (FUN_00436690), and a Uniq-at-xy class not where one of its own stands.
             const bool bHit = Target || bPlayer || bSurface;
             if (bHit || Shot.Altitude < 1)
@@ -6806,9 +6809,27 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             Shot.DamageTimer -= StepMilliseconds;
         }
 
-        const FCollisionPoint Delta = Displacement(Shot.State, Ammo.Movement, Straight, TimeScale);
+        const FCollisionPoint Delta = Displacement(Shot.State, Ammo.Movement, Ammo.bLaunched ? FPlayerCommand{} : Straight, TimeScale);
+        // A Vertical-bounce shot's altitude is |sin| of its age over its Bounce-period (a hundredth of its age without one) times ten times its speed, so it hops lower as it slows.
+        // Where it would go below the ground on water it sinks there with a Water-Splash and no blast.
+        if (Ammo.bVerticalBounce)
+        {
+            constexpr double AgeScale = 0.01f;
+            constexpr double HeightPerSpeed = 10.f;
+            const double Phase = Ammo.BouncePeriod != 0.f ? double(Shot.Age) / double(Ammo.BouncePeriod) : double(Shot.Age) * AgeScale;
+            const int Height = int(std::sin(Phase) * (double(Shot.State.SpeedMagnitude) * HeightPerSpeed));
+            if (const FWorldCell Cell = CellOf(Shot.State.Position); Height < 0 && Terrain.IsWater(Cell.X, Cell.Y))
+            {
+                SpawnEffect(Combat, WaterSplashEffect, Shot.State.Position, 0.f);
+                return true;
+            }
+
+            Shot.Altitude = std::abs(Height);
+        }
+
         if (IsZero(Delta))
         {
+            Shot.State.Velocity = {};
             return false;
         }
 
@@ -6824,6 +6845,8 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         }
 
         const FCollisionPoint Candidate = CollisionFromWorld(Shot.State.Position);
+        // As for any mover, the velocity is this step's move while the sweep runs, which a bounce reflects, and its move per 14 ms once the shot moves freely.
+        Shot.State.Velocity = { .X = float(double(Candidate.X) - double(Shot.State.Center.X)), .Y = float(double(Candidate.Y) - double(Shot.State.Center.Y)) };
         const FCollisionCircle Moved{ .Center = Candidate, .Radius = Ammo.Movement.Radius };
         const std::optional<FTerrainHit> TerrainHit = QueryTerrainCollision(Terrain, { .Center = Shot.State.Center, .Radius = Ammo.Movement.Radius }, Moved);
         std::optional<FCollisionPoint> Contact = TerrainHit ? std::optional(TerrainHit->Point) : std::nullopt;
@@ -6841,6 +6864,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
         if (!Contact)
         {
+            Shot.State.Velocity = { .X = float(double(TimeScale) * Delta.X), .Y = float(double(TimeScale) * Delta.Y) };
             Shot.State.Center = Candidate;
             return false;
         }
