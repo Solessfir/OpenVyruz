@@ -18,8 +18,12 @@ if not exist "%PREMAKE%" (
         "Expand-Archive $Zip -DestinationPath '%PREMAKE_DIR%' -Force; Remove-Item $Zip" || exit /b 1
 )
 
+rem An installed Vulkan SDK is used when VULKAN_SDK names one; otherwise the pinned SDK is downloaded into External\VulkanSDK.
 if not defined VULKAN_SDK (
-    echo VULKAN_SDK is not set. Install the Vulkan SDK from https://vulkan.lunarg.com, or set VULKAN_SDK to its folder.
+    for /f "usebackq delims=" %%P in (`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%Scripts\VulkanSdk.ps1"`) do set "VULKAN_SDK=%%P"
+)
+if not exist "%VULKAN_SDK%\Bin\slangc.exe" (
+    echo No Vulkan SDK with slangc at "%VULKAN_SDK%".
     exit /b 1
 )
 
