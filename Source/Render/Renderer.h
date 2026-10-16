@@ -90,7 +90,7 @@ public:
     void SetViewShift(float X, float Y);
     void DrawSprite(const FSpriteSheet& Sheet, size_t FrameIndex, float X, float Y, bool bMirrorX = false, bool bMirrorY = false,
         ESpriteBlend Blend = ESpriteBlend::Opaque, float ScaleX = 1.f, float ScaleY = 1.f, uint32_t VisibleColumns = UINT32_MAX,
-        uint32_t Diffuse = 0xffffff, uint32_t Specular = 0, float Alpha = 1.f, float RotationDegrees = 0.f, float PivotX = 0.f, float PivotY = 0.f, bool bSoftShadow = false);
+        uint32_t Diffuse = 0xffffff, uint32_t Specular = 0, float Alpha = 1.f, float RotationDegrees = 0.f, float PivotX = 0.f, float PivotY = 0.f);
     // Blurs what this frame has drawn so far and multiplies it by Tint (0xRRGGBB), for an overlay over the game; without the device support it only darkens.
     void BlurView(uint32_t Tint);
     // Adds a soft glow around what additive sprites drew this frame and nothing has covered since, as the view's alpha marks it.

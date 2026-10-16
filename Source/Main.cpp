@@ -6257,17 +6257,22 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         const int OriginY = int(std::floor(CameraY));
         // A big blast is an explosion animation (explosion, explosion00, explosion01), as opposed to the impacts, sparks and smoke.
         const auto IsBigBlast = [&](const FEffect& Effect) { return Effect.Frame != 0 && Combat->EffectClasses[Effect.ClassIndex].Animation.Name.starts_with("explosion"); };
-        // The port's blast shake: a new big blast within ShakeRange of the player shakes the view, the closer the harder.
+        // The port's blast shake, the closer the harder: a new shock wave shakes the view, as a destroyed vehicle, a mine or a grenade sends one (the shck animation),
+        // and a new big blast alone, as debris or a rocket's hit makes, only nudges it.
+        constexpr float ShockShake = 2.f;
         if (Combat && Player)
         {
-            constexpr float MaxShake = 3.f;
-            constexpr float ShakeRange = 400.f;
+            constexpr float ShockRange = 640.f;
+            constexpr float NudgeShake = 0.5f;
+            constexpr float NudgeRange = 400.f;
             for (const FEffect& Effect : Combat->Effects)
             {
-                if (Effect.Frame == 1 && IsBigBlast(Effect))
+                const bool bShock = Effect.Frame == 1 && Combat->EffectClasses[Effect.ClassIndex].Animation.Name == "shck";
+                if (bShock || (Effect.Frame == 1 && IsBigBlast(Effect)))
                 {
                     const float Distance = std::hypot(Effect.Position.X - Player->Position.X, Effect.Position.Y - Player->Position.Y);
-                    BlastShake = std::max(BlastShake, MaxShake * std::max(0.f, 1.f - Distance / ShakeRange));
+                    const float Near = std::max(0.f, 1.f - Distance / (bShock ? ShockRange : NudgeRange));
+                    BlastShake = std::max(BlastShake, (bShock ? ShockShake : NudgeShake) * Near);
                 }
             }
         }
@@ -6276,9 +6281,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         float ShakeY = 0.f;
         if (BlastShake > 0.f)
         {
+            // A full shock's shake fades over ShakeMilliseconds, a nudge sooner.
             constexpr float ShakeMilliseconds = 180.f;
             constexpr float ShakePeriodMilliseconds = 45.f;
-            constexpr float ShakeFullDrop = 3.f;
+            constexpr float ShakeFullDrop = ShockShake;
             constexpr float TwoPi = 6.2831853f;
             const float Phase = float(ClockMilliseconds()) / ShakePeriodMilliseconds * TwoPi;
             ShakeX = BlastShake * std::sin(Phase);
@@ -6694,8 +6700,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
             Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, X + OffsetX, Y + OffsetY,
                 Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer || bFadingObject || Sprite.Alpha < 1.f ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, Diffuse,
-                Sprite.Specular, bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : Sprite.Alpha, Sprite.Rotation, X, Y,
-                Sprite.bShadow && Sprite.Blend == ESpriteBlend::InverseSourceColor);
+                Sprite.Specular, bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : Sprite.Alpha, Sprite.Rotation, X, Y);
             if (bOutlined)
             {
                 Renderer.SetStencilMode(EStencilMode::Off);

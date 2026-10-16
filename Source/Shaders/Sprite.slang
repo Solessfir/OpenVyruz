@@ -9,7 +9,6 @@ struct PushConstants
     float4 Diffuse;
     float4 Specular;
     float4 Rotation; // cos, sin, pivot x, pivot y: DrawAnimationFrame turns the frame about the object's position
-    float4 Soft;     // x non-zero softens a darkening shadow's edge
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> Push;
@@ -80,38 +79,6 @@ float4 fragmentMain(VertexOutput Input) : SV_Target
         }
 
         return float4(Push.Diffuse.rgb, lerp(FillAlpha, EdgeAlpha, Edge) * Push.Diffuse.a);
-    }
-
-    // A shadow darkens by its colour, and its colour-keyed texels are zero, so a weighted average of the texels around blurs its edge without a seam; taps past the frame count as clear.
-    if (Push.Soft.x > 0.0)
-    {
-        float Width;
-        float Height;
-        SpriteTexture.GetDimensions(Width, Height);
-        const float2 Texel = 1.0 / float2(Width, Height);
-        const float2 Low = min(Push.UvRect.xy, Push.UvRect.zw);
-        const float2 High = max(Push.UvRect.xy, Push.UvRect.zw);
-        float3 Shade = 0.0;
-        // A tent two texels wide each way.
-        for (int Y = -2; Y <= 2; ++Y)
-        {
-            for (int X = -2; X <= 2; ++X)
-            {
-                const float2 Tap = Input.Uv + float2(X, Y) * Texel;
-                const float Weight = (3.0 - abs(float(X))) * (3.0 - abs(float(Y))) / 81.0;
-                if (all(Tap >= Low) && all(Tap <= High))
-                {
-                    Shade += SpriteTexture.Sample(Tap).rgb * Weight;
-                }
-            }
-        }
-
-        if (max(Shade.r, max(Shade.g, Shade.b)) <= 0.0)
-        {
-            discard;
-        }
-
-        return float4(Shade * Push.Diffuse.rgb, Push.Diffuse.a);
     }
 
     // Color-keyed pixels are uploaded as zero, so dividing by the alpha takes their share out of a blend with an opaque neighbour, and the cut stays on the texel seam.
