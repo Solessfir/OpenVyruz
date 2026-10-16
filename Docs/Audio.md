@@ -116,6 +116,4 @@ The pass covers every object of the level (session `+0x2010`) except ammo, FX, i
 
 The fire input is what `ReadPlayerInput` (`00438540`) returns. The two timers behind the last two rows (`DAT_00523810`, `DAT_00523814`) start at zero and outlive the level, so the wake-up lines start only after the player's first shot.
 
-## Not ported yet
-
-- **ADD Weapon channels**: an ADD Weapon entry's own channel (`+0x18`) is not read; every object uses its weapon class's range.
+An ADD Weapon entry's own channel (`+0x18`) would put that object's weapon on one channel, but no class library or level sets it: in the running original every armed object of `cave\t1c1` (102) has it at zero. So every object other than the player uses its weapon class's range, as the port does.
