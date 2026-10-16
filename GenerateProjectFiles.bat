@@ -18,7 +18,9 @@ if not exist "%PREMAKE%" (
         "Expand-Archive $Zip -DestinationPath '%PREMAKE_DIR%' -Force; Remove-Item $Zip" || exit /b 1
 )
 
-rem Vulkan SDK falls back to a local copy when no system SDK is installed.
-if not defined VULKAN_SDK set "VULKAN_SDK=%VULKAN_SDK%"
+if not defined VULKAN_SDK (
+    echo VULKAN_SDK is not set. Install the Vulkan SDK from https://vulkan.lunarg.com, or set VULKAN_SDK to its folder.
+    exit /b 1
+)
 
 "%PREMAKE%" --file="%ROOT%premake5.lua" %ACTION% || exit /b 1

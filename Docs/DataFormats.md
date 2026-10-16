@@ -1,6 +1,6 @@
 # Vyruz Data Formats
 
-Reverse-engineered formats of the original game data, moved from the original data repository (`the original-data repository`). Python extraction scripts referenced here live in that repository under `Scritps\`.
+Reverse-engineered formats of the original game data, moved from the original data repository. Python extraction scripts referenced here live in that repository.
 
 ## Zones and Game Data
 - `COMMON` (shared weapons/enemies/UI/sound)

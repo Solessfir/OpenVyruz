@@ -9,3 +9,4 @@ External/Premake/
 .vs/
 Makefile
 *.make
+AGENTS.local.md
