@@ -237,6 +237,12 @@ std::vector<FHudSprite> DrawScores(const FMenuArt& Art, const FScoreTable& Table
     for (size_t Row = 1; Row <= Table.size(); ++Row)
     {
         const FScoreRecord& Record = Table[Row - 1];
+        // ScoreDrawRows prints all twenty rows, zeros for the slots no game has filled; the port leaves those out, so a new table shows only real scores.
+        if (Record.Name[0] == '\0' && std::ranges::all_of(Record.Fields, [](const uint32_t Field) { return Field == 0; }))
+        {
+            continue;
+        }
+
         const int32_t Y = FirstRowY + int32_t(Row - 1) * RowStep;
         const int32_t Steps = std::min(int32_t(Row) - 1, LastBlend);
         const uint32_t Weight = Row == 1 ? FullWeight : uint32_t((Steps * -int32_t(FullWeight)) / LastBlend) & 0xff;
