@@ -3420,6 +3420,8 @@ std::expected<size_t, std::string> LoadWeapon(FCombat& Combat, const FLevel& Lev
         .bAlternated = ClassNumber(*Block, "Alternated-fire") != 0.f,
         .StartDistance = int(ClassNumber(*Block, "Start-distance")),
         .FireAltitude = int(ClassNumber(*Block, "Fire-altitude")),
+        .SmokeEffect = ToLowerName(Block->Find("Smoke-fx")),
+        .SmokeAltitude = int(ClassNumber(*Block, "Smoke-altitude")),
         .InitialSlope = SlopeRadians(ClassNumber(*Block, "Initial-slope")),
         .SlopeStep = SlopeRadians(ClassNumber(*Block, "Slope-step")),
         .FireSound = ToLowerName(Block->Find("Fire-sound")),
@@ -3697,6 +3699,10 @@ EWeaponFire FireWeapon(FCombat& Combat, FWeaponState& State, const FShooter& Sho
             {
                 Combat.Projectiles.push_back(Shot);
             }
+
+            // The muzzle puff with every shot. ponytail: WeaponFire skips a Uniq-at-xy class where one of its own stands (FUN_0043dc40); no Smoke-fx class is Uniq-at-xy.
+            constexpr int SmokeRise = 2;
+            SpawnEffect(Combat, Weapon.SmokeEffect, Muzzle, float(Shooter.Altitude + SmokeRise + Weapon.SmokeAltitude));
 
             if (!Combat.bOneRoundPerVolley || !bRoundTaken)
             {
@@ -4866,6 +4872,11 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
         {
             EffectNames.push_back(Explosion.BoomEffect);
         }
+    }
+
+    for (const FWeaponClass& Weapon : Combat.Weapons)
+    {
+        EffectNames.push_back(Weapon.SmokeEffect);
     }
 
     for (const FExplosionBlock& Explosion : Combat.PlayerExplosions)
@@ -7907,6 +7918,14 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             {
                 Throw.LastFireTime = 0;
                 FireWeapon(*Combat, Throw, { .Position = Player.Position, .Direction = Direction, .SpriteSize = SpriteSize, .ObjectIndex = PlayerIndex }, &Stock);
+            }
+
+            // Each throw leaves the launcher's Smoke-fx at the muzzle, whose animation carries its whoosh.
+            const std::string& Smoke = Combat->Weapons[*Grenades].SmokeEffect;
+            const auto Puff = std::ranges::find(Combat->EffectClasses, Smoke, &FEffectClass::Name);
+            if (Puff == Combat->EffectClasses.end() || !std::ranges::contains(Combat->Effects, size_t(Puff - Combat->EffectClasses.begin()), &FEffect::ClassIndex))
+            {
+                return std::unexpected(std::format("{}: a grenade throw left no {} at the muzzle", Name, Smoke));
             }
 
             const auto Spark = std::ranges::find(Combat->EffectClasses, std::string("small-metal-bounce-spark"), &FEffectClass::Name);
