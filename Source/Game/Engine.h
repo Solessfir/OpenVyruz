@@ -980,12 +980,18 @@ std::vector<uint32_t> DemoStepLengths(std::span<const FDemoRecord> Records, std:
 FPlayerCommand PlayerCommandFromInput(uint32_t InputBits);
 // With the mouse as input device, the turn of InputReadDirection (0041d7e0) toward the sight, given the screen vector from the player to it: the short way round (DirectionTurnCommand at 00436600), none when the sight lies straight behind or, while the player moves, within one direction of its facing.
 EPlayerTurn TurnTowardSight(const FPlayerState& Player, FCollisionPoint ScreenVector);
+// The player's facing as a screen vector.
+FCollisionPoint PlayerFacing(const FPlayerState& Player);
+// How far the screen vector lies off the player's facing, in directions (24 to a full turn).
+float AimOffDirections(const FPlayerState& Player, FCollisionPoint ScreenVector);
+// The pad's aim turning the ship: the short way round, straight back included, until it faces the aim's direction or lies within HoldDirections of it.
+EPlayerTurn TurnTowardAim(const FPlayerState& Player, FCollisionPoint ScreenVector, float HoldDirections = 0.f);
 // InputReadDirection with the keyboard and the absolute command: the movement keys give a screen direction; facing it the player thrusts, facing straight away it backs off, otherwise it only turns toward it.
 // Returns PlayerInput bits.
 uint32_t AbsoluteKeyInput(const FPlayerState& Player, FCollisionPoint ScreenVector);
 // The pad's left stick heading the ship: the facing's neighbours count as on course, the ship turns the short way round and thrusts only within a quarter turn of the target.
 uint32_t StickMoveInput(const FPlayerState& Player, FCollisionPoint ScreenVector);
-// The pad's move while its aim holds the facing: the screen direction split into thrust and strafe along the ship, as PlayerInput bits.
+// The pad's move while the right stick aims: the screen direction split into thrust and strafe along the ship, as PlayerInput bits.
 uint32_t FacingMoveInput(const FPlayerState& Player, FCollisionPoint ScreenVector);
 
 std::expected<FMovementClass, std::string> ReadMovementClass(const FLevelObject& Object);

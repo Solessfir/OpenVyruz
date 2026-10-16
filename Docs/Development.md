@@ -15,7 +15,7 @@ OpenVyruz is a functional (non-matching) reimplementation of `Vyruz.exe` 1.31.01
 | `Resources\` | The app icon: the Windows `.ico` and `.rc` linked into the exe, and the Linux desktop entry and icon |
 | `Packaging\Arch\` | The Arch `PKGBUILD` |
 | `Scripts\` | The WSL build check |
-| `External\` | Third-party code: GLFW as a submodule, miniaudio vendored |
+| `External\` | Third-party code: GLFW as a submodule; miniaudio and a subset of SDL_GameControllerDB vendored |
 
 ## Original module map
 

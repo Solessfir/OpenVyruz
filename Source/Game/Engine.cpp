@@ -707,6 +707,44 @@ EPlayerTurn TurnTowardSight(const FPlayerState& Player, const FCollisionPoint Sc
     return Ahead < HalfTurn ? EPlayerTurn::Left : Ahead == HalfTurn ? EPlayerTurn::None : EPlayerTurn::Right;
 }
 
+FCollisionPoint PlayerFacing(const FPlayerState& Player)
+{
+    return WorldFacingVector(Player.Direction);
+}
+
+float AimOffDirections(const FPlayerState& Player, const FCollisionPoint ScreenVector)
+{
+    // The directions are even in collision space only; on screen the isometric view crowds them near the horizontal.
+    const FCollisionPoint Facing = CollisionFromWorld(WorldFacingVector(Player.Direction));
+    const FCollisionPoint Vector = CollisionFromWorld(ScreenVector);
+    const float Lengths = std::hypot(Facing.X, Facing.Y) * std::hypot(Vector.X, Vector.Y);
+    if (Lengths <= 0.f)
+    {
+        return 0.f;
+    }
+
+    const float Cos = std::clamp((Facing.X * Vector.X + Facing.Y * Vector.Y) / Lengths, -1.f, 1.f);
+    return std::acos(Cos) * float(DirectionCount) / (2.f * std::numbers::pi_v<float>);
+}
+
+EPlayerTurn TurnTowardAim(const FPlayerState& Player, const FCollisionPoint ScreenVector, const float HoldDirections)
+{
+    const int Target = FindDirection(CollisionFromWorld(ScreenVector));
+    const int Current = Player.Direction;
+    if (Target == Current || Target == NoDirection || Current == NoDirection)
+    {
+        return EPlayerTurn::None;
+    }
+
+    if (AimOffDirections(Player, ScreenVector) < HoldDirections)
+    {
+        return EPlayerTurn::None;
+    }
+
+    constexpr int HalfTurn = DirectionCount / 2;
+    return Wrap(Target - Current) <= HalfTurn ? EPlayerTurn::Left : EPlayerTurn::Right;
+}
+
 uint32_t AbsoluteKeyInput(const FPlayerState& Player, const FCollisionPoint ScreenVector)
 {
     if (ScreenVector.X == 0.f && ScreenVector.Y == 0.f)

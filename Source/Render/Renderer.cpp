@@ -741,6 +741,15 @@ void FRenderer::SetViewShift(const float X, const float Y)
 bool FRenderer::BeginFrame()
 {
     ShiftX = ShiftY = 0.f;
+    // Wayland never reports a resize as out of date; the compositor would scale the stale images instead.
+    int FramebufferWidth = 0;
+    int FramebufferHeight = 0;
+    glfwGetFramebufferSize(Window, &FramebufferWidth, &FramebufferHeight);
+    if (uint32_t(FramebufferWidth) != SwapchainExtent.width || uint32_t(FramebufferHeight) != SwapchainExtent.height)
+    {
+        bSwapchainValid = false;
+    }
+
     if (!bSwapchainValid)
     {
         vkDeviceWaitIdle(Device);

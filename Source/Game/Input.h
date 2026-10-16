@@ -126,8 +126,10 @@ bool IsGamepadPreviousWeaponDown();
 std::optional<std::pair<float, float>> GamepadMoveStick();
 // How far the left stick is pushed, from 0 at its dead zone to 1 at full travel, which scales the ship's top speed.
 float GamepadThrottle();
-// The right stick's direction for the one poll in which it is flicked out past most of its travel, to switch the aim's target.
-std::optional<std::pair<float, float>> GamepadAimFlick();
+// The right stick past its dead zone, a quarter of its travel, x right and y down, each from -1 to 1.
+std::optional<std::pair<float, float>> GamepadAimStick();
+// How far the right stick is pushed, from 0 at its dead zone to 1 at full travel, which scales the aim's turn rate.
+float GamepadAimPush();
 // The menus' reading of the pad: the D-pad or the left stick, up and down for the poll they are pressed in and left and right while held (the sliders), A to choose and B to go back.
 struct FGamepadMenuInput
 {

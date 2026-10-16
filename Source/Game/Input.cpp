@@ -424,15 +424,14 @@ struct FGamepad
     bool bBackHold = false;
     bool bStartTap = false;
     bool bStartHold = false;
-    bool bFlickArmed = true;
-    std::optional<std::pair<float, float>> Flick;
 };
 
 FGamepad Pad;
 
 constexpr float StickDeadZone = 0.2f;
+// A push on the right stick turns the ship slowly, so a resting thumb barely moves it.
+constexpr float AimDeadZone = 0.25f;
 constexpr float TriggerPressed = 0.5f;
-constexpr float FlickOut = 0.8f;
 constexpr float MenuStickOut = 0.6f;
 constexpr uint32_t HoldMilliseconds = 500;
 
@@ -492,15 +491,6 @@ void StepGamepad(const uint32_t NowMilliseconds)
     const float RightX = Pad.Now.axes[GLFW_GAMEPAD_AXIS_RIGHT_X];
     const float RightY = Pad.Now.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y];
     const float Right = StickLength(RightX, RightY);
-    Pad.Flick.reset();
-    if (Pad.bFlickArmed && Right >= FlickOut)
-    {
-        Pad.Flick = std::pair(RightX / Right, RightY / Right);
-        Pad.bFlickArmed = false;
-    }
-
-    Pad.bFlickArmed = Pad.bFlickArmed || Right < StickDeadZone;
-
     bool bTouched = std::ranges::any_of(std::views::iota(0, GLFW_GAMEPAD_BUTTON_LAST + 1), [](const int Button) { return PadDown(Button); });
     bTouched = bTouched || StickLength(Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_X], Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_Y]) >= StickDeadZone || Right >= StickDeadZone;
     bTouched = bTouched || Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER] >= TriggerPressed || Pad.Now.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] >= TriggerPressed;
@@ -560,15 +550,23 @@ std::optional<std::pair<float, float>> GamepadMoveStick()
     return StickLength(X, Y) >= StickDeadZone ? std::optional(std::pair(X, Y)) : std::nullopt;
 }
 
+float GamepadAimPush()
+{
+    const float Length = StickLength(Pad.Now.axes[GLFW_GAMEPAD_AXIS_RIGHT_X], Pad.Now.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y]);
+    return std::clamp((Length - AimDeadZone) / (1.f - AimDeadZone), 0.f, 1.f);
+}
+
 float GamepadThrottle()
 {
     const float Length = StickLength(Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_X], Pad.Now.axes[GLFW_GAMEPAD_AXIS_LEFT_Y]);
     return std::clamp((Length - StickDeadZone) / (1.f - StickDeadZone), 0.f, 1.f);
 }
 
-std::optional<std::pair<float, float>> GamepadAimFlick()
+std::optional<std::pair<float, float>> GamepadAimStick()
 {
-    return Pad.Flick;
+    const float X = Pad.Now.axes[GLFW_GAMEPAD_AXIS_RIGHT_X];
+    const float Y = Pad.Now.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y];
+    return StickLength(X, Y) >= AimDeadZone ? std::optional(std::pair(X, Y)) : std::nullopt;
 }
 
 FGamepadMenuInput GamepadMenuInput()
