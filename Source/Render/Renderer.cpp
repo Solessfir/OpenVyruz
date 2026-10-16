@@ -12,6 +12,8 @@ namespace
 #include "Sprite.frag.h"
 #include "Blur.vert.h"
 #include "Blur.frag.h"
+#include "Aberration.vert.h"
+#include "Aberration.frag.h"
 
 // ponytail: fixed pool, one set per sprite sheet; grow or go bindless when levels load more sheets than this.
 constexpr uint32_t MaxTextures = 1024;
@@ -29,6 +31,14 @@ struct FBlurPush
     float Extract = 0.f;
     float Tint[4] = {};
 };
+
+// Shares the blur's pipeline layout, so it fills the same push range.
+struct FAberrationPush
+{
+    float MaxOffset[2] = {};
+    float Padding[6] = {};
+};
+static_assert(sizeof(FAberrationPush) == sizeof(FBlurPush));
 
 void Check(const VkResult Result, const char* const What)
 {
@@ -339,10 +349,12 @@ void FRenderer::CreateDevice()
         .pBindings = &BlurBinding,
     };
     Check(vkCreateDescriptorSetLayout(Device, &BlurSetInfo, nullptr, &BlurSetLayout), "vkCreateDescriptorSetLayout");
-    const VkDescriptorPoolSize BlurPoolSize{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, BlurLevelCount };
+    // The chain's levels and the view's full-size copy.
+    constexpr uint32_t BlurTargetCount = BlurLevelCount + 1;
+    const VkDescriptorPoolSize BlurPoolSize{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, BlurTargetCount };
     const VkDescriptorPoolCreateInfo BlurPoolInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets = BlurLevelCount,
+        .maxSets = BlurTargetCount,
         .poolSizeCount = 1,
         .pPoolSizes = &BlurPoolSize,
     };
@@ -547,6 +559,32 @@ void FRenderer::CreatePipeline()
     BlurInfo.pDepthStencilState = nullptr;
     BlurInfo.pDynamicState = &ChainDynamicState;
     Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &BlurInfo, nullptr, &BlurPipeline), "vkCreateGraphicsPipelines");
+    vkDestroyShaderModule(Device, VertexModule, nullptr);
+    vkDestroyShaderModule(Device, FragmentModule, nullptr);
+
+    // The hit flash draws the view's copy back over it, opaque, through the blur's layout.
+    vkDestroyPipeline(Device, AberrationPipeline, nullptr);
+    const VkShaderModuleCreateInfo AberrationVertexInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = sizeof(AberrationVert),
+        .pCode = AberrationVert,
+    };
+    const VkShaderModuleCreateInfo AberrationFragmentInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = sizeof(AberrationFrag),
+        .pCode = AberrationFrag,
+    };
+    Check(vkCreateShaderModule(Device, &AberrationVertexInfo, nullptr, &VertexModule), "vkCreateShaderModule");
+    Check(vkCreateShaderModule(Device, &AberrationFragmentInfo, nullptr, &FragmentModule), "vkCreateShaderModule");
+    const VkPipelineShaderStageCreateInfo AberrationStages[] = {
+        { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = VertexModule, .pName = "main" },
+        { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = FragmentModule, .pName = "main" },
+    };
+    VkGraphicsPipelineCreateInfo AberrationInfo = PipelineInfo;
+    AberrationInfo.pStages = AberrationStages;
+    AberrationInfo.pInputAssemblyState = &TriangleList;
+    AberrationInfo.layout = BlurLayout;
+    Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &AberrationInfo, nullptr, &AberrationPipeline), "vkCreateGraphicsPipelines");
     vkDestroyShaderModule(Device, VertexModule, nullptr);
     vkDestroyShaderModule(Device, FragmentModule, nullptr);
     PipelineFormat = SwapchainFormat;
@@ -1225,6 +1263,12 @@ const FSpriteSheet& FRenderer::WhitePixel()
 
 void FRenderer::DestroyBlurTargets()
 {
+    if (ViewCopy.Image != VK_NULL_HANDLE)
+    {
+        BlurLevels.push_back(ViewCopy);
+        ViewCopy = {};
+    }
+
     for (const FTexture& Level : BlurLevels)
     {
         vkDestroyImageView(Device, Level.View, nullptr);
@@ -1236,14 +1280,14 @@ void FRenderer::DestroyBlurTargets()
     Check(vkResetDescriptorPool(Device, BlurPool, 0), "vkResetDescriptorPool");
 }
 
-void FRenderer::CreateBlurTargets(const VkExtent2D Size)
+void FRenderer::CreateBlurTargets(const VkExtent2D View)
 {
     // The previous frame may still read the old chain.
     vkDeviceWaitIdle(Device);
     DestroyBlurTargets();
-    for (uint32_t Index = 0; Index < BlurLevelCount; ++Index)
+    const auto MakeTarget = [&](const uint32_t Width, const uint32_t Height)
     {
-        FTexture Level{ .Width = std::max(1u, Size.width >> Index), .Height = std::max(1u, Size.height >> Index) };
+        FTexture Level{ .Width = std::max(1u, Width), .Height = std::max(1u, Height) };
         const VkImageCreateInfo ImageInfo{
             .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             .imageType = VK_IMAGE_TYPE_2D,
@@ -1293,7 +1337,33 @@ void FRenderer::CreateBlurTargets(const VkExtent2D Size)
             .pImageInfo = &DescriptorImage,
         };
         vkUpdateDescriptorSets(Device, 1, &Write, 0, nullptr);
-        BlurLevels.push_back(Level);
+        return Level;
+    };
+
+    // The chain starts at half the view.
+    for (uint32_t Index = 1; Index <= BlurLevelCount; ++Index)
+    {
+        BlurLevels.push_back(MakeTarget(View.width >> Index, View.height >> Index));
+    }
+
+    ViewCopy = MakeTarget(View.width, View.height);
+}
+
+FRenderer::FPlacedView FRenderer::PlaceView() const
+{
+    const float Scale = std::min(SwapchainExtent.width / ViewWidth, SwapchainExtent.height / ScreenHeight);
+    return {
+        .Left = std::max(0, int32_t((SwapchainExtent.width - ViewWidth * Scale) * 0.5f)),
+        .Top = std::max(0, int32_t((SwapchainExtent.height - ScreenHeight * Scale) * 0.5f)),
+        .Size = { std::max(1u, uint32_t(ViewWidth * Scale)), std::max(1u, uint32_t(ScreenHeight * Scale)) },
+    };
+}
+
+void FRenderer::EnsureViewTargets(const VkExtent2D View)
+{
+    if (ViewCopy.Width != View.width || ViewCopy.Height != View.height)
+    {
+        CreateBlurTargets(View);
     }
 }
 
@@ -1341,18 +1411,53 @@ void FRenderer::Bloom()
     DrawBlurPass(BlurLevels.front(), true, BloomStrength, BloomPipeline);
 }
 
+void FRenderer::Aberrate(const float Strength)
+{
+    if (!bCanBlur || Strength <= 0.f)
+    {
+        return;
+    }
+
+    // How far red and blue part at the view's edges at full strength, in screen pixels of the original 480 rows.
+    constexpr float MaxSplit = 5.f;
+    SetStencilMode(EStencilMode::Off);
+    const FPlacedView Placed = PlaceView();
+    EnsureViewTargets(Placed.Size);
+    const VkCommandBuffer Cmd = Frames[FrameIndex].CommandBuffer;
+    const VkImage Image = SwapchainImages[ImageIndex];
+    vkCmdEndRendering(Cmd);
+    TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    TransitionImage(Cmd, ViewCopy.Image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    const VkImageCopy Copy{
+        .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .srcOffset = { Placed.Left, Placed.Top, 0 },
+        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .extent = { std::min(Placed.Size.width, SwapchainExtent.width - uint32_t(Placed.Left)), std::min(Placed.Size.height, SwapchainExtent.height - uint32_t(Placed.Top)), 1 },
+    };
+    vkCmdCopyImage(Cmd, Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ViewCopy.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &Copy);
+    TransitionImage(Cmd, ViewCopy.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    TransitionImage(Cmd, Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+        VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+
+    BeginRendering(VK_ATTACHMENT_LOAD_OP_LOAD);
+    const float Split = std::clamp(Strength, 0.f, 1.f) * MaxSplit;
+    const FAberrationPush Push{ .MaxOffset = { Split / ViewWidth, Split / ScreenHeight } };
+    vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, AberrationPipeline);
+    vkCmdBindDescriptorSets(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, BlurLayout, 0, 1, &ViewCopy.DescriptorSet, 0, nullptr);
+    vkCmdPushConstants(Cmd, BlurLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &Push);
+    vkCmdDraw(Cmd, 3, 1, 0, 0);
+}
+
 void FRenderer::RunBlurChain(const bool bGlow)
 {
-    // The view as BeginRendering placed it.
-    const float Scale = std::min(SwapchainExtent.width / ViewWidth, SwapchainExtent.height / ScreenHeight);
-    const int32_t Left = int32_t((SwapchainExtent.width - ViewWidth * Scale) * 0.5f);
-    const int32_t Top = int32_t((SwapchainExtent.height - ScreenHeight * Scale) * 0.5f);
-    const VkExtent2D View{ std::max(1u, uint32_t(ViewWidth * Scale)), std::max(1u, uint32_t(ScreenHeight * Scale)) };
-    const VkExtent2D Half{ std::max(1u, View.width / 2), std::max(1u, View.height / 2) };
-    if (BlurLevels.empty() || BlurLevels.front().Width != Half.width || BlurLevels.front().Height != Half.height)
-    {
-        CreateBlurTargets(Half);
-    }
+    const FPlacedView Placed = PlaceView();
+    EnsureViewTargets(Placed.Size);
+    const int32_t Left = Placed.Left;
+    const int32_t Top = Placed.Top;
+    const VkExtent2D View = Placed.Size;
 
     const VkCommandBuffer Cmd = Frames[FrameIndex].CommandBuffer;
     const VkImage Image = SwapchainImages[ImageIndex];
@@ -1596,6 +1701,7 @@ void FRenderer::Shutdown()
     }
 
     vkDestroyPipeline(Device, BlurPipeline, nullptr);
+    vkDestroyPipeline(Device, AberrationPipeline, nullptr);
     vkDestroyPipeline(Device, BloomPipeline, nullptr);
     vkDestroyPipeline(Device, BlurViewPipeline, nullptr);
     vkDestroyPipelineLayout(Device, BlurLayout, nullptr);

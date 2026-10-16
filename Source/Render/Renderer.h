@@ -90,6 +90,8 @@ public:
     void BlurView(uint32_t Tint);
     // Adds a soft glow around what additive sprites drew this frame and nothing has covered since, as the view's alpha marks it.
     void Bloom();
+    // The port's hit flash: red and blue part from green toward the view's edges, by Strength from 0 to 1.
+    void Aberrate(float Strength);
     // ScoreHighlightRow at 00401410: blends what is drawn in the rectangle onto itself, twice as bright, saturating.
     void DoubleRect(float X, float Y, float Width, float Height);
     // Draws the gamma ramp over the frame and presents it.
@@ -143,7 +145,17 @@ private:
     void UploadTexture(VkImage Image, uint32_t Width, uint32_t Height, std::span<const uint32_t> Rgba, VkImageLayout From);
     void DrawGamma();
     const FSpriteSheet& WhitePixel();
-    void CreateBlurTargets(VkExtent2D Size);
+    // The view as BeginRendering placed it in the window, in swapchain pixels.
+    struct FPlacedView
+    {
+        int32_t Left = 0;
+        int32_t Top = 0;
+        VkExtent2D Size{};
+    };
+    FPlacedView PlaceView() const;
+    // The blur's chain from half the view down and the view's full-size copy, made again when the view's size changes.
+    void CreateBlurTargets(VkExtent2D View);
+    void EnsureViewTargets(VkExtent2D View);
     void DestroyBlurTargets();
     void DrawBlurPass(const FTexture& From, bool bUp, uint32_t Tint, VkPipeline Pipeline, bool bExtract = false);
     // Copies the view down the blur's chain and back up to its first level, then resumes the view for the caller's last pass; a glow takes only the marked part.
@@ -200,6 +212,7 @@ private:
     // The blur's last pass draws into the view, whose rendering carries the stencil.
     VkPipeline BlurViewPipeline = VK_NULL_HANDLE;
     VkPipeline BloomPipeline = VK_NULL_HANDLE;
+    VkPipeline AberrationPipeline = VK_NULL_HANDLE;
 
     // The stencil beside the swapchain image, the size of the window.
     VkFormat StencilFormat = VK_FORMAT_UNDEFINED;
@@ -208,6 +221,7 @@ private:
     VkImageView StencilView = VK_NULL_HANDLE;
     EStencilMode StencilMode = EStencilMode::Off;
     std::vector<FTexture> BlurLevels;
+    FTexture ViewCopy;
 
     // A capture: requested, then copied into a host buffer by EndFrame.
     bool bCanCapture = false;

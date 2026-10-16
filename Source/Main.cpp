@@ -4646,6 +4646,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     std::optional<uint32_t> HeardWeaponSwitches;
     // Session +0x2090: the shield alarm's repeat timer.
     int32_t ShieldAlarmTimer = 0;
+    // The port's hit flash, from 0 to 1, which a hit on the player raises and time fades.
+    float HitFlash = 0.f;
     // EngineApplyDisplayAndCursor (0042f2d0) loads Data\Menu\cursor.gaf's sight (session +0x25b8) for the mouse; EngineRunLevel plays it by the last step and draws it at the mouse after everything else.
     // The original shows it only with the mouse as the device. The port plays with every device at once: moving the mouse hands the steering to the sight, as the original's mouse device steers,
     // and a turn key hands it back to the keys. The sight shows while the mouse steers and fades once the mouse has been still a while.
@@ -5890,6 +5892,15 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         Inventory.Shield = std::max(Inventory.Shield, ShieldBefore);
                     }
 
+                    // Measured before the cheats refill the player, so god mode still shows its hits. A quarter of the shield or more is the full flash.
+                    if (const float Lost = (EnergyBefore - Inventory.Energy) + (ShieldBefore - Inventory.Shield); Lost > 0.f)
+                    {
+                        constexpr float FullFlashShare = 0.25f;
+                        constexpr float MinHitFlash = 0.35f;
+                        const float FullFlashLoss = std::max(1.f, Inventory.ShieldMax * FullFlashShare);
+                        HitFlash = std::max(HitFlash, std::clamp(Lost / FullFlashLoss, MinHitFlash, 1.f));
+                    }
+
                     if (!Demo)
                     {
                         ApplyCheats(Cheats, Inventory);
@@ -6754,6 +6765,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         // The port's bloom glows around the level's lights, under the messages and the panel.
         Renderer.Bloom();
+        if (HitFlash > 0.f)
+        {
+            constexpr float HitFlashMilliseconds = 250.f;
+            Renderer.Aberrate(HitFlash);
+            HitFlash = std::max(0.f, HitFlash - float(DrawStepMilliseconds) / HitFlashMilliseconds);
+        }
 
         // The messages' draw pass comes after the objects and before the panel, with the last step; the frame that opens the inventory or the help skips it.
         if (Panel && !bInventoryPending && !bHelpPending)
