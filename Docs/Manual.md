@@ -43,7 +43,7 @@ You have nine weapon slots. The gatling is armed from the start; the others need
 | Weapon | Damage | What it does | Ammo pack |
 |---|---|---|---|
 | **Gatling** | 2 x 100 | Twin machine guns. Fast and steady, but short range. You start with 1000 rounds. | Gun Pack, 250 rounds |
-| **Grenade launcher** | 2000 | Grenades bounce off walls and go off with a big blast. Great around corners. | Grenade Pack, 10 grenades |
+| **Grenade launcher** | 2000 | Grenades are lobbed a short way, hop along the ground and off walls, and go off with a big blast on hitting anything but terrain, or after three seconds. Great around corners. | Grenade Pack, 10 grenades |
 | **Rocket launcher** | 2 x 500 | Two rockets at once, each with a small blast. | Rocket Pack, 30 rockets |
 | **Flamethrower** | 400 | A stream of fire, 24 bursts a second, but very short range. Melts anything that gets close. | Fire Pack, 250 |
 | **Saw launcher** | 3000 | Spinning blades that bounce around and hit hard. | Saw Pack, 30 blades |
