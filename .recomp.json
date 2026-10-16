@@ -1,0 +1,13 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Vyruz: Destruction of the Untel Empire",
+  "system": "PC",
+  "type": "port",
+  "original": { "revision": "1.31.01", "sha1": "d9b206fd93735e21fdf26e0f61c181900c75d826" },
+  "project": "OpenVyruz",
+  "status": "playable",
+  "targets": ["Windows", "Linux"],
+  "approach": "Functional reimplementation from reverse engineering of Vyruz.exe, C++23 with a Vulkan 1.3 renderer, loading the original vz-data.rsc",
+  "maintainers": [{ "name": "Solessfir", "link": "https://github.com/Solessfir" }],
+  "notes": "The whole single-player campaign with the intro and cutscenes, playable start to finish with the original's rules. The main branch adds wide screens, gamepad support, modern audio and graphics; the classic branch keeps the original rules. Needs the original game data."
+}
