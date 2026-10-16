@@ -43,7 +43,7 @@ Cheats, which the original does not take this way, combine freely and never touc
 
 ## Display
 
-The game runs fullscreen at the desktop resolution with the original 4:3 picture letterboxed; Alt+Enter or F11 switches between fullscreen and a window.
+The game runs fullscreen at the desktop resolution with the original 4:3 picture letterboxed; Alt+Enter or F11 switches between fullscreen and a window. The scaling keeps every original pixel sharp and the same size at any resolution, blending only the screen pixel across each seam, so the picture does not shimmer as it scrolls and turned sprites have smooth edges.
 
 Like the original, the game stands still while its window is minimized or unfocused, and while active it keeps the mouse cursor inside the window.
 
