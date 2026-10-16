@@ -7,7 +7,7 @@ You fly the Vyruz, an armed hovercraft, up through the towers of the Untel Empir
 - **Shield and energy.** Damage comes off your shield first, then your energy. When energy runs out, the Vyruz blows up. You start the game with 5000 of each, both top out at 10000, and whatever you have left carries over to the next level.
 - **Cash.** Destroyed enemies pay a reward, and gold lies around the levels. You spend cash on the map and on saving.
 - **The lift.** Reach it to finish the level. Some lifts sit behind gates that need a key or a code.
-- **Difficulty** changes how tough and alert the enemies are, and how much shield and energy you get. You can change it at any time in Options, even in the middle of a level.
+- **Difficulty** changes how tough and alert the enemies are, and how much shield and energy you get. You choose it in Options; as in the original, it stays fixed during a game.
 
 ## Controls
 

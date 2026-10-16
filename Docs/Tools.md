@@ -18,7 +18,6 @@ Each check exits non-zero on any failure.
   - Each level puts the player in view of an armed cop, which must route to it and fire.
   - Every level's cops run for 30 seconds: at least half of the patrollers with a `.3DP` path must reach their next patrol point, and at least half of the random movers that found open ground must leave their cell.
   - Every level's sensing gates must close with the player away and open for the player, and the player must ride every usable lift to a level that loads.
-  - A difficulty changed during a level must leave every value as a level started on it would.
 - `--verify-intro` decodes every frame of `Intro.avi` beside the archive, checking each picture against its band checksums, and its MP3 sound ([Intro.md](Intro.md)).
 
 ## Development aids
