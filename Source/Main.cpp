@@ -6948,15 +6948,14 @@ int main(const int ArgCount, char** const Args)
 Options take one dash or two and any case: -skipIntro, --skipintro and --SkipIntro are the same.
 
   <game folder>             The folder with vz-data.rsc (or the archive itself), remembered for later runs.
-                            Without it: vz-data.rsc beside the executable, else the remembered folder,
-                            else a folder picker.
+                            Without it: vz-data.rsc beside the executable, else the remembered folder, else a folder picker.
 
 Playing:
-  --level <level>           Start straight in a level, skipping the menu: a campaign number from 1 to 24,
-                            a level id such as 2.3, or a path such as cave\t2c1. A bad value lists them all.
+  --level <level>           Start straight in a level, skipping the menu: a campaign number from 1 to 24, a level id such as 2.3, or a path such as cave\t2c1.
+                            A bad value lists them all.
   --start <x>,<y>           Put the player at that world position as the level starts; skips the menu.
-  --skipIntro               Go straight to the main menu, without the story page and the intro (Extras still
-                            plays the intro).
+  --skipIntro               Go straight to the main menu, without the story page and the intro.
+                            Extras still plays the intro.
   --windowed                Start in a window instead of fullscreen; Alt+Enter or F11 switches either way.
 
 Cheats (combine freely, any case; never applied to the demo):
@@ -6967,16 +6966,16 @@ Cheats (combine freely, any case; never applied to the demo):
 
 Tools (each comes first, runs on its own and exits; anything else on the line is an error):
   --extract <game folder | archive.rsc> [<output folder>]
-                            Write the archives as modern files: sprite sheets, JSON, BMFont, WAV, text and
-                            Tiled maps; the default output is Extracted beside the input.
+                            Write the archives as modern files: sprite sheets, JSON, BMFont, WAV, text and Tiled maps.
+                            The default output is Extracted beside the input.
   --compress <extracted folder> [<output folder>]
-                            Pack an extracted tree, edits included, back into archives the original reads;
-                            the default output is Packed beside the tree.
+                            Pack an extracted tree, edits included, back into archives the original reads.
+                            The default output is Packed beside the tree.
   --verify-extract <game folder>
                             Extract, pack back and check that everything reads the same.
   --verify-gaf, --verify-levels, --verify-game, --verify-intro
-                            Decode every sprite file, load every level, replay the demo against the
-                            original's records, or decode the intro; exit non-zero on any failure.
+                            Decode every sprite file, load every level, replay the demo against the original's records, or decode the intro.
+                            Each exits non-zero on any failure.
   --dump-gaf <archive path> List a sprite file's animations with their frame counts and durations.
   --auto-fire               Hold the trigger down, for testing shots without a keyboard.
 
