@@ -707,38 +707,6 @@ void AnimateActors(std::vector<std::optional<FActorAnimation>>& Actors, const st
     }
 }
 
-// FUN_00420200: whether the terrain hides a point. In its map cell, a layer from the third on must hold a block of depth 2 or more;
-// a block with see-through pixels (the colour key, which sets its bitmap's flag 1) counts only where the first two layers are empty.
-bool IsHiddenByTerrain(const FLevel& Level, const std::vector<bool>& SeeThroughBlocks, const int32_t X, const int32_t Y)
-{
-    constexpr uint32_t FirstCoveringLayer = 2;
-    constexpr int32_t CoveringDepth = 2;
-    if (X < 0 || Y < 0 || uint32_t(X) / BlockWidth >= Level.GridWidth || uint32_t(Y) / BlockHeight >= Level.GridHeight)
-    {
-        return false;
-    }
-
-    const size_t LayerSize = size_t(Level.GridWidth) * Level.GridHeight;
-    const size_t Cell = size_t(uint32_t(Y) / BlockHeight) * Level.GridWidth + uint32_t(X) / BlockWidth;
-    const auto BlockAt = [&](const uint32_t Layer) { return Layer * LayerSize + Cell < Level.Map.size() ? Level.Map[Layer * LayerSize + Cell] : 0u; };
-    bool bOpenBelow = true;
-    for (uint32_t Layer = 0; Layer < std::min(FirstCoveringLayer, Level.LayerCount); ++Layer)
-    {
-        bOpenBelow &= BlockAt(Layer) == 0;
-    }
-
-    for (uint32_t Layer = FirstCoveringLayer; Layer < Level.LayerCount; ++Layer)
-    {
-        const uint32_t Block = BlockAt(Layer);
-        if (Block != 0 && Block <= Level.BlockDepths.size() && Level.BlockDepths[Block - 1] >= CoveringDepth && (!SeeThroughBlocks[Block - 1] || bOpenBelow))
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 // EngineVisitViewObjects at 00433b30 visits from one column left of the view and two rows above it, to three columns and five rows past its size (13 by 20 at 640x480), clamped to the grid.
 FViewCells ViewCellsAround(const int CameraX, const int CameraY, const int ViewWidth, const FLevel& Level)
 {
@@ -4176,15 +4144,6 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     const FSpriteSheet BonusSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Bonus)) : FSpriteSheet{};
     const FSpriteSheet IconSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Icons)) : FSpriteSheet{};
     const FSpriteSheet SurpriseSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Surprise)) : FSpriteSheet{};
-    // v-bonus.gaf's first animation, the arrow that shows where the terrain hides the player (EngineRunLevel at 0043fe86), and the blocks it looks through.
-    const std::optional<Gaf::FAnimationFrame> HiddenArrow = [&]() -> std::optional<Gaf::FAnimationFrame>
-    {
-        constexpr std::string_view BonusGafPath = "common\\data\\extra\\v-bonus.gaf";
-        const auto Bonus = LoadHudGaf(Archive, BonusGafPath);
-        return Bonus && !Bonus->second.empty() && !Bonus->second.front().Frames.empty() ? std::optional(Bonus->second.front().Frames.front()) : std::nullopt;
-    }();
-    std::vector<bool> SeeThroughBlocks(Level->Blocks.size());
-    std::ranges::transform(Level->Blocks, SeeThroughBlocks.begin(), [](const Gaf::FFrame& Block) { return std::ranges::find(Block.Pixels, Block.ColorKey) != Block.Pixels.end(); });
     FMessages Messages;
     constexpr std::array<uint16_t, 4> RadarColors = { 0x7c00, 0x03e0, 0x7fe0, 0x001f };
     std::vector<Gaf::FFrame> RadarPixels;
@@ -6842,38 +6801,6 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 if (Area.Plot)
                 {
                     Icon(SavingIcon, Level->Objects[*Area.Plot].X, Level->Objects[*Area.Plot].Y);
-                }
-            }
-        }
-
-        // EngineRunLevel at 0043fe5b, after the panel and the map: while the living player's sprite centre lies under terrain (FUN_00420200), the arrow marks it,
-        // 32 pixels above its ground position and turned by its direction, over everything else. The original draws it over its map too; the port leaves it out while the map is open.
-        if (Player && HiddenArrow && HiddenArrow->BitmapIndex != 0 && Inventory.Energy > 0.f && !bMapShown)
-        {
-            const auto Body = std::ranges::find_if(Sprites, [&](const FObjectSprite& Sprite) { return Sprite.ObjectIndex == PlayerIndex && !Sprite.bShadow && Sprite.Frame.BitmapIndex != 0; });
-            const std::vector<FSpriteFrame>* const BodyFrames = Body != Sprites.end() ? &Objects->Sheets[Body->SheetIndex].Frames : nullptr;
-            if (BodyFrames && Body->Frame.BitmapIndex <= BodyFrames->size())
-            {
-                const FSpriteFrame& Bitmap = (*BodyFrames)[Body->Frame.BitmapIndex - 1];
-                const int32_t HalfWidth = int32_t(Bitmap.Width / 2);
-                const int32_t HalfHeight = int32_t(Bitmap.Height / 2);
-                const int32_t CentreX = int32_t(Body->X) + Body->Frame.OffsetX + (Body->Frame.bMirrorX ? -Bitmap.TrimX - HalfWidth : Bitmap.TrimX + HalfWidth);
-                const int32_t CentreY = int32_t(Body->Y) + Body->Frame.OffsetY + (Body->Frame.bMirrorY ? -Bitmap.TrimY - HalfHeight : Bitmap.TrimY + HalfHeight);
-                if (IsHiddenByTerrain(*Level, SeeThroughBlocks, CentreX, CentreY))
-                {
-                    constexpr float ArrowRise = 32.f;
-                    constexpr int ArrowTurnBase = 39;
-                    constexpr int DegreesPerDirection = 15;
-                    const FLevelObject& Object = Level->Objects[PlayerIndex];
-                    const float X = std::trunc(Object.X - float(OriginX));
-                    const float Y = std::trunc(Object.Y - float(OriginY)) - ArrowRise;
-                    // The frame's event flag 4 colours it, dark red over its additive white.
-                    constexpr uint32_t DiffuseEventFlag = 4;
-                    constexpr uint32_t ColorMask = 0xffffff;
-                    const Gaf::FAnimationFrame& Frame = *HiddenArrow;
-                    const uint32_t Diffuse = (Frame.EventFlags & DiffuseEventFlag) != 0 ? uint32_t(Frame.EventValue) & ColorMask : ColorMask;
-                    Renderer.DrawSprite(BonusSheet, Frame.BitmapIndex - 1, X + float(Frame.OffsetX), Y + float(Frame.OffsetY), Frame.bMirrorX, Frame.bMirrorY, FrameBlend(Frame), 1.f, 1.f,
-                        UINT32_MAX, Diffuse, 0, 1.f, float((ArrowTurnBase - Player->Direction) * DegreesPerDirection), X, Y);
                 }
             }
         }

@@ -129,7 +129,7 @@ One quirk of the original data: the reverse-commands malus is misspelt, so picki
 
 The panel shows your shield and energy, cash, ammo, speed, the radar, your position, kills, enemies left and the time. Tab cycles through smaller panels if you want more of the view; F2 names every part.
 
-The radar shows enemies in red, keys and codes in yellow and lifts in blue. When a roof or wall hides your ship, a red arrow points it out and a faint cyan outline shows its shape; enemies hidden the same way show a faint red outline.
+The radar shows enemies in red, keys and codes in yellow and lifts in blue. When a roof or wall hides your ship, a faint cyan outline shows its shape; enemies hidden the same way show a faint red outline.
 
 The map (M) shows the whole level with you, the lifts and the saving plots on it. Opening it needs at least 21000 cash, and it keeps costing a little cash while it stays open.
 
