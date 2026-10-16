@@ -8,9 +8,11 @@ The single-player campaign is playable with the intro and menus, and its saves a
 
 ## Quick start
 
+You need the original game's `vz-data.rsc` from your own copy; `Intro.avi` beside it adds the intro.
+
 Prebuilt binaries for Windows and Linux can be downloaded from [Releases](https://github.com/Solessfir/OpenVyruz/releases).
 
-To build it yourself on Windows, with Visual Studio 2026 and the Vulkan SDK:
+To build it yourself on Windows you need Visual Studio 2026; the generator fetches the pinned Vulkan SDK itself. Run these in a Developer PowerShell, or open `Vyruz.slnx` in Visual Studio or Rider once the generator has run:
 
 ```powershell
 git clone --recursive https://github.com/Solessfir/OpenVyruz.git
@@ -28,7 +30,7 @@ cd OpenVyruz
 make config=development Vyruz -j"$(nproc)"
 ```
 
-Run it with the folder that holds your `vz-data.rsc`; it is remembered for later runs:
+Run it with your `vz-data.rsc` or the folder that holds it; it is remembered for later runs, and without one the game asks for the folder. A downloaded build runs the same way from wherever you unpacked it.
 
 ```powershell
 .\Binaries\windows\Development\Vyruz.exe <path to vz-data.rsc>

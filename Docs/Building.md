@@ -16,7 +16,7 @@ Configurations: `Debug`, `Development` (optimized with symbols), `Shipping`.
 Requirements:
 
 - Visual Studio 2026 or its Build Tools, with the "Desktop development with C++" workload
-- Vulkan SDK 1.3 or newer, which provides `slangc`. `VULKAN_SDK` is used when set; otherwise the generator falls back to `%VULKAN_SDK%`
+- Nothing else: on its first run the generator downloads the pinned Vulkan SDK (1.4.363.0, with `slangc`) into `External\VulkanSDK`, checks its hash and unpacks it there without touching the system. An installed SDK named by `VULKAN_SDK` is used instead
 
 ```powershell
 .\GenerateProjectFiles.bat vs2026
