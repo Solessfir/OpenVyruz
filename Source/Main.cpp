@@ -4064,7 +4064,7 @@ void ApplyCheats(const FCheats& Cheats, FPlayerInventory& Inventory)
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a menu ends or restarts the level.
 // A level loaded from a session takes its objects and the player's numbers from Restore; any other becomes the default session, in Session and on disk.
 std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
-    const std::optional<std::pair<float, float>> Start, const bool bAutoFire, const FCheats& Cheats, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
+    const std::optional<std::pair<float, float>> Start, const FCheats& Cheats, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
     FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, FSettings& Settings,
     const std::vector<FDemoRecord>* const Demo, const bool bShowPage)
 {
@@ -5735,7 +5735,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
 
                     constexpr uint32_t FireBit = 0x2;
-                    const bool bLiveFire = Demo ? (DemoInput & FireBit) != 0 : bAutoFire || ActionDown(EAction::Fire);
+                    const bool bLiveFire = Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
                     bFireInput = bLiveFire;
                     const bool bFire = !Inventory.Surprises.bBlockedMotor && !bFinaleStarted && bLiveFire;
                     if (!DeathTimer)
@@ -7062,7 +7062,6 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
                             Decode every sprite file, load every level, replay the demo against the original's records, or decode the intro.
                             Each exits non-zero on any failure.
   --dump-gaf <archive path> List a sprite file's animations with their frame counts and durations.
-  --auto-fire               Hold the trigger down, for testing shots without a keyboard.
 
   -h, --help                Show this list.
 )";
@@ -7152,15 +7151,12 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
     bool bWindowed = false;
     // Development aid: --dump-gaf PATH lists an archive GAF's animations with their frame counts and durations.
     std::optional<std::string> DumpGafPath;
-    // Holds the trigger down, for checking shots and explosions without a keyboard.
-    bool bAutoFire = false;
     FCheats Cheats;
-    const std::array<std::pair<std::string_view, bool*>, 8> Switches = { {
+    const std::array<std::pair<std::string_view, bool*>, 7> Switches = { {
         { "--verify-gaf", &bVerifyGafs },
         { "--verify-levels", &bVerifyLevels },
         { "--verify-game", &bVerifyGame },
         { "--verify-intro", &bVerifyIntro },
-        { "--auto-fire", &bAutoFire },
         { "--skipintro", &bSkipIntro },
         { "--skip-intro", &bSkipIntro },
         { "--windowed", &bWindowed },
@@ -7530,7 +7526,7 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
             GameAudio->CenterPans();
         }
 
-        const std::expected<FLevelEnd, std::string> End = RunLevel(Window, Renderer, Archive, Path, Start, bAutoFire, Cheats, Carried, DebugLevels, Panel ? &*Panel : nullptr,
+        const std::expected<FLevelEnd, std::string> End = RunLevel(Window, Renderer, Archive, Path, Start, Cheats, Carried, DebugLevels, Panel ? &*Panel : nullptr,
             MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Settings, Demo ? &*Demo : nullptr, bNewGame || Carried.has_value());
         bNewGame = false;
         Restore.reset();
