@@ -10,7 +10,7 @@ The single-player campaign is playable with the intro and menus, and its saves a
 
 Prebuilt binaries for Windows and Linux can be downloaded from [Releases](https://github.com/Solessfir/OpenVyruz/releases).
 
-To build it yourself on Windows, with Visual Studio 2026 and the Vulkan SDK:
+To build it yourself on Windows, with Visual Studio 2026 (the generator fetches the pinned Vulkan SDK itself):
 
 ```powershell
 git clone --recursive https://github.com/Solessfir/OpenVyruz.git

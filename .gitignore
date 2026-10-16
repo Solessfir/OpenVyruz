@@ -10,3 +10,4 @@ External/Premake/
 Makefile
 *.make
 AGENTS.local.md
+External/VulkanSDK/
