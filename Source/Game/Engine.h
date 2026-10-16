@@ -663,6 +663,9 @@ struct FWeaponClass
     bool bAlternated = false;
     int StartDistance = 0;
     int FireAltitude = 0;
+    // Smoke-fx (block +0x14), the puff WeaponFire (00443bd0) leaves at the muzzle with every shot, whose animation also carries the launch's whoosh, and Smoke-altitude (+0x28) above the shooter's.
+    std::string SmokeEffect;
+    int SmokeAltitude = 0;
     // Radians; LoadObjectClassLibrary converts the degrees in the file.
     float InitialSlope = 0.f;
     float SlopeStep = 0.f;

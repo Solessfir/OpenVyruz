@@ -29,6 +29,7 @@ While fire is held, `ReadPlayerInput` calls `WeaponRaiseSlope` (`0042c210`): the
 - The muzzle sits `Start-distance` out along the facing in world space (table `0050d440`). Without one it is `RandomNext() % trunc(min(width, height) * 0.4 * 10)` tenths out, from the shooter's sprite bounds.
 - The shot takes the shooter's facing, its ammo class `Thrust.Initial` as speed, and `Fire-altitude` (or the shooter's altitude) as altitude. Its velocity is `speed * facing` plus the shooter's velocity.
 - A weapon with a negative `initial-slope` gives the shot the current slope: each step the shot's altitude changes by `sin(slope) * altitude`, and it bursts on the ground once the altitude drops below 1. Holding the trigger therefore lengthens the range.
+- With each shot the block's `Smoke-fx` (block `+0x14`) appears at the muzzle, `Smoke-altitude` (`+0x28`) plus 2 above the shooter's altitude: `Gun-Smoke`, or the `Light-WOOSH`, `Heavy-WOOSH` and `Missile-WOOSH` puffs of grenades and saws, rockets and missiles, whose animations play the launch's whoosh (`FxSound3`, `FxSound2`, `FxSound6`). The grenade launcher has no fire sound of its own, so that whoosh is all it makes.
 - Each shot uses one round; the volley stops when the stock runs out.
 
 ## Shots in flight
