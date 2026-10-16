@@ -121,6 +121,8 @@ public:
     std::vector<FHudSprite> DrawLine(size_t Font, std::string_view Text, int32_t X, int32_t Y, const Font::FColor& Color) const;
     // How far a line reaches from its cursor, to the right edge of its last bitmap.
     int32_t TextWidth(size_t Font, std::string_view Text) const;
+    // The font's baseline depth below a line's top (font +0x28); zero for a font it lacks.
+    int32_t FontBaseline(size_t Font) const { return Font >= 1 && Font <= Fonts.size() ? Fonts[Font - 1].Baseline : 0; }
 
     const std::vector<Gaf::FFrame>& GetBitmaps(EHudSheet Sheet) const;
     // The Russian data's v-menu.gaf draws Windows-1251 Cyrillic; the English data's fonts have no glyphs there, so its Russian texts would print blank.

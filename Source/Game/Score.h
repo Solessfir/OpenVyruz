@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -31,6 +32,15 @@ bool WriteScores(const std::filesystem::path& Path, const FScoreTable& Table);
 size_t InsertScore(FScoreTable& Table, const FScoreRecord& Record);
 // ScoreDrawRows at 00401480: the headers and the twenty rows in v-menu.gaf font 4, the given 1-based rank brightened (0 for none).
 std::vector<FHudSprite> DrawScores(const FMenuArt& Art, const FScoreTable& Table, size_t Highlight);
+// ScoreHighlightRow at 00401410: the strip the brightened row takes, across the table from its first column to its last edge, from the font's baseline less 2 above the row to 4 below it.
+struct FScoreStrip
+{
+    int32_t Left = 0;
+    int32_t Top = 0;
+    int32_t Right = 0;
+    int32_t Bottom = 0;
+};
+std::optional<FScoreStrip> ScoreHighlightStrip(const FMenuArt& Art, size_t Highlight);
 
 // The --verify-game check: records rank by tower, level, kills, money, hit share and shots, ties to the newer, and vz.sco reads back.
 bool VerifyScores();

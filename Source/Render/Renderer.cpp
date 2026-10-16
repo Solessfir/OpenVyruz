@@ -482,12 +482,14 @@ void FRenderer::CreatePipeline()
         const bool bAdditive = Index == static_cast<size_t>(ESpriteBlend::Additive);
         const bool bAlpha = Index == static_cast<size_t>(ESpriteBlend::Alpha);
         const bool bScreen = Index == static_cast<size_t>(ESpriteBlend::Screen);
+        const bool bDouble = Index == static_cast<size_t>(ESpriteBlend::Double);
         BlendAttachment.blendEnable = Index != static_cast<size_t>(ESpriteBlend::Opaque);
         BlendAttachment.srcColorBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE
                                               : bAlpha  ? VK_BLEND_FACTOR_SRC_ALPHA
                                               : bScreen ? VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR
+                                              : bDouble ? VK_BLEND_FACTOR_DST_COLOR
                                                         : VK_BLEND_FACTOR_ZERO;
-        BlendAttachment.dstColorBlendFactor = bAdditive || bScreen ? VK_BLEND_FACTOR_ONE
+        BlendAttachment.dstColorBlendFactor = bAdditive || bScreen || bDouble ? VK_BLEND_FACTOR_ONE
                                               : bAlpha             ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
                                                                    : VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
         BlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
@@ -1189,6 +1191,11 @@ void FRenderer::DrawGamma()
     {
         DrawSprite(WhitePixel(), 0, 0.f, 0.f, false, false, ESpriteBlend::InverseSourceColor, ViewWidth, ScreenHeight, UINT32_MAX, Darken);
     }
+}
+
+void FRenderer::DoubleRect(const float X, const float Y, const float Width, const float Height)
+{
+    DrawSprite(WhitePixel(), 0, X, Y, false, false, ESpriteBlend::Double, Width, Height);
 }
 
 const FSpriteSheet& FRenderer::WhitePixel()

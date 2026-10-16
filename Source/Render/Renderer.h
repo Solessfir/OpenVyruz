@@ -46,6 +46,8 @@ enum class ESpriteBlend : uint8_t
     Alpha,
     // Lifts the destination toward white by the source: destination + source * (1 - destination), for the gamma offsets.
     Screen,
+    // Adds the destination to itself by the source: destination + destination * source, as ScoreHighlightRow blends a row onto itself.
+    Double,
     Count,
 };
 
@@ -86,6 +88,8 @@ public:
         uint32_t Diffuse = 0xffffff, uint32_t Specular = 0, float Alpha = 1.f, float RotationDegrees = 0.f, float PivotX = 0.f, float PivotY = 0.f);
     // Blurs what this frame has drawn so far and multiplies it by Tint (0xRRGGBB), for an overlay over the game; without the device support it only darkens.
     void BlurView(uint32_t Tint);
+    // ScoreHighlightRow at 00401410: blends what is drawn in the rectangle onto itself, twice as bright, saturating.
+    void DoubleRect(float X, float Y, float Width, float Height);
     // Draws the gamma ramp over the frame and presents it.
     void EndFrame();
     // Each frame starts Off. Without a stencil format on the device the mode stays Off and CanOutline is false.

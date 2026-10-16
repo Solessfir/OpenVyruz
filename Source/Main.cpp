@@ -2223,6 +2223,7 @@ void ShowScores(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive&
     const FSpriteSheet PictureSheet = Picture ? Renderer.CreateSpriteSheet(Picture->Bitmaps) : FSpriteSheet{};
     const FSpriteSheet FontSheet = Renderer.CreateSpriteSheet(Art.GetBitmaps(EHudSheet::VMenu));
     const std::vector<FHudSprite> Sprites = DrawScores(Art, Table, Rank);
+    const std::optional<FScoreStrip> Strip = ScoreHighlightStrip(Art, Rank);
     FInputPress Input(Window);
     while (!glfwWindowShouldClose(Window) && !Input.Poll())
     {
@@ -2238,6 +2239,11 @@ void ShowScores(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive&
             for (const FHudSprite& Sprite : Sprites)
             {
                 DrawHudSprite(Renderer, FontSheet, Sprite);
+            }
+
+            if (Strip)
+            {
+                Renderer.DoubleRect(float(Strip->Left), float(Strip->Top), float(Strip->Right - Strip->Left), float(Strip->Bottom - Strip->Top));
             }
 
             Renderer.EndFrame();

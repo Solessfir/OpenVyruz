@@ -244,7 +244,6 @@ std::vector<FHudSprite> DrawScores(const FMenuArt& Art, const FScoreTable& Table
             .Diffuse = BlendColor(FirstRowDiffuse, Weight, LastRowDiffuse, FullWeight - Weight),
             .Specular = BlendColor(FirstRowSpecular, Weight, LastRowSpecular, FullWeight - Weight),
         };
-        const size_t First = Out.size();
         for (size_t Column = 0; Column < Columns.size(); ++Column)
         {
             const FScoreColumn& Source = Columns[Column];
@@ -255,20 +254,22 @@ std::vector<FHudSprite> DrawScores(const FMenuArt& Art, const FScoreTable& Table
                 Cell(Column, Y, Text, Color);
             }
         }
-
-        // ScoreHighlightRow at 00401410 brightens the new record's row in place. ponytail: the port prints the row's glyphs a second time, additively.
-        if (Row == Highlight)
-        {
-            for (size_t Index = First, End = Out.size(); Index < End; ++Index)
-            {
-                FHudSprite Again = Out[Index];
-                Again.Frame.DrawFlags = 7;
-                Out.push_back(Again);
-            }
-        }
     }
 
     return Out;
+}
+
+std::optional<FScoreStrip> ScoreHighlightStrip(const FMenuArt& Art, const size_t Highlight)
+{
+    if (Highlight == 0 || Highlight > ScoreRecordCount)
+    {
+        return std::nullopt;
+    }
+
+    constexpr int32_t TopInset = 2;
+    constexpr int32_t BottomReach = 4;
+    const int32_t Y = FirstRowY + int32_t(Highlight - 1) * RowStep;
+    return FScoreStrip{ .Left = Columns.front().X, .Top = Y - Art.FontBaseline(ScoreFont) + TopInset, .Right = Columns.back().X, .Bottom = Y + BottomReach };
 }
 
 bool VerifyScores()
