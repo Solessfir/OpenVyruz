@@ -61,6 +61,8 @@ struct FSpritePush
     float Specular[4] = {};
     // cos, sin, pivot x, pivot y.
     float Rotation[4] = { 1.f, 0.f, 0.f, 0.f };
+    // Non-zero softens a darkening shadow's edge; the rest pads the push range to whole vectors.
+    float Soft[4] = {};
 };
 
 // Unpacks a D3DCOLOR's red, green and blue bytes; the fourth channel carries the sprite's alpha.
@@ -1000,6 +1002,29 @@ FSpriteSheet FRenderer::CreateSpriteSheet(const std::vector<Gaf::FFrame>& Frames
     return Sheet;
 }
 
+FSpriteSheet FRenderer::CreateGradientSheet(const std::function<float(float)>& Brightness)
+{
+    constexpr uint32_t Size = 256;
+    constexpr float Half = float(Size) * 0.5f;
+    constexpr float ChannelMax = 255.f;
+    constexpr uint32_t Opaque = 0xFFu << 24;
+    std::vector<uint32_t> Rgba(size_t{ Size } * Size);
+    for (uint32_t Y = 0; Y < Size; ++Y)
+    {
+        for (uint32_t X = 0; X < Size; ++X)
+        {
+            const float Distance = std::hypot((float(X) + 0.5f - Half) / Half, (float(Y) + 0.5f - Half) / Half);
+            const uint32_t Level = uint32_t(std::lround(std::clamp(Brightness(Distance), 0.f, 1.f) * ChannelMax));
+            Rgba[size_t{ Y } * Size + X] = Level | Level << 8 | Level << 16 | Opaque;
+        }
+    }
+
+    FSpriteSheet Sheet;
+    Sheet.Texture = CreateTexture(Size, Size, Rgba);
+    Sheet.Frames.push_back({ .U0 = 0.f, .V0 = 0.f, .U1 = 1.f, .V1 = 1.f, .Width = Size, .Height = Size });
+    return Sheet;
+}
+
 FSpriteSheet FRenderer::CreateVideoSheet(const uint32_t Width, const uint32_t Height)
 {
     FSpriteSheet Sheet;
@@ -1133,7 +1158,7 @@ void FRenderer::BeginRendering(const VkAttachmentLoadOp LoadOp)
 
 void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInSheet, const float CellX, const float CellY, const bool bMirrorX, const bool bMirrorY,
     const ESpriteBlend Blend, const float ScaleX, const float ScaleY, const uint32_t VisibleColumns, const uint32_t Diffuse, const uint32_t Specular,
-    const float Alpha, const float RotationDegrees, const float CellPivotX, const float CellPivotY)
+    const float Alpha, const float RotationDegrees, const float CellPivotX, const float CellPivotY, const bool bSoftShadow)
 {
     const float X = CellX + ShiftX;
     const float Y = CellY + ShiftY;
@@ -1173,6 +1198,7 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
     };
     UnpackColor(Diffuse, Push.Diffuse, Alpha);
     UnpackColor(Specular, Push.Specular);
+    Push.Soft[0] = bSoftShadow ? 1.f : 0.f;
     if (RotationDegrees != 0.f)
     {
         constexpr double RadiansPerDegree = 3.14159265358979323846 / 180.;

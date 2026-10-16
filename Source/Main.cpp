@@ -4177,6 +4177,17 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     const FSpriteSheet BonusSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Bonus)) : FSpriteSheet{};
     const FSpriteSheet IconSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Icons)) : FSpriteSheet{};
     const FSpriteSheet SurpriseSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Surprise)) : FSpriteSheet{};
+    // The port's explosion light, bright in the middle and gone at its edge, and its low-shield glow, which rises toward the view's corners.
+    const FSpriteSheet LightSheet = Renderer.CreateGradientSheet([](const float Distance) { return std::max(0.f, 1.f - Distance) * std::max(0.f, 1.f - Distance); });
+    const FSpriteSheet EdgeSheet = Renderer.CreateGradientSheet(
+        [](const float Distance)
+        {
+            constexpr float GlowStart = 0.75f;
+            constexpr float GlowFull = 1.4f;
+            const float Rise = std::clamp((Distance - GlowStart) / (GlowFull - GlowStart), 0.f, 1.f);
+            return Rise * Rise;
+        });
+    const auto GreyLevel = [](const float Level) { return uint32_t(std::clamp(Level, 0.f, 1.f) * 255.f) * 0x010101u; };
     FMessages Messages;
     constexpr std::array<uint16_t, 4> RadarColors = { 0x7c00, 0x03e0, 0x7fe0, 0x001f };
     std::vector<Gaf::FFrame> RadarPixels;
@@ -4648,6 +4659,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     int32_t ShieldAlarmTimer = 0;
     // The port's hit flash, from 0 to 1, which a hit on the player raises and time fades.
     float HitFlash = 0.f;
+    // The port's shake from a big blast near the player, in pixels, which time fades; it moves only the drawn view.
+    float BlastShake = 0.f;
     // EngineApplyDisplayAndCursor (0042f2d0) loads Data\Menu\cursor.gaf's sight (session +0x25b8) for the mouse; EngineRunLevel plays it by the last step and draws it at the mouse after everything else.
     // The original shows it only with the mouse as the device. The port plays with every device at once: moving the mouse hands the steering to the sight, as the original's mouse device steers,
     // and a turn key hands it back to the keys. The sight shows while the mouse steers and fades once the mouse has been still a while.
@@ -6242,7 +6255,38 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         const int OriginX = int(std::floor(CameraX));
         const int OriginY = int(std::floor(CameraY));
-        Renderer.SetViewShift(float(OriginX - CameraX), float(OriginY - CameraY));
+        // A big blast is an explosion animation (explosion, explosion00, explosion01), as opposed to the impacts, sparks and smoke.
+        const auto IsBigBlast = [&](const FEffect& Effect) { return Effect.Frame != 0 && Combat->EffectClasses[Effect.ClassIndex].Animation.Name.starts_with("explosion"); };
+        // The port's blast shake: a new big blast within ShakeRange of the player shakes the view, the closer the harder.
+        if (Combat && Player)
+        {
+            constexpr float MaxShake = 3.f;
+            constexpr float ShakeRange = 400.f;
+            for (const FEffect& Effect : Combat->Effects)
+            {
+                if (Effect.Frame == 1 && IsBigBlast(Effect))
+                {
+                    const float Distance = std::hypot(Effect.Position.X - Player->Position.X, Effect.Position.Y - Player->Position.Y);
+                    BlastShake = std::max(BlastShake, MaxShake * std::max(0.f, 1.f - Distance / ShakeRange));
+                }
+            }
+        }
+
+        float ShakeX = 0.f;
+        float ShakeY = 0.f;
+        if (BlastShake > 0.f)
+        {
+            constexpr float ShakeMilliseconds = 180.f;
+            constexpr float ShakePeriodMilliseconds = 45.f;
+            constexpr float ShakeFullDrop = 3.f;
+            constexpr float TwoPi = 6.2831853f;
+            const float Phase = float(ClockMilliseconds()) / ShakePeriodMilliseconds * TwoPi;
+            ShakeX = BlastShake * std::sin(Phase);
+            ShakeY = BlastShake * std::cos(Phase * 1.3f) * 0.5f;
+            BlastShake = std::max(0.f, BlastShake - ShakeFullDrop * float(DrawStepMilliseconds) / ShakeMilliseconds);
+        }
+
+        Renderer.SetViewShift(float(OriginX - CameraX) + ShakeX, float(OriginY - CameraY) + ShakeY);
         const uint32_t FirstX = uint32_t(OriginX) / BlockWidth;
         const uint32_t FirstY = uint32_t(OriginY) / BlockHeight;
         const uint32_t EndX = std::min(Level->GridWidth, (uint32_t(OriginX) + uint32_t(GameViewWidth) - 1) / BlockWidth + 1);
@@ -6650,7 +6694,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
             Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, X + OffsetX, Y + OffsetY,
                 Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer || bFadingObject || Sprite.Alpha < 1.f ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, Diffuse,
-                Sprite.Specular, bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : Sprite.Alpha, Sprite.Rotation, X, Y);
+                Sprite.Specular, bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : Sprite.Alpha, Sprite.Rotation, X, Y,
+                Sprite.bShadow && Sprite.Blend == ESpriteBlend::InverseSourceColor);
             if (bOutlined)
             {
                 Renderer.SetStencilMode(EStencilMode::Off);
@@ -6707,6 +6752,29 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         constexpr int64_t FinalThreshold = std::numeric_limits<int64_t>::max();
         FlushSprites(FinalThreshold, InGroundDepthLayer);
+        // The port's blast light: a warm glow on the ground under each big blast, fading with its animation; walls and bodies drawn after it stay unlit.
+        if (Combat)
+        {
+            constexpr float LightRadius = 110.f;
+            constexpr float GroundFlatten = 0.6f;
+            constexpr float LightPeak = 0.55f;
+            constexpr uint32_t LightColor = 0xffc080;
+            const float SheetSize = float(LightSheet.Frames.front().Width);
+            for (const FEffect& Effect : Combat->Effects)
+            {
+                const FEffectClass& Class = Combat->EffectClasses[Effect.ClassIndex];
+                if (!IsBigBlast(Effect) || Class.Animation.Frames.empty())
+                {
+                    continue;
+                }
+
+                const float Left = 1.f - float(Effect.Frame - 1) / float(Class.Animation.Frames.size());
+                const float Radius = LightRadius * (Class.Stretch > 0.f ? Class.Stretch : 1.f);
+                Renderer.DrawSprite(LightSheet, 0, Effect.Position.X - float(OriginX) - Radius, Effect.Position.Y - float(OriginY) - Radius * GroundFlatten, false, false,
+                    ESpriteBlend::Screen, 2.f * Radius / SheetSize, 2.f * Radius * GroundFlatten / SheetSize, UINT32_MAX, ModulateColor(LightColor, GreyLevel(Left * Left * LightPeak)));
+            }
+        }
+
         // LevelCompositeSprites at 00420070 interleaves five terrain depths with shadows and bodies.
         for (int64_t Row = FirstY; Row < int64_t(EndY) + MaxTerrainDepth; ++Row)
         {
@@ -6780,6 +6848,24 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         Renderer.SetViewShift(0.f, 0.f);
+        // The port's low-shield warning: a red glow pulses at the view's edges while the shield is nearly gone.
+        if (Player && !DeathTimer && Inventory.Energy > 0.f && Inventory.ShieldMax > 0.f)
+        {
+            constexpr float LowShieldRatio = 0.2f;
+            constexpr uint32_t PulseMilliseconds = 900;
+            constexpr float EdgeLow = 0.15f;
+            constexpr float EdgeHigh = 0.45f;
+            constexpr uint32_t EdgeColor = 0xff2010;
+            constexpr float TwoPi = 6.2831853f;
+            if (Inventory.Shield / Inventory.ShieldMax <= LowShieldRatio)
+            {
+                const float Pulse = 0.5f - 0.5f * std::cos(float(ClockMilliseconds() % PulseMilliseconds) / float(PulseMilliseconds) * TwoPi);
+                const float SheetSize = float(EdgeSheet.Frames.front().Width);
+                Renderer.DrawSprite(EdgeSheet, 0, 0.f, 0.f, false, false, ESpriteBlend::Screen, GameViewWidth / SheetSize, ScreenHeight / SheetSize, UINT32_MAX,
+                    ModulateColor(EdgeColor, GreyLevel(EdgeLow + (EdgeHigh - EdgeLow) * Pulse)));
+            }
+        }
+
         // The messages' draw pass comes after the objects and before the panel, with the last step; the frame that opens the inventory or the help skips it.
         if (Panel && !bInventoryPending && !bHelpPending)
         {

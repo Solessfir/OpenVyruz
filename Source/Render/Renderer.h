@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -72,6 +73,8 @@ public:
     FSpriteSheet CreateSpriteSheet(const std::vector<Gaf::FFrame>& Frames);
     // Frees every sprite sheet, as a level change does; earlier sheets must not be drawn again.
     void ReleaseSpriteSheets();
+    // A 256x256 grey frame, Brightness (0 to 1) of the distance from its middle, 1 at the edge's middle; for the port's lights and screen edges.
+    FSpriteSheet CreateGradientSheet(const std::function<float(float)>& Brightness);
     // A sheet of one Width by Height frame whose pixels UpdateVideoSheet replaces, for video.
     FSpriteSheet CreateVideoSheet(uint32_t Width, uint32_t Height);
     // Rgba is R, G, B and A bytes for each of the sheet's pixels.
@@ -87,7 +90,7 @@ public:
     void SetViewShift(float X, float Y);
     void DrawSprite(const FSpriteSheet& Sheet, size_t FrameIndex, float X, float Y, bool bMirrorX = false, bool bMirrorY = false,
         ESpriteBlend Blend = ESpriteBlend::Opaque, float ScaleX = 1.f, float ScaleY = 1.f, uint32_t VisibleColumns = UINT32_MAX,
-        uint32_t Diffuse = 0xffffff, uint32_t Specular = 0, float Alpha = 1.f, float RotationDegrees = 0.f, float PivotX = 0.f, float PivotY = 0.f);
+        uint32_t Diffuse = 0xffffff, uint32_t Specular = 0, float Alpha = 1.f, float RotationDegrees = 0.f, float PivotX = 0.f, float PivotY = 0.f, bool bSoftShadow = false);
     // Blurs what this frame has drawn so far and multiplies it by Tint (0xRRGGBB), for an overlay over the game; without the device support it only darkens.
     void BlurView(uint32_t Tint);
     // Adds a soft glow around what additive sprites drew this frame and nothing has covered since, as the view's alpha marks it.
