@@ -62,6 +62,8 @@ enum class EStencilMode : uint8_t
     ClearEntity,
     // Draws a sprite's subtle outline, its edge and a faint fill in the diffuse colour, only where the terrain covers it.
     Outline,
+    // Draws a sprite as usual, only where no terrain covers it: an outlined entity's own pixels left unmarked.
+    Uncovered,
 };
 
 class FRenderer

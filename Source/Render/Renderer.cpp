@@ -673,11 +673,12 @@ void FRenderer::ApplyStencilMode()
     const VkCommandBuffer Cmd = Frames[FrameIndex].CommandBuffer;
     constexpr uint32_t Marked = 1;
     constexpr uint32_t Unmarked = 0;
-    const bool bOutline = StencilMode == EStencilMode::Outline;
+    const bool bTestOnly = StencilMode == EStencilMode::Outline || StencilMode == EStencilMode::Uncovered;
     vkCmdSetStencilTestEnable(Cmd, StencilMode != EStencilMode::Off);
-    vkCmdSetStencilOp(Cmd, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, bOutline ? VK_STENCIL_OP_KEEP : VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP,
-        bOutline ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_ALWAYS);
-    vkCmdSetStencilReference(Cmd, VK_STENCIL_FACE_FRONT_AND_BACK, StencilMode == EStencilMode::ClearEntity ? Unmarked : Marked);
+    vkCmdSetStencilOp(Cmd, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, bTestOnly ? VK_STENCIL_OP_KEEP : VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP,
+        bTestOnly ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_ALWAYS);
+    vkCmdSetStencilReference(Cmd, VK_STENCIL_FACE_FRONT_AND_BACK,
+        StencilMode == EStencilMode::ClearEntity || StencilMode == EStencilMode::Uncovered ? Unmarked : Marked);
 }
 
 bool FRenderer::CreateSwapchain()
@@ -1059,6 +1060,15 @@ bool FRenderer::BeginFrame(const float Width)
 {
     ViewWidth = Width;
     ShiftX = ShiftY = 0.f;
+    // Wayland never reports a resize as out of date; the compositor would scale the stale images instead.
+    int FramebufferWidth = 0;
+    int FramebufferHeight = 0;
+    glfwGetFramebufferSize(Window, &FramebufferWidth, &FramebufferHeight);
+    if (uint32_t(FramebufferWidth) != SwapchainExtent.width || uint32_t(FramebufferHeight) != SwapchainExtent.height)
+    {
+        bSwapchainValid = false;
+    }
+
     if (!bSwapchainValid)
     {
         vkDeviceWaitIdle(Device);

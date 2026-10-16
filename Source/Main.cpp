@@ -23,6 +23,7 @@
 #include "Tools/Extract.h"
 
 #include <GLFW/glfw3.h>
+#include <GamepadMappings.h>
 
 #include <algorithm>
 #include <array>
@@ -42,6 +43,7 @@
 #include <ranges>
 #include <span>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1280,8 +1282,14 @@ void PollEvents(GLFWwindow* const Window)
     StepFullscreenKey(Window);
     StepMouseWheel();
     StepGamepad(ClockMilliseconds());
+    // A Wayland window is mapped, and can take the focus, only after its first presented frame, so it is never inactive before its first focus.
+    static bool bFocusedOnce = false;
+    bFocusedOnce = bFocusedOnce || glfwGetWindowAttrib(Window, GLFW_FOCUSED) != 0;
     const auto IsInactive = [Window]
-    { return !glfwWindowShouldClose(Window) && (glfwGetWindowAttrib(Window, GLFW_ICONIFIED) != 0 || glfwGetWindowAttrib(Window, GLFW_FOCUSED) == 0); };
+    {
+        return !glfwWindowShouldClose(Window)
+            && (glfwGetWindowAttrib(Window, GLFW_ICONIFIED) != 0 || (bFocusedOnce && glfwGetWindowAttrib(Window, GLFW_FOCUSED) == 0));
+    };
     if (!IsInactive())
     {
         if (bCursorToCapture)
@@ -1591,10 +1599,14 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
         FMenuArt::FocusStartItem(Menu, State);
         SetScreenCursor(Window, State.CursorX, State.CursorY);
     }
+    else
+    {
+        std::tie(State.CursorX, State.CursorY) = ScreenCursor(Window);
+    }
 
-    const std::pair<int32_t, int32_t> Pointer = ScreenCursor(Window);
-    State.CursorX = Pointer.first;
-    State.CursorY = Pointer.second;
+    // Wayland cannot move the pointer, so the menu's cursor follows the pointer only when the pointer itself moves.
+    std::pair<int32_t, int32_t> Pointer = ScreenCursor(Window);
+    std::pair<int32_t, int32_t> Mouse(State.CursorX, State.CursorY);
     // PgPoll reports presses, so a key held from before the menu does nothing.
     // Escape and Backspace choose the default item, Space and Return the selected one, and the left button the one under the cursor.
     static constexpr std::array<int, 7> Keys = { GLFW_KEY_ESCAPE, GLFW_KEY_BACKSPACE, GLFW_KEY_SPACE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_UP, GLFW_KEY_DOWN };
@@ -1615,7 +1627,6 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
     };
 
     auto Previous = ReadDown();
-    std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window);
     FMenuInput Pending{ .MouseX = Mouse.first, .MouseY = Mouse.second };
     const uint32_t FramePeriod = DisplayFramePeriod();
     FFrameClock Clock(FramePeriod);
@@ -1637,13 +1648,15 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
         Pending.bClick = Pending.bClick || Pressed(MouseButton);
         Previous = Down;
         const std::pair<int32_t, int32_t> Now = ScreenCursor(Window);
-        Pending.bMouseMoved = Pending.bMouseMoved || Now != Mouse;
-        if (Now != Mouse)
+        const bool bPointerMoved = Now != Pointer;
+        Pointer = Now;
+        Pending.bMouseMoved = Pending.bMouseMoved || bPointerMoved;
+        if (bPointerMoved)
         {
+            Mouse = Now;
             NoteMouseUsed();
         }
 
-        Mouse = Now;
         Pending.MouseX = Mouse.first;
         Pending.MouseY = Mouse.second;
         // MenuStep's draw pass counts the idle time down by the frame and starts it again on any input.
@@ -1676,6 +1689,7 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
             {
                 SetScreenCursor(Window, Jump->first, Jump->second);
                 Mouse = *Jump;
+                Pointer = ScreenCursor(Window);
             }
 
             Pending = { .MouseX = Mouse.first, .MouseY = Mouse.second };
@@ -4702,9 +4716,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     bool bPreviousWeaponDown = false;
     // The pad steers once touched, until the mouse moves; while it fires, its aim holds one target.
     bool bPadSteers = false;
-    bool bPadFiring = false;
-    bool bPadFreeAim = false;
-    std::optional<size_t> AimTarget;
+    std::optional<size_t> AssistTarget;
+    // The aim assist pulls the aim onto the hunter in view and in clear sight closest to it within about 35 degrees,
+    // and holds it there while the aim stays within about 50 degrees of it.
+    constexpr float AssistCos = 0.82f;
+    constexpr float AssistKeepCos = 0.64f;
     // Object +0x170, which 3do::CreateObject starts at 50; ObjectDraw counts it up to 49 for a visible object and draws it opaque from there.
     constexpr int FullFade = 49;
     int PlayerFade = FullFade + 1;
@@ -5551,10 +5567,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         bTurnRight = Turn == EPlayerTurn::Right && !bSideRight;
                     }
 
-                    // The pad, a deliberate addition to the original's controls. Its left stick heads the ship that way as the absolute direction does.
-                    // While it fires the ship turns toward the nearest hunter in view and in clear sight, a right stick flick switches to the one that way,
-                    // and the left stick still moves by screen direction, split into thrust and strafe along the ship.
-                    // A movement key or the mouse hands the steering back.
+                    // The pad, a deliberate addition to the original's controls, steers as a twin-stick shooter: the left stick moves by screen direction and the right stick aims.
+                    // Without the aim the left stick heads the ship that way as the absolute direction does; with it the ship turns to the aim and the left stick splits into thrust and strafe along the ship.
+                    // Firing changes nothing in the steering. A movement key or the mouse hands the steering back.
                     const bool bKeysSteer = ActionDown(EAction::Forward) || ActionDown(EAction::Backward) || ActionDown(EAction::Left) || ActionDown(EAction::Right) || bSideLeft || bSideRight;
                     if (TakeGamepadActivity() && !Demo)
                     {
@@ -5567,93 +5582,100 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
 
                     bPadSteers = bPadSteers && !bMouseSteers && !Demo;
-                    bPadFiring = bPadSteers && IsGamepadActionDown(EAction::Fire);
-                    bPadFreeAim = false;
-                    if (!bPadFiring)
-                    {
-                        AimTarget.reset();
-                    }
-
+                    float PadTurnRate = 1.f;
                     if (bPadSteers)
                     {
                         const std::optional<std::pair<float, float>> Stick = GamepadMoveStick();
-                        const auto CanAim = [&](const FObjectBody& Body)
+                        const FCollisionPoint Way = Stick ? FCollisionPoint{ .X = Stick->first, .Y = Stick->second } : FCollisionPoint{};
+                        // The stick's turn eases in: slow for a slight push or near the stick's way, the class's own rate at full push and three directions off.
+                        const auto EasedTurnRate = [&](const FCollisionPoint Toward, const float Push)
                         {
-                            const float X = Body.State.Position.X - float(std::floor(CameraX));
-                            const float Y = Body.State.Position.Y - float(std::floor(CameraY));
+                            constexpr float SlowestTurnRate = 0.2f;
+                            constexpr float EaseDirections = 3.f;
+                            const float Ease = std::clamp(AimOffDirections(*Player, Toward) / EaseDirections, 0.f, 1.f);
+                            return std::max(SlowestTurnRate, Push * Ease);
+                        };
+                        // The aim assist bends Axis onto the hunter in view and in clear sight closest to it within the assist cone, and holds it while Axis stays within the wider hold cone.
+                        const auto Assisted = [&](const FCollisionPoint Axis) -> std::optional<FCollisionPoint>
+                        {
                             constexpr float SightRadius = 1.f;
-                            return IsAutoAimTarget(Body, *Level) && X >= 0.f && Y >= 0.f && X < GameViewWidth && Y < float(ScreenHeight) &&
-                                   !QueryTerrainCollision(*Terrain, { .Center = Player->Center, .Radius = SightRadius }, { .Center = Body.State.Center, .Radius = SightRadius }, true);
-                        };
-                        const auto Toward = [&](const FObjectBody& Body)
-                        { return std::pair(Body.State.Position.X - Player->Position.X, Body.State.Position.Y - Player->Position.Y); };
-                        const auto Locked = [&]() -> const FObjectBody*
-                        {
-                            const auto Found = AimTarget ? std::ranges::find(Bodies, *AimTarget, &FObjectBody::ObjectIndex) : Bodies.end();
-                            return Found != Bodies.end() && CanAim(*Found) ? &*Found : nullptr;
-                        };
-                        if (bPadFiring)
-                        {
-                            if (const std::optional<std::pair<float, float>> Flick = GamepadAimFlick())
+                            const float AxisLength = std::hypot(Axis.X, Axis.Y);
+                            const auto Along = [&](const FObjectBody& Body)
                             {
-                                // The hunter closest to the flick's way, within a third of a turn of it.
-                                constexpr float FlickReach = 0.5f;
-                                float Best = FlickReach;
+                                const float DX = Body.State.Position.X - Player->Position.X;
+                                const float DY = Body.State.Position.Y - Player->Position.Y;
+                                const float Length = std::hypot(DX, DY);
+                                return Length > 0.f && AxisLength > 0.f ? (DX * Axis.X + DY * Axis.Y) / (Length * AxisLength) : -1.f;
+                            };
+                            const auto CanAssist = [&](const FObjectBody& Body)
+                            {
+                                const float X = Body.State.Position.X - float(std::floor(CameraX));
+                                const float Y = Body.State.Position.Y - float(std::floor(CameraY));
+                                return X >= 0.f && Y >= 0.f && X < GameViewWidth && Y < float(ScreenHeight) && IsAutoAimTarget(Body, *Level) &&
+                                       !QueryTerrainCollision(*Terrain, { .Center = Player->Center, .Radius = SightRadius }, { .Center = Body.State.Center, .Radius = SightRadius }, true);
+                            };
+                            const auto Held = AssistTarget ? std::ranges::find(Bodies, *AssistTarget, &FObjectBody::ObjectIndex) : Bodies.end();
+                            if (Held == Bodies.end() || Along(*Held) <= AssistKeepCos || !CanAssist(*Held))
+                            {
+                                AssistTarget.reset();
+                                float Best = AssistCos;
                                 for (const FObjectBody& Body : Bodies)
                                 {
-                                    const auto [DX, DY] = Toward(Body);
-                                    const float Length = std::hypot(DX, DY);
-                                    const float Along = Length > 0.f ? (DX * Flick->first + DY * Flick->second) / Length : -1.f;
-                                    if (Body.ObjectIndex != AimTarget && CanAim(Body) && Along > Best)
+                                    if (const float Score = Along(Body); Score > Best && CanAssist(Body))
                                     {
-                                        Best = Along;
-                                        AimTarget = Body.ObjectIndex;
+                                        Best = Score;
+                                        AssistTarget = Body.ObjectIndex;
                                     }
                                 }
                             }
 
-                            if (!Locked())
+                            const auto Found = AssistTarget ? std::ranges::find(Bodies, *AssistTarget, &FObjectBody::ObjectIndex) : Bodies.end();
+                            if (Found == Bodies.end())
                             {
-                                AimTarget.reset();
-                                float Nearest = std::numeric_limits<float>::max();
-                                for (const FObjectBody& Body : Bodies)
-                                {
-                                    const auto [DX, DY] = Toward(Body);
-                                    if (CanAim(Body) && std::hypot(DX, DY) < Nearest)
-                                    {
-                                        Nearest = std::hypot(DX, DY);
-                                        AimTarget = Body.ObjectIndex;
-                                    }
-                                }
+                                return std::nullopt;
                             }
 
-                            // Facing the target, the stick still moves by screen direction, split into thrust and strafe along the ship.
-                            // With no target it heads the ship that way as when not firing, turning at half speed to sweep the fire across crates and barrels.
-                            const FObjectBody* const Target = Locked();
-                            bPadFreeAim = !Target;
-                            const FCollisionPoint Way = Stick ? FCollisionPoint{ .X = Stick->first, .Y = Stick->second } : FCollisionPoint{};
-                            const uint32_t Input = !Stick ? 0 : Target ? FacingMoveInput(*Player, Way) : StickMoveInput(*Player, Way);
-                            const EPlayerTurn Turn = Target ? TurnTowardSight(*Player, { .X = Toward(*Target).first, .Y = Toward(*Target).second })
-                                                   : (Input & PlayerInputTurnLeft) != 0  ? EPlayerTurn::Left
-                                                   : (Input & PlayerInputTurnRight) != 0 ? EPlayerTurn::Right
-                                                                                         : EPlayerTurn::None;
+                            return FCollisionPoint{ .X = Found->State.Position.X - Player->Position.X, .Y = Found->State.Position.Y - Player->Position.Y };
+                        };
+                        if (const std::optional<std::pair<float, float>> AimStick = GamepadAimStick())
+                        {
+                            // By hand the facing holds until the aim is three quarters of a direction off it, so a stick resting between two directions does not twitch;
+                            // on a hunter it turns at the class's own rate onto the direction nearest it.
+                            constexpr float StickHoldDirections = 0.75f;
+                            const std::optional<FCollisionPoint> Target = Assisted({ .X = AimStick->first, .Y = AimStick->second });
+                            const FCollisionPoint Aim = Target.value_or(FCollisionPoint{ .X = AimStick->first, .Y = AimStick->second });
+                            PadTurnRate = EasedTurnRate(Aim, Target ? 1.f : GamepadAimPush());
+                            const uint32_t Input = Stick ? FacingMoveInput(*Player, Way) : 0;
+                            const EPlayerTurn Turn = TurnTowardAim(*Player, Aim, Target ? 0.f : StickHoldDirections);
                             bForwardKey = (Input & PlayerInputForward) != 0;
                             bBackwardKey = (Input & PlayerInputBackward) != 0;
                             bSideLeft = (Input & PlayerInputStrafeLeft) != 0;
                             bSideRight = (Input & PlayerInputStrafeRight) != 0;
-                            // The aim keeps turning while the ship strafes; turning by hand gives way to a strafe on its side as the keys do.
-                            bTurnLeft = Turn == EPlayerTurn::Left && (Target || !bSideLeft);
-                            bTurnRight = Turn == EPlayerTurn::Right && (Target || !bSideRight);
+                            // The aim keeps turning while the ship strafes.
+                            bTurnLeft = Turn == EPlayerTurn::Left;
+                            bTurnRight = Turn == EPlayerTurn::Right;
                         }
                         else
                         {
-                            const uint32_t Input = Stick ? StickMoveInput(*Player, { .X = Stick->first, .Y = Stick->second }) : 0;
+                            // Single-stick: while the pad fires, the assist bends the heading (the stick's way, or the facing with the stick at rest), so the ship steers onto a hunter without strafing.
+                            const std::optional<FCollisionPoint> Target = IsGamepadActionDown(EAction::Fire) ? Assisted(Stick ? Way : PlayerFacing(*Player)) : std::nullopt;
+                            if (!Target)
+                            {
+                                AssistTarget.reset();
+                            }
+
+                            const FCollisionPoint Heading = Target.value_or(Way);
+                            // Squared, so the left stick turns gently until pushed well out; it also sets the speed, which stays linear.
+                            PadTurnRate = Target ? EasedTurnRate(Heading, 1.f) : Stick ? EasedTurnRate(Heading, GamepadThrottle() * GamepadThrottle()) : 1.f;
+                            const uint32_t Input = Stick ? StickMoveInput(*Player, Heading) : 0;
+                            const EPlayerTurn TargetTurn = Target ? TurnTowardAim(*Player, *Target) : EPlayerTurn::None;
                             bForwardKey = (Input & PlayerInputForward) != 0;
                             bBackwardKey = (Input & PlayerInputBackward) != 0;
                             bSideLeft = false;
                             bSideRight = false;
-                            bTurnLeft = (Input & PlayerInputTurnLeft) != 0;
-                            bTurnRight = (Input & PlayerInputTurnRight) != 0;
+                            // On a target the turn is exact, not within the stick's one direction of slack.
+                            bTurnLeft = Target ? TargetTurn == EPlayerTurn::Left : (Input & PlayerInputTurnLeft) != 0;
+                            bTurnRight = Target ? TargetTurn == EPlayerTurn::Right : (Input & PlayerInputTurnRight) != 0;
                         }
                     }
 
@@ -5690,21 +5712,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         bThrustInput = (DemoInput & PlayerInputForward) != 0;
                     }
 
-                    // Firing with the pad slows the ship to the low speed, as a modern shooter does; its turning stays quick for the aim.
                     FMovementClass Movement = *PlayerClass;
-                    if (bPadFiring)
-                    {
-                        constexpr float FiringSpeedScale = 1.f / 3.f;
-                        Movement.SpeedMax = std::min(Movement.SpeedMax, ClassSpeedMax * FiringSpeedScale);
-                    }
-
-                    // Turning by hand while firing takes twice the turn time.
-                    if (bPadFreeAim)
-                    {
-                        constexpr int32_t FreeAimTurnScale = 2;
-                        Movement.TurnTimeout *= FreeAimTurnScale;
-                    }
-
+                    Movement.TurnTimeout = int(float(Movement.TurnTimeout) / PadTurnRate);
                     // The left stick's push sets the top speed and the strafe: thrust only pushes below a tenth of Speed-max, as the low speed relies on.
                     if (bPadSteers && GamepadMoveStick())
                     {
@@ -6641,6 +6650,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         // Only an outlined object's opaque body parts, not its shadow or its additive glows and lights.
         const auto IsOutlined = [&](const FObjectSprite& Sprite)
         { return !Sprite.bShadow && Sprite.Blend == ESpriteBlend::Opaque && Sprite.ObjectIndex < OutlineTints.size() && OutlineTints[Sprite.ObjectIndex] != 0; };
+        bool bRedrawUncovered = false;
         const auto DrawObject = [&](const FObjectSprite& Sprite, const uint32_t OutlineTint = 0)
         {
             const Gaf::FAnimationFrame& Frame = Sprite.Frame;
@@ -6692,7 +6702,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
 
             // An outlined object's body unmarks the stencil under it, so only the terrain drawn after it marks what covers it.
-            const bool bOutlined = IsOutlined(Sprite);
+            const bool bOutlined = IsOutlined(Sprite) && !bRedrawUncovered;
             if (bOutlined)
             {
                 Renderer.SetStencilMode(EStencilMode::ClearEntity);
@@ -6802,12 +6812,31 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         // Darken (SurpriseStart at 0041c390, session +0x20d0 bit 0x20): EngineRunLevel draws the level only in a 376x309 window around the player, black elsewhere, and stretches darkzone.gaf over the window's four quarters, mirrored outward.
         // Then it draws the player and the Is-light objects again over the dark.
+        // The port redraws an outlined player's body only where no terrain covers it, and leaves its glows as the level drew them in the lit window around it,
+        // so the player no longer shows through the terrain in front of it.
         if (Player && Inventory.Surprises.Active == ESurprise::Darken)
         {
             DrawDarkness(*Player, OriginX, OriginY);
+            const bool bPlayerOutlined = PlayerIndex < OutlineTints.size() && OutlineTints[PlayerIndex] != 0;
             for (const FObjectSprite& Sprite : Sprites)
             {
-                if (!Sprite.bShadow && (Sprite.ObjectIndex == PlayerIndex || (Sprite.ObjectIndex < LightObjects.size() && LightObjects[Sprite.ObjectIndex])))
+                if (Sprite.bShadow)
+                {
+                    continue;
+                }
+
+                if (Sprite.ObjectIndex == PlayerIndex && bPlayerOutlined)
+                {
+                    if (IsOutlined(Sprite))
+                    {
+                        bRedrawUncovered = true;
+                        Renderer.SetStencilMode(EStencilMode::Uncovered);
+                        DrawObject(Sprite);
+                        Renderer.SetStencilMode(EStencilMode::Off);
+                        bRedrawUncovered = false;
+                    }
+                }
+                else if (Sprite.ObjectIndex == PlayerIndex || (Sprite.ObjectIndex < LightObjects.size() && LightObjects[Sprite.ObjectIndex]))
                 {
                     DrawObject(Sprite);
                 }
@@ -7589,6 +7618,13 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
         std::fprintf(stderr, "glfwInit failed\n");
         return 1;
     }
+
+    // GLFW's built-in mappings miss many pads, 8BitDo's among them, which then read only as plain joysticks.
+    for (const char* const Mapping : GamepadMappings)
+    {
+        glfwUpdateGamepadMappings(Mapping);
+    }
+
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     // Wayland compositors and X11 window managers find the icon through the desktop entry named after this id (Resources/Linux/openvyruz.desktop).
     constexpr const char* AppId = "openvyruz";

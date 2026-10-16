@@ -18,12 +18,11 @@ The game starts with the mouse set up: the ship turns toward the green sight und
 | Fire | Left button | Space | A or right trigger |
 | Thrust forward | Right button | Up | Left stick |
 | Back off | Down | Down | Left stick |
-| Turn | Move the mouse | Left / Right | Left stick |
-| Strafe | Left / Right | Left Shift + Left / Right | Left stick, while firing at a target |
+| Turn | Move the mouse | Left / Right | Left stick, or aim with the right stick |
+| Strafe | Left / Right | Left Shift + Left / Right | Left stick, while aiming with the right stick |
 | Next / previous weapon | Backspace | Backspace | RB / LB |
 | Pick a weapon | | 1 to 9 | |
 | Low / high speed | Page Down | Page Down | How far you push the left stick |
-| Switch target | | | Flick the right stick |
 | Map | M | M | B |
 | Inventory | I | I | Y |
 | Help | F1 | F1 | Hold Start |
@@ -34,7 +33,7 @@ The game starts with the mouse set up: the ship turns toward the green sight und
 
 Every binding but the pad's can be changed in Options. Alt+Enter or F11 switches between fullscreen and a window.
 
-With a pad (Xbox layout), the ship heads whichever way you push the left stick. While you fire, it locks onto the nearest enemy in view and keeps its guns on it, so the stick strafes around the target; a flick of the right stick picks another one. With nothing to lock onto, firing sweeps across what is in front of you, which is handy for crates and barrels.
+With a pad (Xbox layout), the ship heads whichever way you push the left stick. Push the right stick to aim: the ship turns to face it and the left stick then moves and strafes around that aim, as in a twin-stick shooter. Aiming close to an enemy in view nudges the aim onto it. Without the right stick, firing does the same with the way you steer: an enemy close to it pulls the ship's heading onto it. Nothing locks on.
 
 ## Weapons
 

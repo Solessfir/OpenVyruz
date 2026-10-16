@@ -1,6 +1,6 @@
 # Building
 
-C++23, Premake5, GLFW, Vulkan 1.3 and Slang shaders. Clone with submodules (GLFW), or fetch them afterwards. miniaudio is vendored as its single header in `External/miniaudio`.
+C++23, Premake5, GLFW, Vulkan 1.3 and Slang shaders. Clone with submodules (GLFW), or fetch them afterwards. miniaudio is vendored as its single header in `External/miniaudio`. Gamepad mappings that GLFW lacks are vendored from SDL_GameControllerDB in `External/SDL_GameControllerDB`.
 
 ```bash
 git clone --recursive https://github.com/Solessfir/OpenVyruz.git
