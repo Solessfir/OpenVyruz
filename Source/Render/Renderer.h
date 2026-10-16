@@ -43,6 +43,8 @@ enum class ESpriteBlend : uint8_t
     Alpha,
     // Lifts the destination toward white by the source: destination + source * (1 - destination), for the gamma offsets.
     Screen,
+    // Adds the destination to itself by the source: destination + destination * source, as ScoreHighlightRow blends a row onto itself.
+    Double,
     Count,
 };
 
@@ -68,6 +70,8 @@ public:
     void DrawSprite(const FSpriteSheet& Sheet, size_t FrameIndex, float X, float Y, bool bMirrorX = false, bool bMirrorY = false,
         ESpriteBlend Blend = ESpriteBlend::Opaque, float ScaleX = 1.f, float ScaleY = 1.f, uint32_t VisibleColumns = UINT32_MAX,
         uint32_t Diffuse = 0xffffff, uint32_t Specular = 0, float Alpha = 1.f, float RotationDegrees = 0.f, float PivotX = 0.f, float PivotY = 0.f);
+    // ScoreHighlightRow at 00401410: blends what is drawn in the rectangle onto itself, twice as bright, saturating.
+    void DoubleRect(float X, float Y, float Width, float Height);
     // Draws the gamma ramp over the frame and presents it.
     void EndFrame();
 

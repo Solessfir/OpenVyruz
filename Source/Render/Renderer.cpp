@@ -359,12 +359,14 @@ void FRenderer::CreatePipeline()
         const bool bAdditive = Index == static_cast<size_t>(ESpriteBlend::Additive);
         const bool bAlpha = Index == static_cast<size_t>(ESpriteBlend::Alpha);
         const bool bScreen = Index == static_cast<size_t>(ESpriteBlend::Screen);
+        const bool bDouble = Index == static_cast<size_t>(ESpriteBlend::Double);
         BlendAttachment.blendEnable = Index != static_cast<size_t>(ESpriteBlend::Opaque);
         BlendAttachment.srcColorBlendFactor = bAdditive ? VK_BLEND_FACTOR_ONE
                                               : bAlpha  ? VK_BLEND_FACTOR_SRC_ALPHA
                                               : bScreen ? VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR
+                                              : bDouble ? VK_BLEND_FACTOR_DST_COLOR
                                                         : VK_BLEND_FACTOR_ZERO;
-        BlendAttachment.dstColorBlendFactor = bAdditive || bScreen ? VK_BLEND_FACTOR_ONE
+        BlendAttachment.dstColorBlendFactor = bAdditive || bScreen || bDouble ? VK_BLEND_FACTOR_ONE
                                               : bAlpha             ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
                                                                    : VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
         BlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
@@ -927,6 +929,17 @@ void FRenderer::DrawGamma()
     {
         DrawSprite(*GammaSheet, 0, 0.f, 0.f, false, false, ESpriteBlend::InverseSourceColor, ScreenWidth, ScreenHeight, UINT32_MAX, Darken);
     }
+}
+
+void FRenderer::DoubleRect(const float X, const float Y, const float Width, const float Height)
+{
+    if (!GammaSheet)
+    {
+        constexpr uint16_t White = 0x7fff;
+        GammaSheet = CreateSpriteSheet({ Gaf::FFrame{ .Width = 1, .Height = 1, .Pixels = { White } } });
+    }
+
+    DrawSprite(*GammaSheet, 0, X, Y, false, false, ESpriteBlend::Double, Width, Height);
 }
 
 void FRenderer::RequestCapture(const uint32_t Width, const uint32_t Height)
