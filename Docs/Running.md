@@ -49,23 +49,7 @@ Like the original, the game stands still while its window is minimized or unfocu
 
 ## Controls
 
-With `use-mouse = 1`, the installed default, the ship turns toward the green sight at the mouse, the left button fires, the right button thrusts, Down backs off and Left/Right strafe. An Xbox-style pad works too ([PlayerMovement.md](PlayerMovement.md#gamepad)).
-
-| Key | Action |
-|---|---|
-| Up / Down | Thrust forward and backward |
-| Left / Right | Turn, or with the absolute direction, head that way |
-| Left Shift with Left / Right | Strafe |
-| Space | Fire |
-| Backspace, 1 to 9 | Next weapon, or a weapon slot |
-| Tab | Cycle the panel modes (Left Shift steps back) |
-| M | The map, at 21000 cash |
-| I, F1, F2 | Inventory, help, name the panel's parts |
-| Page Down | Low speed |
-| P | Pause |
-| Esc | Game menu: Resume Game, Options, Retry Level, End Game |
-
-The Options menus rebind the keys and mouse buttons.
+The keyboard, mouse and gamepad controls are in the [manual](Manual.md#controls). The Options menus rebind the keys and mouse buttons.
 
 ## Settings, saves and scores
 

@@ -62,7 +62,7 @@ A hold acts once Back or Start has been down half a second; a tap acts as it com
 
 ## Verification against DEMO.3DR
 
-`--verify-game` replays `CAVE\DEMO.3DR`. The recording came from a development build: its records are taken with the 10 ms demo step cap, its timestamps are clock readings at each step start, and its `Friction-threshold` was 0.001 (the line commented out in the shipped `OBJECT.3DC`). Rebuilding each step's state from the recording, 26454 of 32282 steps match within 0.001 px and 30156 within 0.5 px. The remainder come from object collisions, which are not modelled yet, and from step lengths that the 1 ms timestamps can only place to within a millisecond.
+`--verify-game` replays `CAVE\DEMO.3DR`. The recording came from a development build: its records are taken with the 10 ms demo step cap, its timestamps are clock readings at each step start, and its `Friction-threshold` was 0.001 (the line commented out in the shipped `OBJECT.3DC`). Rebuilding each step's state from the recording, 26454 of 32282 steps match within 0.001 px and 30156 within 0.5 px. Part of the remainder comes from step lengths that the 1 ms timestamps can only place to within a millisecond; the rest is not traced yet.
 
 ## Object collisions
 
