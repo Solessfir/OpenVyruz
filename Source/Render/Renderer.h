@@ -67,6 +67,8 @@ public:
     // X/Y is the top-left of the untrimmed sprite cell in screen pixels.
     // VisibleColumns keeps only that many columns of the bitmap from its left edge, as a clipped panel bar.
     // Diffuse multiplies the bitmap and Specular is added to it, both as 0xRRGGBB.
+    // Moves every sprite drawn after it by a fraction of a pixel, so the level can follow the player smoothly while its objects keep their whole-pixel places; each frame starts with none.
+    void SetViewShift(float X, float Y);
     void DrawSprite(const FSpriteSheet& Sheet, size_t FrameIndex, float X, float Y, bool bMirrorX = false, bool bMirrorY = false,
         ESpriteBlend Blend = ESpriteBlend::Opaque, float ScaleX = 1.f, float ScaleY = 1.f, uint32_t VisibleColumns = UINT32_MAX,
         uint32_t Diffuse = 0xffffff, uint32_t Specular = 0, float Alpha = 1.f, float RotationDegrees = 0.f, float PivotX = 0.f, float PivotY = 0.f);
@@ -151,6 +153,8 @@ private:
     FFrame Frames[FramesInFlight];
     uint32_t FrameIndex = 0;
     uint32_t ImageIndex = 0;
+    float ShiftX = 0.f;
+    float ShiftY = 0.f;
 
     std::array<int32_t, 3> Gamma{};
     std::array<int32_t, 3> UserGamma{};
