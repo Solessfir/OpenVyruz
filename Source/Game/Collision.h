@@ -44,9 +44,9 @@ class FTerrainCollision
 {
 public:
     std::span<const FStaticCollisionShape> GetShapes() const { return Shapes; }
-    // FUN_0042c130 with value 0xff: every marker cell within Margin of (X, Y), clipped to the grid, is enclosed ground on all four sides.
+    // CellsHaveMarker (0042c130) with value 0xff: every marker cell within Margin of (X, Y), clipped to the grid, is enclosed ground on all four sides.
     bool IsOpenGround(int X, int Y, int Margin) const;
-    // FUN_0042c130 with value 0x100 and no margin, as AmmoImpact asks: the marker cell is open water.
+    // CellsHaveMarker (0042c130) with value 0x100 and no margin, as AmmoImpact asks: the marker cell is open water.
     bool IsWater(int X, int Y) const;
     int GetMarkerWidth() const { return int(MarkerWidth); }
     int GetMarkerHeight() const { return int(MarkerHeight); }

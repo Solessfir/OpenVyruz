@@ -691,6 +691,12 @@ struct FAmmoClass
     bool bUsableWhenInvisible = false;
     // On-object-hit without On-hit (the ammo attribute's flags 2 and 1): grenades, saws and pulsars burst on objects but bounce off the terrain.
     bool bBouncesOffTerrain = false;
+    // Launched (object flag 0x8000) with Use-inertia: ObjectComputeDisplacement (00438b20) drops the shot's command, so it coasts on its launch speed and slows by its friction (grenades, saws, flames).
+    // Without Use-inertia the original clears the flag on the first move.
+    bool bLaunched = false;
+    // Vertical-bounce (object flag 0x1000): the shot hops along the ground, as grenades and bouncing pulsars do (EngineUpdateObjects at 004406e0), with its class's Bounce-period.
+    bool bVerticalBounce = false;
+    float BouncePeriod = 0.f;
     // The class's Energy, which hard bounces wear down, and Indestructible (class flag 0x40 at +0x20), which spares it.
     float Energy = 0.f;
     bool bIndestructible = false;
