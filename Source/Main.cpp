@@ -6043,11 +6043,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         if (Player)
         {
             SyncObjects();
-            // Match the sprite's rounding so fractional movement cannot shift the ship against the camera.
+            // The original's view follows the player's rounded position (SpriteCoordinate); the port keeps the exact one, whose whole part is that view and whose fraction shifts the drawn level, so the picture does not step a pixel at a time as the ship slows.
             const int ViewWidth = int(GameViewWidth);
             const int ViewHeight = int(ScreenHeight);
-            const double TargetX = std::clamp(int(SpriteCoordinate(Player->Position.X)) - ViewWidth / 2, 0, std::max(0, int(Level->WorldExtentX) - ViewWidth));
-            const double TargetY = std::clamp(int(SpriteCoordinate(Player->Position.Y)) - ViewHeight / 2, 0, std::max(0, int(Level->WorldExtentY) - ViewHeight));
+            constexpr double RoundingHalf = 0.5;
+            const double TargetX = std::clamp(double(Player->Position.X) + RoundingHalf - double(ViewWidth / 2), 0., double(std::max(0, int(Level->WorldExtentX) - ViewWidth)));
+            const double TargetY = std::clamp(double(Player->Position.Y) + RoundingHalf - double(ViewHeight / 2), 0., double(std::max(0, int(Level->WorldExtentY) - ViewHeight)));
             // The death drift turns square corners at full speed; the original's view snaps after it, the port's eases after it so the turns do not jar.
             const uint32_t Now = ClockMilliseconds();
             if (DeathTimer && DeathCameraAt)
@@ -6241,6 +6242,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         const int OriginX = int(std::floor(CameraX));
         const int OriginY = int(std::floor(CameraY));
+        Renderer.SetViewShift(float(OriginX - CameraX), float(OriginY - CameraY));
         const uint32_t FirstX = uint32_t(OriginX) / BlockWidth;
         const uint32_t FirstY = uint32_t(OriginY) / BlockHeight;
         const uint32_t EndX = std::min(Level->GridWidth, (uint32_t(OriginX) + uint32_t(GameViewWidth) - 1) / BlockWidth + 1);
@@ -6609,6 +6611,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             const float OffsetX = Scale.X != 1.f ? std::trunc(float(Frame.OffsetX) * Scale.X) : float(Frame.OffsetX);
             const float OffsetY = Scale.Y != 1.f ? std::trunc(float(Frame.OffsetY) * Scale.Y) : float(Frame.OffsetY);
             const bool bFadingPlayer = Sprite.ObjectIndex == PlayerIndex && PlayerFade < FullFade;
+            // The player's own sprites sit at its exact position, so it holds still against the smoothly following view.
+            const float SubX = Player && Sprite.ObjectIndex == PlayerIndex ? Player->Position.X - float(SpriteCoordinate(Player->Position.X)) : 0.f;
+            const float SubY = Player && Sprite.ObjectIndex == PlayerIndex ? Player->Position.Y - float(SpriteCoordinate(Player->Position.Y)) : 0.f;
+            const float X = Sprite.X + SubX - float(OriginX);
+            const float Y = Sprite.Y + SubY - float(OriginY);
             const int ObjectFade = Sprite.ObjectIndex < ObjectFades.size() && Sprite.ObjectIndex != PlayerIndex ? ObjectFades[Sprite.ObjectIndex] : FullFade;
             if (ObjectFade == 0)
             {
@@ -6629,8 +6636,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             const uint32_t Diffuse = (Frame.EventFlags & DiffuseEventFlag) != 0 ? ModulateColor(uint32_t(Frame.EventValue) & ColorMask, Sprite.Diffuse) : Sprite.Diffuse;
             if (OutlineTint != 0)
             {
-                Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + OffsetX - OriginX, Sprite.Y + OffsetY - OriginY, Frame.bMirrorX,
-                    Frame.bMirrorY, ESpriteBlend::Alpha, Scale.X, Scale.Y, UINT32_MAX, OutlineTint, 0, 1.f, Sprite.Rotation, Sprite.X - OriginX, Sprite.Y - OriginY);
+                Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, X + OffsetX, Y + OffsetY, Frame.bMirrorX, Frame.bMirrorY, ESpriteBlend::Alpha,
+                    Scale.X, Scale.Y, UINT32_MAX, OutlineTint, 0, 1.f, Sprite.Rotation, X, Y);
                 return;
             }
 
@@ -6641,9 +6648,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 Renderer.SetStencilMode(EStencilMode::ClearEntity);
             }
 
-            Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, Sprite.X + OffsetX - OriginX, Sprite.Y + OffsetY - OriginY,
+            Renderer.DrawSprite(Objects->Sheets[Sprite.SheetIndex], Frame.BitmapIndex - 1, X + OffsetX, Y + OffsetY,
                 Frame.bMirrorX, Frame.bMirrorY, bFadingPlayer || bFadingObject || Sprite.Alpha < 1.f ? ESpriteBlend::Alpha : Sprite.Blend, Scale.X, Scale.Y, UINT32_MAX, Diffuse,
-                Sprite.Specular, bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : Sprite.Alpha, Sprite.Rotation, Sprite.X - OriginX, Sprite.Y - OriginY);
+                Sprite.Specular, bFadingPlayer ? PlayerAlpha : bFadingObject ? float(ObjectFade) * FadeAlphaStep : Sprite.Alpha, Sprite.Rotation, X, Y);
             if (bOutlined)
             {
                 Renderer.SetStencilMode(EStencilMode::Off);
@@ -6772,6 +6779,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             HitFlash = std::max(0.f, HitFlash - float(DrawStepMilliseconds) / HitFlashMilliseconds);
         }
 
+        Renderer.SetViewShift(0.f, 0.f);
         // The messages' draw pass comes after the objects and before the panel, with the last step; the frame that opens the inventory or the help skips it.
         if (Panel && !bInventoryPending && !bHelpPending)
         {

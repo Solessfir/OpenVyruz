@@ -1026,9 +1026,16 @@ void FRenderer::UpdateVideoSheet(const FSpriteSheet& Sheet, const std::span<cons
     UploadTexture(Texture.Image, Texture.Width, Texture.Height, Rgba, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
+void FRenderer::SetViewShift(const float X, const float Y)
+{
+    ShiftX = X;
+    ShiftY = Y;
+}
+
 bool FRenderer::BeginFrame(const float Width)
 {
     ViewWidth = Width;
+    ShiftX = ShiftY = 0.f;
     if (!bSwapchainValid)
     {
         vkDeviceWaitIdle(Device);
@@ -1124,10 +1131,14 @@ void FRenderer::BeginRendering(const VkAttachmentLoadOp LoadOp)
     vkCmdSetScissor(Cmd, 0, 1, &Scissor);
 }
 
-void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInSheet, const float X, const float Y, const bool bMirrorX, const bool bMirrorY,
+void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInSheet, const float CellX, const float CellY, const bool bMirrorX, const bool bMirrorY,
     const ESpriteBlend Blend, const float ScaleX, const float ScaleY, const uint32_t VisibleColumns, const uint32_t Diffuse, const uint32_t Specular,
-    const float Alpha, const float RotationDegrees, const float PivotX, const float PivotY)
+    const float Alpha, const float RotationDegrees, const float CellPivotX, const float CellPivotY)
 {
+    const float X = CellX + ShiftX;
+    const float Y = CellY + ShiftY;
+    const float PivotX = CellPivotX + ShiftX;
+    const float PivotY = CellPivotY + ShiftY;
     if (Sheet.Texture >= Textures.size() || FrameIndexInSheet >= Sheet.Frames.size())
     {
         return;
