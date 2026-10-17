@@ -477,6 +477,8 @@ void FAudio::PlayWeaponSwitch()
 
 void FAudio::PlayDeath()
 {
+    // The cry takes the weapon's channel, so a weapon fired as the player died must not end its loop over it.
+    bWeaponStarting = bWeaponFiring = false;
     PlayOnChannel(Load("aaaa.wav"), PlayerWeaponChannel, false, true);
 }
 
