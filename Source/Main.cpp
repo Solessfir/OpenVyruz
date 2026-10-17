@@ -2412,12 +2412,14 @@ FSettings LoadSettings(FResourceArchive& Archive, const std::filesystem::path& C
     const std::optional<std::vector<uint8_t>> Config = Archive.Read("VZCONF.TXT");
     std::string Text = Config ? std::string(reinterpret_cast<const char*>(Config->data()), Config->size()) : std::string();
     std::error_code Error;
+    bool bFolderConfig = false;
     for (const std::filesystem::directory_entry& Entry : std::filesystem::directory_iterator(ConfigFolder, Error))
     {
         constexpr std::uintmax_t MaxConfigBytes = 65536;
         if (Lower(Entry.path().filename().string()) == "vzconf.txt" && Entry.file_size(Error) <= MaxConfigBytes)
         {
             Settings.ConfigPath = Entry.path();
+            bFolderConfig = true;
             std::ifstream File(Entry.path(), std::ios::binary);
             Text.assign(std::istreambuf_iterator<char>(File), std::istreambuf_iterator<char>());
         }
@@ -2509,6 +2511,12 @@ FSettings LoadSettings(FResourceArchive& Archive, const std::filesystem::path& C
                 }
             }
         }
+    }
+
+    // The archive's VZCONF.TXT starts in the absolute direction, where the mouse cannot steer; the port's mouse layout steers relative to the ship, so a fresh game starts relative.
+    if (!bFolderConfig)
+    {
+        Settings.bAbsolute = false;
     }
 
     // The archive's VZCONF.TXT and every vzconf.txt the original writes before a rename name the player Jack.
