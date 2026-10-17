@@ -49,6 +49,7 @@ The Arch package and the other options are in the docs below.
 - [Running](Docs/Running.md): the game data, command line, display, controls, settings and saves
 - [Tools and checks](Docs/Tools.md): modding, the archive checks and development aids
 - [Development](Docs/Development.md): source layout and the original's module map
+- [Roadmap](Docs/Roadmap.md): what comes after version 1
 
 How the original works, as the port reimplements it:
 
