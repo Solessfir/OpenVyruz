@@ -37,6 +37,7 @@ workspace "Vyruz"
         runtime "Release"
         symbols "Off"
         optimize "Full"
+        linktimeoptimization "On"
 
     filter {}
 
