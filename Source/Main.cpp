@@ -3222,19 +3222,39 @@ void RunKeySettingsMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMe
             const FActionSetting& Setting = ActionSettings()[Shown[*Item]];
             Menu.Items[*Item] = { .Text = std::format("{} : ", Localize(Setting.Name)), .Help = "Waiting key or button event ..." };
             // FUN_00425860 waits for every key and button to be up, then for one to go down.
+            // The port binds a key pressed with Alt, Shift or Ctrl held as that combination, and a modifier alone once it is released by itself.
             bool bReleased = false;
-            std::optional<uint32_t> Code;
+            std::optional<uint32_t> LoneModifier;
+            FBinding Binding;
             if (!ShowMenuUntil(Window, Renderer, Art, Sheets, Menu, Random, [&](uint32_t)
             {
-                Code = FirstCodeDown(Window);
-                bReleased = bReleased || !Code;
-                return bReleased && Code.has_value();
+                if (!bReleased)
+                {
+                    bReleased = !FirstCodeDown(Window);
+                    return false;
+                }
+
+                const std::optional<uint32_t> Modifier = HeldModifier(Window);
+                if (const std::optional<uint32_t> Code = FirstCodeDown(Window, false))
+                {
+                    Binding = { .Code = *Code, .Modifier = Modifier.value_or(0) };
+                    return true;
+                }
+
+                if (Modifier)
+                {
+                    LoneModifier = Modifier;
+                    return false;
+                }
+
+                Binding = { .Code = LoneModifier.value_or(0) };
+                return LoneModifier.has_value();
             }))
             {
                 return;
             }
 
-            Settings.Bindings.BindAlone(EInputDevice::Keyboard, Setting.Action, { .Code = *Code });
+            Settings.Bindings.BindAlone(EInputDevice::Keyboard, Setting.Action, Binding);
         }
 
         std::tie(Shown, Next) = FillKeyPage(Menu, Settings, Pages.back());

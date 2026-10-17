@@ -163,6 +163,8 @@ constexpr FBinding Fixed(const uint32_t Code)
 }
 
 constexpr uint32_t LeftShift = 0x1e;
+// The Alt, Shift and Ctrl keys, which a binding can hold with another key.
+constexpr std::array<uint32_t, 6> ModifierCodes{ 0x1c, 0x1d, LeftShift, 0x1f, 0x22, 0x23 };
 constexpr uint32_t JoypadButton5 = 0x205;
 
 // The bindings every device shares from the next weapon on (DAT_00509298 from index 8).
@@ -201,7 +203,7 @@ constexpr FBindingTable OriginalKeyboard = []
     return WithCommonKeys(Table);
 }();
 
-// The port's modern layout over the original's: the mouse aims, WASD moves and turns, Left Shift with A or D strafes, Left Alt toggles the speed, Tab shows the map, the grave accent cycles the panels,
+// The port's modern layout over the original's: the mouse aims, WASD moves and strafes, Left Shift with A or D turns, Left Alt toggles the speed, Tab shows the map, the grave accent cycles the panels,
 // the left button fires and the wheel turned down takes the next weapon (turned up, the previous one).
 constexpr FBindingTable DefaultKeyboard = []
 {
@@ -217,10 +219,10 @@ constexpr FBindingTable DefaultKeyboard = []
     Table[size_t(EAction::Fire)] = { .Code = LeftMouseButton };
     Table[size_t(EAction::Forward)] = { .Code = KeyW };
     Table[size_t(EAction::Backward)] = { .Code = KeyS };
-    Table[size_t(EAction::Left)] = { .Code = KeyA };
-    Table[size_t(EAction::Right)] = { .Code = KeyD };
-    Table[size_t(EAction::StrafeLeft)] = { .Code = KeyA, .Modifier = LeftShift };
-    Table[size_t(EAction::StrafeRight)] = { .Code = KeyD, .Modifier = LeftShift };
+    Table[size_t(EAction::Left)] = { .Code = KeyA, .Modifier = LeftShift };
+    Table[size_t(EAction::Right)] = { .Code = KeyD, .Modifier = LeftShift };
+    Table[size_t(EAction::StrafeLeft)] = { .Code = KeyA };
+    Table[size_t(EAction::StrafeRight)] = { .Code = KeyD };
     Table[size_t(EAction::NextWeapon)] = { .Code = WheelDownCode };
     Table[size_t(EAction::ToggleSpeed)] = { .Code = LeftAlt };
     Table[size_t(EAction::Map)] = { .Code = Tab };
@@ -681,14 +683,35 @@ bool IsActionDown(GLFWwindow* const Window, const FBindingTable& Bindings, const
     const FBinding& Binding = Bindings[size_t(Action)];
     const uint32_t Modifier = Binding.Modifier & BindingCodeMask;
     const uint32_t Code = Binding.Code & BindingCodeMask;
-    return (Modifier == 0 || IsCodeDown(Window, Modifier)) && Code != 0 && IsCodeDown(Window, Code);
+    if (Code == 0 || !IsCodeDown(Window, Code) || (Modifier != 0 && !IsCodeDown(Window, Modifier)))
+    {
+        return false;
+    }
+
+    // The port lets a key with a modifier held shadow the same key alone, so Shift+A and A can be different actions; the original reads both as down.
+    return Modifier != 0 || std::ranges::none_of(Bindings, [&](const FBinding& Other)
+        {
+            const uint32_t OtherModifier = Other.Modifier & BindingCodeMask;
+            return (Other.Code & BindingCodeMask) == Code && OtherModifier != 0 && IsCodeDown(Window, OtherModifier);
+        });
 }
 
-std::optional<uint32_t> FirstCodeDown(GLFWwindow* const Window)
+bool IsModifierCode(const uint32_t Code)
+{
+    return std::ranges::contains(ModifierCodes, Code);
+}
+
+std::optional<uint32_t> HeldModifier(GLFWwindow* const Window)
+{
+    const auto Held = std::ranges::find_if(ModifierCodes, [&](const uint32_t Code) { return IsCodeDown(Window, Code); });
+    return Held != ModifierCodes.end() ? std::optional(*Held) : std::nullopt;
+}
+
+std::optional<uint32_t> FirstCodeDown(GLFWwindow* const Window, const bool bModifiers)
 {
     for (const FKeyCode& Key : KeyCodes)
     {
-        if (glfwGetKey(Window, Key.GlfwKey) == GLFW_PRESS)
+        if ((bModifiers || !IsModifierCode(Key.Code)) && glfwGetKey(Window, Key.GlfwKey) == GLFW_PRESS)
         {
             return Key.Code;
         }

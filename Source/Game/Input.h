@@ -147,7 +147,10 @@ FGamepadMenuInput GamepadMenuInput();
 bool IsGamepadConfirmDown();
 // Whether a code is down now; joypad codes never are.
 bool IsCodeDown(GLFWwindow* Window, uint32_t Code);
-// InputActionDown at 0041d650: the action's modifier, if any, and its code are down.
+// InputActionDown at 0041d650: the action's modifier, if any, and its code are down, and no other binding holds a modifier down with the same code.
 bool IsActionDown(GLFWwindow* Window, const FBindingTable& Bindings, EAction Action);
-// The code of the first key or mouse button down, for the key settings' wait.
-std::optional<uint32_t> FirstCodeDown(GLFWwindow* Window);
+// Whether a code is an Alt, Shift or Ctrl key, and the first of them held, for bindings that hold one with another key.
+bool IsModifierCode(uint32_t Code);
+std::optional<uint32_t> HeldModifier(GLFWwindow* Window);
+// The code of the first key or mouse button down, for the key settings' wait; without modifiers, the Alt, Shift and Ctrl keys are skipped.
+std::optional<uint32_t> FirstCodeDown(GLFWwindow* Window, bool bModifiers = true);
