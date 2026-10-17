@@ -72,6 +72,8 @@ struct FKeyBindings
     // InputSetDefaultKeys at 0041d420 and its mouse and joypad counterparts (0041d450, 0041d480).
     static FKeyBindings Defaults();
     static const FBindingTable& DefaultTable(EInputDevice Device);
+    // The original's own defaults, which the first level's page names; the port's keyboard defaults are a modern layout instead.
+    static const FBindingTable& OriginalTable(EInputDevice Device);
 
     FBindingTable& Table(EInputDevice Device);
     const FBindingTable& Table(EInputDevice Device) const;
@@ -120,8 +122,8 @@ void NoteMouseUsed();
 // The pad's part of an action: A or the right trigger fire, RB the next weapon, Y the inventory, B the map, Back taps the panels and holds their help,
 // Start taps the game menu and holds the help. The movement actions are not buttons on the pad.
 bool IsGamepadActionDown(EAction Action);
-// LB, the previous weapon, which the original's actions lack.
-bool IsGamepadPreviousWeaponDown();
+// The previous weapon, which the original's actions lack: LB, or the wheel turned up while no binding uses it.
+bool IsPreviousWeaponDown(const FBindingTable& Bindings);
 // The left stick past its dead zone, x right and y down, each from -1 to 1.
 std::optional<std::pair<float, float>> GamepadMoveStick();
 // How far the left stick is pushed, from 0 at its dead zone to 1 at full travel, which scales the ship's top speed.

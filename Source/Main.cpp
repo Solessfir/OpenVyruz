@@ -3884,7 +3884,7 @@ std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Render
 }
 
 // The first level's page names the default keys to fire and to move, each in a block of three lines (the keyboard's, the mouse's and the joypad's) that name them after " : ".
-// The original prints the page as it is; the port names the keys bound now in each line whose bindings are no longer the defaults, and keeps the page's words otherwise.
+// The original prints the page as it is; the port names the keys bound now in each line whose bindings are no longer the original's defaults, and keeps the page's words otherwise.
 std::string NameBoundKeys(std::string Page, const FKeyBindings& Bindings)
 {
     constexpr size_t BlockLines = 3;
@@ -3925,7 +3925,7 @@ std::string NameBoundKeys(std::string Page, const FKeyBindings& Bindings)
         for (size_t Row = BlockLines; Row-- > 0;)
         {
             const FBindingTable& Table = Bindings.Table(Devices[Row]);
-            const FBindingTable& Defaults = FKeyBindings::DefaultTable(Devices[Row]);
+            const FBindingTable& Defaults = FKeyBindings::OriginalTable(Devices[Row]);
             std::string Keys;
             bool bChanged = false;
             for (const EAction Action : BlockActions[Block])
@@ -3984,18 +3984,19 @@ std::expected<std::string, std::string> VerifyInfoScreens(FResourceArchive& Arch
     return std::format("inventory and help rows as the original's, {} help rows with the default keys", Help.Count);
 }
 
-// The first level's page with the defaults stays as it is, and a rebound key replaces only its own line's keys.
+// The first level's page with the original's defaults stays as it is, a rebound key replaces only its own line's keys, and the port's modern defaults rename it.
 bool VerifyBoundKeys()
 {
     constexpr std::string_view Page = "Your mission : here.\r\n\r\n    Fire\t\tKeyboard : Space key\r\n\t\tMouse    : Left button\r\n\t\tJoyPad   : Button 1\r\n\r\n"
                                       "    Move\t\tKeyboard : Arrows\r\n\t\tMouse    : Right Button\r\n\t\tJoyPad   : as usual ...\r\n";
     FKeyBindings Bindings = FKeyBindings::Defaults();
+    Bindings.Keyboard = FKeyBindings::OriginalTable(EInputDevice::Keyboard);
     const bool bDefaultsKept = NameBoundKeys(std::string(Page), Bindings) == Page;
     constexpr uint32_t LeftCtrl = 0x22;
     Bindings.Keyboard[size_t(EAction::Fire)] = { .Code = LeftCtrl };
     std::string Expected(Page);
     Expected.replace(Expected.find("Space key"), std::string_view("Space key").size(), CodeName(LeftCtrl));
-    return bDefaultsKept && NameBoundKeys(std::string(Page), Bindings) == Expected;
+    return bDefaultsKept && NameBoundKeys(std::string(Page), Bindings) == Expected && NameBoundKeys(std::string(Page), FKeyBindings::Defaults()) != Page;
 }
 
 // A level object by its index, which stays valid while the object list grows.
@@ -5359,6 +5360,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
             std::array<bool, WeaponKeyCount> WeaponKeysNow{};
             WeaponKeysNow[0] = ActionDown(EAction::NextWeapon);
+            const bool bPreviousWeaponNow = IsPreviousWeaponDown(Settings.Controls());
             for (size_t Slot = 1; Slot < WeaponKeyCount; ++Slot)
             {
                 WeaponKeysNow[Slot] = ActionDown(EAction(size_t(EAction::Weapon1) + Slot - 1));
@@ -5379,14 +5381,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
                 }
 
-                // The pad's LB steps back through the weapons, which the original cannot.
-                if (IsGamepadPreviousWeaponDown() && !bPreviousWeaponDown)
+                // LB or the wheel steps back through the weapons, which the original cannot.
+                if (bPreviousWeaponNow && !bPreviousWeaponDown)
                 {
                     SelectPlayerWeapon(*Combat, PreviousPlayerWeaponSlot(*Combat, Inventory), Inventory, Messages);
                 }
             }
 
-            bPreviousWeaponDown = IsGamepadPreviousWeaponDown();
+            bPreviousWeaponDown = bPreviousWeaponNow;
             WeaponKeysDown = WeaponKeysNow;
         }
 

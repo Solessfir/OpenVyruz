@@ -11,27 +11,26 @@ You fly the Vyruz, an armed hovercraft, up through the towers of the Untel Empir
 
 ## Controls
 
-The game starts with the mouse set up: the ship turns toward the green sight under your mouse pointer.
+The ship turns toward the green sight under your mouse pointer; W and S thrust and back off, A and D turn.
 
-| Action | Mouse (default) | Keyboard only | Gamepad |
-|---|---|---|---|
-| Fire | Left button | Space | A or right trigger |
-| Thrust forward | Right button | Up | Left stick |
-| Back off | Down | Down | Left stick |
-| Turn | Move the mouse | Left / Right | Left stick, or aim with the right stick |
-| Strafe | Left / Right | Left Shift + Left / Right | Left stick, while aiming with the right stick |
-| Next / previous weapon | Backspace | Backspace | RB / LB |
-| Pick a weapon | | 1 to 9 | |
-| Low / high speed | Page Down | Page Down | How far you push the left stick |
-| Map | M | M | B |
-| Inventory | I | I | Y |
-| Help | F1 | F1 | Hold Start |
-| Name the panel's parts | F2 | F2 | Hold Back |
-| Cycle the panel | Tab | Tab | Tap Back |
-| Pause | P | P | |
-| Game menu | Esc | Esc | Tap Start |
+| Action | Keyboard and mouse | Gamepad |
+|---|---|---|
+| Fire | Left button | A or right trigger |
+| Thrust forward / back off | W / S | Left stick |
+| Turn | Move the mouse, or A / D | Left stick, or aim with the right stick |
+| Strafe | Left Shift + A / D | Left stick, while aiming with the right stick |
+| Next / previous weapon | Wheel down / up | RB / LB |
+| Pick a weapon | 1 to 9 | |
+| Low / high speed | Left Alt | How far you push the left stick |
+| Map | Tab | B |
+| Inventory | I | Y |
+| Help | F1 | Hold Start |
+| Name the panel's parts | F2 | Hold Back |
+| Cycle the panel | ` (grave accent) | Tap Back |
+| Pause | P | |
+| Game menu | Esc | Tap Start |
 
-Every binding but the pad's can be changed in Options. Alt+Enter or F11 switches between fullscreen and a window.
+Every binding but the pad's can be changed in Options; the wheel turned up takes the previous weapon while no binding uses it. Alt+Enter or F11 switches between fullscreen and a window.
 
 With a pad (Xbox layout), the ship heads whichever way you push the left stick. Push the right stick to aim: the ship turns to face it and the left stick then moves and strafes around that aim, as in a twin-stick shooter. Aiming close to an enemy in view nudges the aim onto it. Without the right stick, firing does the same with the way you steer: an enemy close to it pulls the ship's heading onto it. Nothing locks on.
 

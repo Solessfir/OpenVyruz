@@ -188,7 +188,7 @@ constexpr FBindingTable WithCommonKeys(FBindingTable Table)
 }
 
 // DAT_00509298 and DAT_00509300.
-constexpr FBindingTable DefaultKeyboard = []
+constexpr FBindingTable OriginalKeyboard = []
 {
     FBindingTable Table{};
     Table[size_t(EAction::Fire)] = { .Code = 0x20 };
@@ -199,6 +199,33 @@ constexpr FBindingTable DefaultKeyboard = []
     Table[size_t(EAction::StrafeLeft)] = { .Code = 0xcb, .Modifier = LeftShift };
     Table[size_t(EAction::StrafeRight)] = { .Code = 0xcd, .Modifier = LeftShift };
     return WithCommonKeys(Table);
+}();
+
+// The port's modern layout over the original's: the mouse aims, WASD moves and turns, Left Shift with A or D strafes, Left Alt toggles the speed, Tab shows the map, the grave accent cycles the panels,
+// the left button fires and the wheel turned down takes the next weapon (turned up, the previous one).
+constexpr FBindingTable DefaultKeyboard = []
+{
+    constexpr uint32_t LeftMouseButton = MouseCodeBase + FirstMouseButton;
+    constexpr uint32_t Tab = 0x0f;
+    constexpr uint32_t LeftAlt = 0x1c;
+    constexpr uint32_t KeyA = 0x41;
+    constexpr uint32_t KeyD = 0x44;
+    constexpr uint32_t KeyS = 0x53;
+    constexpr uint32_t KeyW = 0x57;
+    constexpr uint32_t GraveAccent = 0x60;
+    FBindingTable Table = OriginalKeyboard;
+    Table[size_t(EAction::Fire)] = { .Code = LeftMouseButton };
+    Table[size_t(EAction::Forward)] = { .Code = KeyW };
+    Table[size_t(EAction::Backward)] = { .Code = KeyS };
+    Table[size_t(EAction::Left)] = { .Code = KeyA };
+    Table[size_t(EAction::Right)] = { .Code = KeyD };
+    Table[size_t(EAction::StrafeLeft)] = { .Code = KeyA, .Modifier = LeftShift };
+    Table[size_t(EAction::StrafeRight)] = { .Code = KeyD, .Modifier = LeftShift };
+    Table[size_t(EAction::NextWeapon)] = { .Code = WheelDownCode };
+    Table[size_t(EAction::ToggleSpeed)] = { .Code = LeftAlt };
+    Table[size_t(EAction::Map)] = { .Code = Tab };
+    Table[size_t(EAction::CyclePanels)] = { .Code = GraveAccent };
+    return Table;
 }();
 
 // DAT_00509368 and DAT_005093d0: the sight turns, so Left and Right have no binding.
@@ -305,6 +332,11 @@ FKeyBindings FKeyBindings::Defaults()
 const FBindingTable& FKeyBindings::DefaultTable(const EInputDevice Device)
 {
     return Device == EInputDevice::Mouse ? DefaultMouse : Device == EInputDevice::Joypad ? DefaultJoypad : DefaultKeyboard;
+}
+
+const FBindingTable& FKeyBindings::OriginalTable(const EInputDevice Device)
+{
+    return Device == EInputDevice::Keyboard ? OriginalKeyboard : DefaultTable(Device);
 }
 
 FBindingTable& FKeyBindings::Table(const EInputDevice Device)
@@ -538,9 +570,11 @@ bool IsGamepadActionDown(const EAction Action)
     }
 }
 
-bool IsGamepadPreviousWeaponDown()
+bool IsPreviousWeaponDown(const FBindingTable& Bindings)
 {
-    return PadDown(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+    const bool bWheelFree = std::ranges::none_of(Bindings, [](const FBinding& Binding)
+        { return (Binding.Code & BindingCodeMask) == WheelUpCode || (Binding.Modifier & BindingCodeMask) == WheelUpCode; });
+    return PadDown(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER) || (bWheelFree && WheelNotch == WheelUpCode);
 }
 
 std::optional<std::pair<float, float>> GamepadMoveStick()
