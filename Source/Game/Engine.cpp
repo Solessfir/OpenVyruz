@@ -2634,18 +2634,31 @@ enum class EHolder : uint8_t
 // Objects that never open a gate or call a lift: ammo, FX, items, lifts, gates and things (kinds 0x10 to 0x15).
 constexpr std::array<std::string_view, 6> NonSensingKinds = { "ammo", "fx", "item", "lift", "gate", "thing" };
 
-FCollisionPoint ObjectPosition(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const size_t Index)
+const FPlayerTarget* PlayerAt(const FPlayerTargets Players, const size_t Index)
 {
-    if (Index == Player.ObjectIndex)
+    const auto Found = std::ranges::find(Players, Index, &FPlayerTarget::ObjectIndex);
+    return Found != Players.end() ? &*Found : nullptr;
+}
+
+FCollisionPoint ObjectPosition(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTargets Players, const size_t Index)
+{
+    if (const FPlayerTarget* const Player = PlayerAt(Players, Index))
     {
-        return Player.State.Position;
+        return Player->State.Position;
     }
 
     return BodyOf[Index] ? BodyOf[Index]->State.Position : FCollisionPoint{ .X = Level.Objects[Index].X, .Y = Level.Objects[Index].Y };
 }
 
-// DoorFindHolder at 00443430: something that may pass within two cells of the door. A key or code can only be carried by the player, and invisible objects (flag 8) are left out.
-EHolder FindHolder(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const FWorldCell Door, const int Id)
+// What may pass a door, and the player it is, whose keys it uses.
+struct FHolder
+{
+    EHolder Kind = EHolder::None;
+    const FPlayerTarget* Player = nullptr;
+};
+
+// DoorFindHolder at 00443430: something that may pass within two cells of the door. A key or code can only be carried by a player, and invisible objects (flag 8) are left out.
+FHolder FindHolder(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTargets Players, const FWorldCell Door, const int Id)
 {
     constexpr int SensorCells = 2;
     const auto Near = [&](const FCollisionPoint Position)
@@ -2656,21 +2669,24 @@ EHolder FindHolder(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf,
 
     if (Id != 0)
     {
-        return !Player.State.bInvisible && Near(Player.State.Position) && CarriesKey(Player.Inventory.Keys, Id) ? EHolder::Player : EHolder::None;
+        const auto Carrier = std::ranges::find_if(Players, [&](const FPlayerTarget& Player)
+            { return !Player.State.bInvisible && Near(Player.State.Position) && CarriesKey(Player.Inventory.Keys, Id); });
+        return Carrier != Players.end() ? FHolder{ .Kind = EHolder::Player, .Player = &*Carrier } : FHolder{};
     }
 
     for (size_t Index = 0; Index < Level.Objects.size(); ++Index)
     {
         const FLevelObject& Object = Level.Objects[Index];
-        if (!Object.bRemoved && !std::ranges::contains(NonSensingKinds, Object.SubType) && !(Index == Player.ObjectIndex && Player.State.bInvisible) &&
+        const FPlayerTarget* const Player = PlayerAt(Players, Index);
+        if (!Object.bRemoved && !std::ranges::contains(NonSensingKinds, Object.SubType) && !(Player && Player->State.bInvisible) &&
             !(BodyOf[Index] && BodyOf[Index]->bInvisible) &&
-            Near(ObjectPosition(Level, BodyOf, Player, Index)))
+            Near(ObjectPosition(Level, BodyOf, Players, Index)))
         {
-            return Index == Player.ObjectIndex ? EHolder::Player : EHolder::Other;
+            return { .Kind = Player ? EHolder::Player : EHolder::Other, .Player = Player };
         }
     }
 
-    return EHolder::None;
+    return {};
 }
 
 struct FBox
@@ -2689,7 +2705,7 @@ FBox CircleBox(const FCollisionPoint Center, const float Radius)
 
 // ObjectOverlapsSolid at 00405df0: whether a solid object in the body's cell or the cells around it overlaps the body's box.
 // Lying items are left out.
-bool ObjectOverlapsSolid(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const FObjectBody& Door)
+bool ObjectOverlapsSolid(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTargets Players, const FObjectBody& Door)
 {
     const FWorldCell DoorCell = CellOf(Door.State.Position);
     const FBox DoorBox = CircleBox(Door.State.Center, Door.Class.Radius);
@@ -2702,16 +2718,17 @@ bool ObjectOverlapsSolid(const FLevel& Level, const std::vector<FObjectBody*>& B
             continue;
         }
 
-        const FCollisionPoint Position = ObjectPosition(Level, BodyOf, Player, Index);
+        const FCollisionPoint Position = ObjectPosition(Level, BodyOf, Players, Index);
         const FWorldCell Cell = CellOf(Position);
         if (std::abs(Cell.X - DoorCell.X) > 1 || std::abs(Cell.Y - DoorCell.Y) > 1)
         {
             continue;
         }
 
-        const FBox Box = Index == Player.ObjectIndex ? CircleBox(Player.State.Center, Player.Radius)
-                         : Body                       ? CircleBox(Body->State.Center, Body->Class.Radius)
-                                                      : CircleBox(CollisionFromWorld(Position), 0.f);
+        const FPlayerTarget* const Player = PlayerAt(Players, Index);
+        const FBox Box = Player ? CircleBox(Player->State.Center, Player->Radius)
+                         : Body ? CircleBox(Body->State.Center, Body->Class.Radius)
+                                : CircleBox(CollisionFromWorld(Position), 0.f);
         if (DoorBox.MinX < Box.MaxX && Box.MinX < DoorBox.MaxX && DoorBox.MinY < Box.MaxY && Box.MinY < DoorBox.MaxY)
         {
             return true;
@@ -2722,10 +2739,10 @@ bool ObjectOverlapsSolid(const FLevel& Level, const std::vector<FObjectBody*>& B
 }
 
 // The key part of the gate and lift updates: Destroy-key takes every key or code part with the id from the holder (ObjectDestroyKeys at 0043dd20), which DoorAnnounceKeyUse (00443500) announces when it is the player, and without Key-always-needed the door forgets its id.
-void UseKey(FDoor& Door, FPlayerInventory& Inventory, const EHolder Holder, FMessages& Messages)
+void UseKey(FDoor& Door, const FHolder& Holder, FMessages& Messages)
 {
     constexpr uint32_t PlainColor = 0xffffff;
-    if ((Door.Flags & DoorDestroyKey) != 0 && Holder == EHolder::Player && std::erase_if(Inventory.Keys, [&](const FCarriedKey& Key) { return Key.Id == Door.Id; }) != 0)
+    if ((Door.Flags & DoorDestroyKey) != 0 && Holder.Player && std::erase_if(Holder.Player->Inventory.Keys, [&](const FCarriedKey& Key) { return Key.Id == Door.Id; }) != 0)
     {
         AddCentreMessage(Messages, Format((Door.Flags & DoorNeedsCode) != 0 ? "Using Code #%d !" : "Using Key #%d !", Door.Id), PlainColor);
     }
@@ -2749,7 +2766,7 @@ constexpr size_t OpenAnimation = 0;
 constexpr size_t ClosedAnimation = 1;
 
 // GateUpdate at 00443620.
-void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player, const int32_t Step,
+void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTargets Players, const int32_t Step,
     FMessages& Messages)
 {
     const FWorldCell Cell = CellOf(Body.State.Position);
@@ -2763,14 +2780,14 @@ void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
             return;
         }
 
-        const EHolder Holder = (Door.Flags & DoorSensor) != 0 ? FindHolder(Level, BodyOf, Player, Cell, Door.Id) : EHolder::None;
-        if ((Door.Flags & DoorSensor) == 0 || Holder != EHolder::None)
+        const FHolder Holder = (Door.Flags & DoorSensor) != 0 ? FindHolder(Level, BodyOf, Players, Cell, Door.Id) : FHolder{};
+        if ((Door.Flags & DoorSensor) == 0 || Holder.Kind != EHolder::None)
         {
             Door.Timer = 0;
             Door.Flags &= ~DoorStayClosed;
-            if (Holder != EHolder::None && Door.Id != 0)
+            if (Holder.Kind != EHolder::None && Door.Id != 0)
             {
-                UseKey(Door, Player.Inventory, Holder, Messages);
+                UseKey(Door, Holder, Messages);
             }
         }
         else
@@ -2801,17 +2818,17 @@ void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
         return;
     }
 
-    if (const EHolder Holder = FindHolder(Level, BodyOf, Player, Cell, Door.Id); Holder != EHolder::None)
+    if (const FHolder Holder = FindHolder(Level, BodyOf, Players, Cell, Door.Id); Holder.Kind != EHolder::None)
     {
         if (Door.Id != 0)
         {
-            UseKey(Door, Player.Inventory, Holder, Messages);
+            UseKey(Door, Holder, Messages);
         }
 
         return;
     }
 
-    if (ObjectOverlapsSolid(Level, BodyOf, Player, Body) || (Door.Flags & DoorStayOpen) != 0)
+    if (ObjectOverlapsSolid(Level, BodyOf, Players, Body) || (Door.Flags & DoorStayOpen) != 0)
     {
         return;
     }
@@ -2825,7 +2842,7 @@ void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
 // ObjectUpdateLevelExit at 00442bf0.
 // A lift leaves when nothing stands on it and comes back after its delay; the player rides it once fully inside its box, which returns true.
 // A negative Reward is its fare.
-bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTarget& Player,
+bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTargets Players,
     const int32_t Step, FMessages& Messages)
 {
     const FWorldCell Cell = CellOf(Body.State.Position);
@@ -2833,13 +2850,13 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
     {
         if ((Door.Flags & DoorOpening) != 0)
         {
-            const EHolder Holder = Door.Id == 0 ? EHolder::None : FindHolder(Level, BodyOf, Player, Cell, Door.Id);
-            if (Door.Id == 0 || Holder != EHolder::None)
+            const FHolder Holder = Door.Id == 0 ? FHolder{} : FindHolder(Level, BodyOf, Players, Cell, Door.Id);
+            if (Door.Id == 0 || Holder.Kind != EHolder::None)
             {
                 Body.bPassable = true;
                 if (Door.Id != 0)
                 {
-                    UseKey(Door, Player.Inventory, Holder, Messages);
+                    UseKey(Door, Holder, Messages);
                 }
             }
 
@@ -2865,14 +2882,14 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
         return false;
     }
 
-    const EHolder Holder = Door.Id == 0 ? EHolder::None : FindHolder(Level, BodyOf, Player, Cell, Door.Id);
-    const bool bAccess = Door.Id == 0 || Holder != EHolder::None;
+    const FHolder Holder = Door.Id == 0 ? FHolder{} : FindHolder(Level, BodyOf, Players, Cell, Door.Id);
+    const bool bAccess = Door.Id == 0 || Holder.Kind != EHolder::None;
     if (bAccess)
     {
         Body.bPassable = true;
         if (Door.Id != 0)
         {
-            UseKey(Door, Player.Inventory, Holder, Messages);
+            UseKey(Door, Holder, Messages);
         }
     }
 
@@ -2887,7 +2904,7 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
         return false;
     }
 
-    if (!ObjectOverlapsSolid(Level, BodyOf, Player, Body))
+    if (!ObjectOverlapsSolid(Level, BodyOf, Players, Body))
     {
         if ((Door.Flags & DoorStayOpen) == 0)
         {
@@ -2901,21 +2918,22 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
     }
 
     const FBox Lift = CircleBox(Body.State.Center, Body.Class.Radius);
-    const FBox Rider = CircleBox(Player.State.Center, Player.Radius);
-    // ObjectUpdateLevelExit leaves an invisible player behind.
-    if (!bAccess || Player.State.bInvisible || Rider.MinX < Lift.MinX || Lift.MaxX < Rider.MaxX || Rider.MinY < Lift.MinY || Lift.MaxY < Rider.MaxY)
+    // ObjectUpdateLevelExit leaves an invisible player behind, and one short of the fare.
+    const auto Rides = [&](const FPlayerTarget& Player)
+    {
+        const FBox Rider = CircleBox(Player.State.Center, Player.Radius);
+        return !Player.State.bInvisible && Lift.MinX <= Rider.MinX && Rider.MaxX <= Lift.MaxX && Lift.MinY <= Rider.MinY && Rider.MaxY <= Lift.MaxY &&
+               !(Body.Reward < 0.f && Player.Inventory.Money < -Body.Reward);
+    };
+    const auto Rider = bAccess ? std::ranges::find_if(Players, Rides) : Players.end();
+    if (Rider == Players.end())
     {
         return false;
     }
 
     if (Body.Reward < 0.f)
     {
-        if (Player.Inventory.Money < -Body.Reward)
-        {
-            return false;
-        }
-
-        Player.Inventory.Money += Body.Reward;
+        Rider->Inventory.Money += Body.Reward;
     }
 
     --Door.UsageCount;
@@ -4084,7 +4102,7 @@ std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, 
     return Doors;
 }
 
-const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std::span<FObjectBody> Bodies, const FPlayerTarget& Player,
+const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std::span<FObjectBody> Bodies, const FPlayerTargets Players,
     const uint32_t StepMilliseconds, FMessages& Messages)
 {
     const std::vector<FObjectBody*> BodyOf = BodiesByObject(Level, Bodies);
@@ -4109,9 +4127,9 @@ const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std
 
         if (!Door.bLift)
         {
-            StepGate(Door, *Body, Level, BodyOf, Player, Step, Messages);
+            StepGate(Door, *Body, Level, BodyOf, Players, Step, Messages);
         }
-        else if (StepLift(Door, *Body, Level, BodyOf, Player, Step, Messages) && !Exit)
+        else if (StepLift(Door, *Body, Level, BodyOf, Players, Step, Messages) && !Exit)
         {
             Exit = &Door;
         }
@@ -4603,7 +4621,7 @@ void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
     }
 }
 
-void ActivateGenerators(const FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTarget& Player)
+void ActivateGenerators(const FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTargets Players)
 {
     for (FObjectBody& Body : Bodies)
     {
@@ -4613,13 +4631,13 @@ void ActivateGenerators(const FLevel& Level, std::vector<FObjectBody>& Bodies, c
         }
 
         // The test runs with the generator as it stands, then sets flag 2 and the open bit (object +0x5c bit 1) one way or the other.
-        const bool bBlocked = ObjectOverlapsSolid(Level, BodiesByObject(Level, Bodies), Player, Body);
+        const bool bBlocked = ObjectOverlapsSolid(Level, BodiesByObject(Level, Bodies), Players, Body);
         Body.Generator->bBirthing = !bBlocked;
         Body.bPassable = bBlocked;
     }
 }
 
-void StepGenerators(FCombat& Combat, FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTarget& Player, const uint32_t StepMilliseconds)
+void StepGenerators(FCombat& Combat, FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTargets Players, const uint32_t StepMilliseconds)
 {
     // Bodies grows while the loop runs, so the generators are found by index.
     for (size_t Index = 0; Index < Bodies.size(); ++Index)
@@ -4655,7 +4673,7 @@ void StepGenerators(FCombat& Combat, FLevel& Level, std::vector<FObjectBody>& Bo
 
         const bool bWasPassable = Body.bPassable;
         Body.bPassable = Generator.bBirthing ? Body.bPassable : false;
-        const bool bBlocked = ObjectOverlapsSolid(Level, BodiesByObject(Level, Bodies), Player, Body);
+        const bool bBlocked = ObjectOverlapsSolid(Level, BodiesByObject(Level, Bodies), Players, Body);
         Body.bPassable = Generator.bBirthing ? Body.bPassable : bWasPassable;
         if (bBlocked)
         {
@@ -7312,8 +7330,8 @@ std::expected<std::string, std::string> VerifyDoors(FResourceArchive& Archive)
             Player.Center = CollisionFromWorld(At);
             for (uint32_t Time = 0; Time < Duration; Time += StepMilliseconds)
             {
-                if (const FDoor* const Lift = StepDoors(Doors, *Level, Bodies, { .State = Player, .Radius = PlayerClass->Radius, .Inventory = Inventory,
-                                                                                    .ObjectIndex = PlayerIndex }, StepMilliseconds, Messages))
+                const FPlayerTarget Rider{ .State = Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
+                if (const FDoor* const Lift = StepDoors(Doors, *Level, Bodies, FPlayerTargets(&Rider, 1), StepMilliseconds, Messages))
                 {
                     return std::optional(Lift->NextLevel);
                 }
@@ -8289,10 +8307,10 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         const FPlayerState Waiting = SpawnPlayer(Level->Objects[PlayerIndex], *Class);
         const FPlayerTarget Target{ .State = Waiting, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
         Generators += size_t(std::ranges::count_if(Bodies, [&](const FObjectBody& Body) { return Body.Generator && !Level->Objects[Body.ObjectIndex].bRemoved; }));
-        ActivateGenerators(*Level, Bodies, Target);
+        ActivateGenerators(*Level, Bodies, FPlayerTargets(&Target, 1));
         for (uint32_t Time = 0; Time < GeneratorMilliseconds; Time += StepMilliseconds)
         {
-            StepGenerators(*Combat, *Level, Bodies, Target, StepMilliseconds);
+            StepGenerators(*Combat, *Level, Bodies, FPlayerTargets(&Target, 1), StepMilliseconds);
         }
 
         for (const FObjectBody& Body : Bodies)

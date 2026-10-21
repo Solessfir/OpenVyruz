@@ -4280,7 +4280,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 Combat->Details = Settings.Details;
                 // EngineActivateObjects applies the difficulty (FUN_0043c4a0) to the player and every hunter as the level starts.
                 ApplyDifficulty(Settings.Difficulty(), *Combat, Bodies, Inventory, true);
-                ActivateGenerators(*Level, Bodies, { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex });
+                const FPlayerTarget Target{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
+                ActivateGenerators(*Level, Bodies, FPlayerTargets(&Target, 1));
                 // The carried player object brings its weapons, loaded first and in the same order, and the game clock runs on.
                 if (Carried)
                 {
@@ -5807,7 +5808,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &Rider);
                 }
 
-                if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, Rider, StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer)
+                if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, FPlayerTargets(&Rider, 1), StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer)
                 {
                     // A starred 3do-file (only "*End of Tower 3*" in the campaign) ends the game instead of loading a level.
                     NextLevel = Lift->NextLevel.starts_with('*') ? Lift->NextLevel : NextLevelPath(LevelPath, *Lift);
@@ -5827,7 +5828,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     const float ShieldBefore = Inventory.Shield;
                     if (bFullUpdate && !bFinaleStarted)
                     {
-                        StepGenerators(*Combat, *Level, Bodies, Rider, StepMilliseconds);
+                        StepGenerators(*Combat, *Level, Bodies, FPlayerTargets(&Rider, 1), StepMilliseconds);
                     }
 
                     constexpr uint32_t FireBit = 0x2;
