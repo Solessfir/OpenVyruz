@@ -684,6 +684,26 @@ FPlayerCommand PlayerCommandFromKeys(const bool bForward, const bool bBackward, 
     return Command;
 }
 
+FPlayerCommand PlayerCommandFromIntent(const FPlayerIntent& Intent, const FSurpriseState& Surprises, const bool bFinale)
+{
+    if (Surprises.bBlockedMotor || bFinale)
+    {
+        return {};
+    }
+
+    const bool bExtasy = Surprises.Active == ESurprise::Extasy;
+    const bool bLeft = Surprises.bReversed ? Intent.bTurnRight : Intent.bTurnLeft;
+    const bool bRight = Surprises.bReversed ? Intent.bTurnLeft : Intent.bTurnRight;
+    const bool bStrafeLeft = Surprises.bReversed ? Intent.bStrafeRight : Intent.bStrafeLeft;
+    const bool bStrafeRight = Surprises.bReversed ? Intent.bStrafeLeft : Intent.bStrafeRight;
+    return PlayerCommandFromKeys(bExtasy || Intent.bForward, Intent.bBackward && !bExtasy, bLeft, bRight, bStrafeLeft, bStrafeRight);
+}
+
+bool IsThrustIntent(const FPlayerIntent& Intent, const FSurpriseState& Surprises, const bool bFinale)
+{
+    return (Surprises.Active == ESurprise::Extasy || Intent.bForward) && !bFinale;
+}
+
 EPlayerTurn TurnTowardSight(const FPlayerState& Player, const FCollisionPoint ScreenVector)
 {
     if (ScreenVector.X == 0.f && ScreenVector.Y == 0.f)

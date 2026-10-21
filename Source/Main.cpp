@@ -5180,6 +5180,193 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     };
     const auto Current = std::ranges::find(DebugLevels, LevelPath);
     const size_t CurrentIndex = Current == DebugLevels.end() ? DebugLevels.size() : size_t(Current - DebugLevels.begin());
+    // ReadPlayerInput through InputActionPressed (0041d4c0), the live part: the keys, the mouse's sight and the port's pad. It runs once per step of a living player.
+    const auto ReadPlayerIntent = [&]
+    {
+        // A held strafe drops the turn on its side.
+        // The mouse turns toward the sight (InputReadDirection at 0041d7e0); with the absolute command the keyboard's movement keys give a direction, and the player turns toward it and thrusts once facing it.
+        bool bSideLeft = ActionDown(EAction::StrafeLeft);
+        bool bSideRight = ActionDown(EAction::StrafeRight);
+        bool bTurnLeft = false;
+        bool bTurnRight = false;
+        bool bForwardKey = ActionDown(EAction::Forward);
+        bool bBackwardKey = ActionDown(EAction::Backward);
+        // Moving the mouse hands the steering to the sight and a turn key hands it back; a demo steers by its records.
+        const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window, GameViewWidth);
+        // With the absolute direction the keys alone steer, so the mouse neither turns the ship nor shows the sight.
+        if (LastMouse && Mouse != *LastMouse && !Demo)
+        {
+            NoteMouseUsed();
+            bMouseSteers = !Settings.bAbsolute;
+            MouseMovedAt = ClockMilliseconds();
+        }
+
+        LastMouse = Mouse;
+        if ((ActionDown(EAction::Left) && !bSideLeft) || (ActionDown(EAction::Right) && !bSideRight) || Settings.bAbsolute || Demo)
+        {
+            bMouseSteers = false;
+        }
+
+        if (!bMouseSteers && Settings.bAbsolute)
+        {
+            const FCollisionPoint Keys{
+                .X = float(ActionDown(EAction::Right)) - float(ActionDown(EAction::Left)),
+                .Y = float(bBackwardKey) - float(bForwardKey),
+            };
+            const uint32_t Input = AbsoluteKeyInput(*Player, Keys);
+            bTurnLeft = (Input & PlayerInputTurnLeft) != 0 && !bSideLeft;
+            bTurnRight = (Input & PlayerInputTurnRight) != 0 && !bSideRight;
+            bForwardKey = (Input & PlayerInputForward) != 0;
+            bBackwardKey = (Input & PlayerInputBackward) != 0;
+        }
+        else if (!bMouseSteers)
+        {
+            bTurnLeft = ActionDown(EAction::Left) && !bSideLeft;
+            bTurnRight = ActionDown(EAction::Right) && !bSideRight;
+        }
+        else
+        {
+            SightPosition = Mouse;
+
+            const FCollisionPoint ToSight{
+                .X = float(Mouse.first - (TruncateLow(Player->Position.X) - int32_t(std::floor(CameraX)))),
+                .Y = float(Mouse.second - (TruncateLow(Player->Position.Y) - int32_t(std::floor(CameraY)))),
+            };
+            const EPlayerTurn Turn = TurnTowardSight(*Player, ToSight);
+            bTurnLeft = Turn == EPlayerTurn::Left && !bSideLeft;
+            bTurnRight = Turn == EPlayerTurn::Right && !bSideRight;
+        }
+
+        // The pad, a deliberate addition to the original's controls, steers as a twin-stick shooter: the left stick moves by screen direction and the right stick aims.
+        // Without the aim the left stick heads the ship that way as the absolute direction does; with it the ship turns to the aim and the left stick splits into thrust and strafe along the ship.
+        // Firing changes nothing in the steering. A movement key or the mouse hands the steering back.
+        const bool bKeysSteer = ActionDown(EAction::Forward) || ActionDown(EAction::Backward) || ActionDown(EAction::Left) || ActionDown(EAction::Right) || bSideLeft || bSideRight;
+        if (TakeGamepadActivity() && !Demo)
+        {
+            bPadSteers = true;
+            bMouseSteers = false;
+        }
+        else if (bKeysSteer)
+        {
+            bPadSteers = false;
+        }
+
+        bPadSteers = bPadSteers && !bMouseSteers && !Demo;
+        float PadTurnRate = 1.f;
+        if (bPadSteers)
+        {
+            const std::optional<std::pair<float, float>> Stick = GamepadMoveStick();
+            const FCollisionPoint Way = Stick ? FCollisionPoint{ .X = Stick->first, .Y = Stick->second } : FCollisionPoint{};
+            // The stick's turn eases in: slow for a slight push or near the stick's way, the class's own rate at full push and three directions off.
+            const auto EasedTurnRate = [&](const FCollisionPoint Toward, const float Push)
+            {
+                constexpr float SlowestTurnRate = 0.2f;
+                constexpr float EaseDirections = 3.f;
+                const float Ease = std::clamp(AimOffDirections(*Player, Toward) / EaseDirections, 0.f, 1.f);
+                return std::max(SlowestTurnRate, Push * Ease);
+            };
+            // The aim assist bends Axis onto the hunter in view and in clear sight closest to it within the assist cone, and holds it while Axis stays within the wider hold cone.
+            const auto Assisted = [&](const FCollisionPoint Axis) -> std::optional<FCollisionPoint>
+            {
+                constexpr float SightRadius = 1.f;
+                const float AxisLength = std::hypot(Axis.X, Axis.Y);
+                const auto Along = [&](const FObjectBody& Body)
+                {
+                    const float DX = Body.State.Position.X - Player->Position.X;
+                    const float DY = Body.State.Position.Y - Player->Position.Y;
+                    const float Length = std::hypot(DX, DY);
+                    return Length > 0.f && AxisLength > 0.f ? (DX * Axis.X + DY * Axis.Y) / (Length * AxisLength) : -1.f;
+                };
+                const auto CanAssist = [&](const FObjectBody& Body)
+                {
+                    const float X = Body.State.Position.X - float(std::floor(CameraX));
+                    const float Y = Body.State.Position.Y - float(std::floor(CameraY));
+                    return X >= 0.f && Y >= 0.f && X < GameViewWidth && Y < float(ScreenHeight) && IsAutoAimTarget(Body, *Level) &&
+                           !QueryTerrainCollision(*Terrain, { .Center = Player->Center, .Radius = SightRadius }, { .Center = Body.State.Center, .Radius = SightRadius }, true);
+                };
+                const auto Held = AssistTarget ? std::ranges::find(Bodies, *AssistTarget, &FObjectBody::ObjectIndex) : Bodies.end();
+                if (Held == Bodies.end() || Along(*Held) <= AssistKeepCos || !CanAssist(*Held))
+                {
+                    AssistTarget.reset();
+                    float Best = AssistCos;
+                    for (const FObjectBody& Body : Bodies)
+                    {
+                        if (const float Score = Along(Body); Score > Best && CanAssist(Body))
+                        {
+                            Best = Score;
+                            AssistTarget = Body.ObjectIndex;
+                        }
+                    }
+                }
+
+                const auto Found = AssistTarget ? std::ranges::find(Bodies, *AssistTarget, &FObjectBody::ObjectIndex) : Bodies.end();
+                if (Found == Bodies.end())
+                {
+                    return std::nullopt;
+                }
+
+                return FCollisionPoint{ .X = Found->State.Position.X - Player->Position.X, .Y = Found->State.Position.Y - Player->Position.Y };
+            };
+            if (const std::optional<std::pair<float, float>> AimStick = GamepadAimStick())
+            {
+                // By hand the facing holds until the aim is three quarters of a direction off it, so a stick resting between two directions does not twitch;
+                // on a hunter it turns at the class's own rate onto the direction nearest it.
+                constexpr float StickHoldDirections = 0.75f;
+                const std::optional<FCollisionPoint> Target = Assisted({ .X = AimStick->first, .Y = AimStick->second });
+                const FCollisionPoint Aim = Target.value_or(FCollisionPoint{ .X = AimStick->first, .Y = AimStick->second });
+                PadTurnRate = EasedTurnRate(Aim, Target ? 1.f : GamepadAimPush());
+                const uint32_t Input = Stick ? FacingMoveInput(*Player, Way) : 0;
+                const EPlayerTurn Turn = TurnTowardAim(*Player, Aim, Target ? 0.f : StickHoldDirections);
+                bForwardKey = (Input & PlayerInputForward) != 0;
+                bBackwardKey = (Input & PlayerInputBackward) != 0;
+                bSideLeft = (Input & PlayerInputStrafeLeft) != 0;
+                bSideRight = (Input & PlayerInputStrafeRight) != 0;
+                // The aim keeps turning while the ship strafes.
+                bTurnLeft = Turn == EPlayerTurn::Left;
+                bTurnRight = Turn == EPlayerTurn::Right;
+            }
+            else
+            {
+                // Single-stick: while the pad fires, the assist bends the heading (the stick's way, or the facing with the stick at rest), so the ship steers onto a hunter without strafing.
+                const std::optional<FCollisionPoint> Target = IsGamepadActionDown(EAction::Fire) ? Assisted(Stick ? Way : PlayerFacing(*Player)) : std::nullopt;
+                if (!Target)
+                {
+                    AssistTarget.reset();
+                }
+
+                const FCollisionPoint Heading = Target.value_or(Way);
+                // Squared, so the left stick turns gently until pushed well out; it also sets the speed, which stays linear.
+                PadTurnRate = Target ? EasedTurnRate(Heading, 1.f) : Stick ? EasedTurnRate(Heading, GamepadThrottle() * GamepadThrottle()) : 1.f;
+                const uint32_t Input = Stick ? StickMoveInput(*Player, Heading) : 0;
+                const EPlayerTurn TargetTurn = Target ? TurnTowardAim(*Player, *Target) : EPlayerTurn::None;
+                bForwardKey = (Input & PlayerInputForward) != 0;
+                bBackwardKey = (Input & PlayerInputBackward) != 0;
+                bSideLeft = false;
+                bSideRight = false;
+                // On a target the turn is exact, not within the stick's one direction of slack.
+                bTurnLeft = Target ? TargetTurn == EPlayerTurn::Left : (Input & PlayerInputTurnLeft) != 0;
+                bTurnRight = Target ? TargetTurn == EPlayerTurn::Right : (Input & PlayerInputTurnRight) != 0;
+            }
+        }
+
+        FPlayerIntent Intent{
+            .bForward = bForwardKey,
+            .bBackward = bBackwardKey,
+            .bTurnLeft = bTurnLeft,
+            .bTurnRight = bTurnRight,
+            .bStrafeLeft = bSideLeft,
+            .bStrafeRight = bSideRight,
+            .TurnRate = PadTurnRate,
+        };
+        // The left stick's push sets the top speed and the strafe: thrust only pushes below a tenth of Speed-max, as the low speed relies on.
+        if (bPadSteers && GamepadMoveStick())
+        {
+            Intent.Throttle = GamepadThrottle();
+        }
+
+        return Intent;
+    };
+
     while (!glfwWindowShouldClose(Window))
     {
         PollEvents(Window);
@@ -5541,185 +5728,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                     StepCodeTimeouts(Inventory, *Level, Messages, StepMilliseconds);
 
-                    // ReadPlayerInput through InputActionPressed (0041d4c0): Reversed-commands swaps left with right and the two strafes; Blocked-motor ignores every command.
-                    // A held strafe drops the turn on its side; the keyboard's default strafes are Left Shift with an arrow.
-                    // The mouse turns toward the sight (InputReadDirection at 0041d7e0); with the absolute command the keyboard's movement keys give a direction, and the player turns toward it and thrusts once facing it.
-                    const FSurpriseState& Surprises = Inventory.Surprises;
-                    bool bSideLeft = ActionDown(EAction::StrafeLeft);
-                    bool bSideRight = ActionDown(EAction::StrafeRight);
-                    bool bTurnLeft = false;
-                    bool bTurnRight = false;
-                    bool bForwardKey = ActionDown(EAction::Forward);
-                    bool bBackwardKey = ActionDown(EAction::Backward);
-                    // Moving the mouse hands the steering to the sight and a turn key hands it back; a demo steers by its records.
-                    const std::pair<int32_t, int32_t> Mouse = ScreenCursor(Window, GameViewWidth);
-                    // With the absolute direction the keys alone steer, so the mouse neither turns the ship nor shows the sight.
-                    if (LastMouse && Mouse != *LastMouse && !Demo)
-                    {
-                        NoteMouseUsed();
-                        bMouseSteers = !Settings.bAbsolute;
-                        MouseMovedAt = ClockMilliseconds();
-                    }
-
-                    LastMouse = Mouse;
-                    if ((ActionDown(EAction::Left) && !bSideLeft) || (ActionDown(EAction::Right) && !bSideRight) || Settings.bAbsolute || Demo)
-                    {
-                        bMouseSteers = false;
-                    }
-
-                    if (!bMouseSteers && Settings.bAbsolute)
-                    {
-                        const FCollisionPoint Keys{
-                            .X = float(ActionDown(EAction::Right)) - float(ActionDown(EAction::Left)),
-                            .Y = float(bBackwardKey) - float(bForwardKey),
-                        };
-                        const uint32_t Input = AbsoluteKeyInput(*Player, Keys);
-                        bTurnLeft = (Input & PlayerInputTurnLeft) != 0 && !bSideLeft;
-                        bTurnRight = (Input & PlayerInputTurnRight) != 0 && !bSideRight;
-                        bForwardKey = (Input & PlayerInputForward) != 0;
-                        bBackwardKey = (Input & PlayerInputBackward) != 0;
-                    }
-                    else if (!bMouseSteers)
-                    {
-                        bTurnLeft = ActionDown(EAction::Left) && !bSideLeft;
-                        bTurnRight = ActionDown(EAction::Right) && !bSideRight;
-                    }
-                    else
-                    {
-                        SightPosition = Mouse;
-
-                        const FCollisionPoint ToSight{
-                            .X = float(Mouse.first - (TruncateLow(Player->Position.X) - int32_t(std::floor(CameraX)))),
-                            .Y = float(Mouse.second - (TruncateLow(Player->Position.Y) - int32_t(std::floor(CameraY)))),
-                        };
-                        const EPlayerTurn Turn = TurnTowardSight(*Player, ToSight);
-                        bTurnLeft = Turn == EPlayerTurn::Left && !bSideLeft;
-                        bTurnRight = Turn == EPlayerTurn::Right && !bSideRight;
-                    }
-
-                    // The pad, a deliberate addition to the original's controls, steers as a twin-stick shooter: the left stick moves by screen direction and the right stick aims.
-                    // Without the aim the left stick heads the ship that way as the absolute direction does; with it the ship turns to the aim and the left stick splits into thrust and strafe along the ship.
-                    // Firing changes nothing in the steering. A movement key or the mouse hands the steering back.
-                    const bool bKeysSteer = ActionDown(EAction::Forward) || ActionDown(EAction::Backward) || ActionDown(EAction::Left) || ActionDown(EAction::Right) || bSideLeft || bSideRight;
-                    if (TakeGamepadActivity() && !Demo)
-                    {
-                        bPadSteers = true;
-                        bMouseSteers = false;
-                    }
-                    else if (bKeysSteer)
-                    {
-                        bPadSteers = false;
-                    }
-
-                    bPadSteers = bPadSteers && !bMouseSteers && !Demo;
-                    float PadTurnRate = 1.f;
-                    if (bPadSteers)
-                    {
-                        const std::optional<std::pair<float, float>> Stick = GamepadMoveStick();
-                        const FCollisionPoint Way = Stick ? FCollisionPoint{ .X = Stick->first, .Y = Stick->second } : FCollisionPoint{};
-                        // The stick's turn eases in: slow for a slight push or near the stick's way, the class's own rate at full push and three directions off.
-                        const auto EasedTurnRate = [&](const FCollisionPoint Toward, const float Push)
-                        {
-                            constexpr float SlowestTurnRate = 0.2f;
-                            constexpr float EaseDirections = 3.f;
-                            const float Ease = std::clamp(AimOffDirections(*Player, Toward) / EaseDirections, 0.f, 1.f);
-                            return std::max(SlowestTurnRate, Push * Ease);
-                        };
-                        // The aim assist bends Axis onto the hunter in view and in clear sight closest to it within the assist cone, and holds it while Axis stays within the wider hold cone.
-                        const auto Assisted = [&](const FCollisionPoint Axis) -> std::optional<FCollisionPoint>
-                        {
-                            constexpr float SightRadius = 1.f;
-                            const float AxisLength = std::hypot(Axis.X, Axis.Y);
-                            const auto Along = [&](const FObjectBody& Body)
-                            {
-                                const float DX = Body.State.Position.X - Player->Position.X;
-                                const float DY = Body.State.Position.Y - Player->Position.Y;
-                                const float Length = std::hypot(DX, DY);
-                                return Length > 0.f && AxisLength > 0.f ? (DX * Axis.X + DY * Axis.Y) / (Length * AxisLength) : -1.f;
-                            };
-                            const auto CanAssist = [&](const FObjectBody& Body)
-                            {
-                                const float X = Body.State.Position.X - float(std::floor(CameraX));
-                                const float Y = Body.State.Position.Y - float(std::floor(CameraY));
-                                return X >= 0.f && Y >= 0.f && X < GameViewWidth && Y < float(ScreenHeight) && IsAutoAimTarget(Body, *Level) &&
-                                       !QueryTerrainCollision(*Terrain, { .Center = Player->Center, .Radius = SightRadius }, { .Center = Body.State.Center, .Radius = SightRadius }, true);
-                            };
-                            const auto Held = AssistTarget ? std::ranges::find(Bodies, *AssistTarget, &FObjectBody::ObjectIndex) : Bodies.end();
-                            if (Held == Bodies.end() || Along(*Held) <= AssistKeepCos || !CanAssist(*Held))
-                            {
-                                AssistTarget.reset();
-                                float Best = AssistCos;
-                                for (const FObjectBody& Body : Bodies)
-                                {
-                                    if (const float Score = Along(Body); Score > Best && CanAssist(Body))
-                                    {
-                                        Best = Score;
-                                        AssistTarget = Body.ObjectIndex;
-                                    }
-                                }
-                            }
-
-                            const auto Found = AssistTarget ? std::ranges::find(Bodies, *AssistTarget, &FObjectBody::ObjectIndex) : Bodies.end();
-                            if (Found == Bodies.end())
-                            {
-                                return std::nullopt;
-                            }
-
-                            return FCollisionPoint{ .X = Found->State.Position.X - Player->Position.X, .Y = Found->State.Position.Y - Player->Position.Y };
-                        };
-                        if (const std::optional<std::pair<float, float>> AimStick = GamepadAimStick())
-                        {
-                            // By hand the facing holds until the aim is three quarters of a direction off it, so a stick resting between two directions does not twitch;
-                            // on a hunter it turns at the class's own rate onto the direction nearest it.
-                            constexpr float StickHoldDirections = 0.75f;
-                            const std::optional<FCollisionPoint> Target = Assisted({ .X = AimStick->first, .Y = AimStick->second });
-                            const FCollisionPoint Aim = Target.value_or(FCollisionPoint{ .X = AimStick->first, .Y = AimStick->second });
-                            PadTurnRate = EasedTurnRate(Aim, Target ? 1.f : GamepadAimPush());
-                            const uint32_t Input = Stick ? FacingMoveInput(*Player, Way) : 0;
-                            const EPlayerTurn Turn = TurnTowardAim(*Player, Aim, Target ? 0.f : StickHoldDirections);
-                            bForwardKey = (Input & PlayerInputForward) != 0;
-                            bBackwardKey = (Input & PlayerInputBackward) != 0;
-                            bSideLeft = (Input & PlayerInputStrafeLeft) != 0;
-                            bSideRight = (Input & PlayerInputStrafeRight) != 0;
-                            // The aim keeps turning while the ship strafes.
-                            bTurnLeft = Turn == EPlayerTurn::Left;
-                            bTurnRight = Turn == EPlayerTurn::Right;
-                        }
-                        else
-                        {
-                            // Single-stick: while the pad fires, the assist bends the heading (the stick's way, or the facing with the stick at rest), so the ship steers onto a hunter without strafing.
-                            const std::optional<FCollisionPoint> Target = IsGamepadActionDown(EAction::Fire) ? Assisted(Stick ? Way : PlayerFacing(*Player)) : std::nullopt;
-                            if (!Target)
-                            {
-                                AssistTarget.reset();
-                            }
-
-                            const FCollisionPoint Heading = Target.value_or(Way);
-                            // Squared, so the left stick turns gently until pushed well out; it also sets the speed, which stays linear.
-                            PadTurnRate = Target ? EasedTurnRate(Heading, 1.f) : Stick ? EasedTurnRate(Heading, GamepadThrottle() * GamepadThrottle()) : 1.f;
-                            const uint32_t Input = Stick ? StickMoveInput(*Player, Heading) : 0;
-                            const EPlayerTurn TargetTurn = Target ? TurnTowardAim(*Player, *Target) : EPlayerTurn::None;
-                            bForwardKey = (Input & PlayerInputForward) != 0;
-                            bBackwardKey = (Input & PlayerInputBackward) != 0;
-                            bSideLeft = false;
-                            bSideRight = false;
-                            // On a target the turn is exact, not within the stick's one direction of slack.
-                            bTurnLeft = Target ? TargetTurn == EPlayerTurn::Left : (Input & PlayerInputTurnLeft) != 0;
-                            bTurnRight = Target ? TargetTurn == EPlayerTurn::Right : (Input & PlayerInputTurnRight) != 0;
-                        }
-                    }
-
-                    // Extasy (object flag 0x1000000) holds the thrust full forward whatever the keys say.
-                    const bool bForward = Surprises.Active == ESurprise::Extasy || bForwardKey;
-                    bThrustInput = bForward && !bFinaleStarted;
-                    const bool bLeft = Surprises.bReversed ? bTurnRight : bTurnLeft;
-                    const bool bRight = Surprises.bReversed ? bTurnLeft : bTurnRight;
-                    const bool bStrafeLeft = Surprises.bReversed ? bSideRight : bSideLeft;
-                    const bool bStrafeRight = Surprises.bReversed ? bSideLeft : bSideRight;
-                    // Unlike the original, the finale takes the controls away, so nothing can undo the win.
-                    FPlayerCommand Command = Surprises.bBlockedMotor || bFinaleStarted ? FPlayerCommand{}
-                                                                      : PlayerCommandFromKeys(bForward, bBackwardKey && Surprises.Active != ESurprise::Extasy, bLeft, bRight,
-                                                                          bStrafeLeft, bStrafeRight);
+                    const FPlayerIntent Intent = ReadPlayerIntent();
+                    bThrustInput = IsThrustIntent(Intent, Inventory.Surprises, bFinaleStarted);
+                    FPlayerCommand Command = PlayerCommandFromIntent(Intent, Inventory.Surprises, bFinaleStarted);
                     // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its velocity in collision units, and drives with the replayed input.
                     if (Demo && DemoCursor >= 1)
                     {
@@ -5743,13 +5754,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
 
                     FMovementClass Movement = *PlayerClass;
-                    Movement.TurnTimeout = int(float(Movement.TurnTimeout) / PadTurnRate);
-                    // The left stick's push sets the top speed and the strafe: thrust only pushes below a tenth of Speed-max, as the low speed relies on.
-                    if (bPadSteers && GamepadMoveStick())
+                    Movement.TurnTimeout = int(float(Movement.TurnTimeout) / Intent.TurnRate);
+                    if (Intent.Throttle)
                     {
-                        const float Throttle = GamepadThrottle();
-                        Movement.SpeedMax *= Throttle;
-                        Command.Strafe *= Throttle;
+                        Movement.SpeedMax *= *Intent.Throttle;
+                        Command.Strafe *= *Intent.Throttle;
                     }
 
                     if (const FObjectBody* const Struck = StepPlayer(*Player, Movement, Command, StepMilliseconds, *Terrain, *Level, Bodies))

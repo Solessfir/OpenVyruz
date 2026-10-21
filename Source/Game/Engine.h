@@ -982,6 +982,26 @@ std::optional<uint32_t> ParseBehaviour(std::string_view Text);
 
 FPlayerCommand PlayerCommandFromKeys(bool bForward, bool bBackward, bool bTurnLeft, bool bTurnRight, bool bStrafeLeft, bool bStrafeRight);
 
+// What the player asks of a step, from the keys, the mouse's sight or the pad, before the surprises and the finale bend it.
+struct FPlayerIntent
+{
+    bool bForward = false;
+    bool bBackward = false;
+    bool bTurnLeft = false;
+    bool bTurnRight = false;
+    bool bStrafeLeft = false;
+    bool bStrafeRight = false;
+    // The port's pad: its turn rate, a share of the class's, and its push, which scales the top speed and the strafe.
+    float TurnRate = 1.f;
+    std::optional<float> Throttle;
+};
+
+// ReadPlayerInput's rules: Extasy holds the thrust forward, Reversed-commands swaps left with right and the two strafes, and Blocked-motor ignores every command.
+// Unlike the original, the finale takes the controls away too, so nothing can undo the win.
+FPlayerCommand PlayerCommandFromIntent(const FPlayerIntent& Intent, const FSurpriseState& Surprises, bool bFinale);
+// Whether the step thrusts forward, which a blocked motor answers with start-engine.wav.
+bool IsThrustIntent(const FPlayerIntent& Intent, const FSurpriseState& Surprises, bool bFinale);
+
 // One .3DR record per game step: the step's start time on the game clock, its input bits, and the player's position and direction before the step.
 struct FDemoRecord
 {
