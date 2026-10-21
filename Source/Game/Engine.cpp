@@ -6615,6 +6615,19 @@ std::vector<FDecorAnimation> StartMapAnimations(const FLevel& Level, FResourceAr
     return StartLevelMapAnimations(Level, Archive, Random);
 }
 
+void ScaleHunters(const std::span<FObjectBody> Bodies, const float Ratio)
+{
+    for (FObjectBody& Body : Bodies)
+    {
+        if (HuntsPlayer(Body))
+        {
+            Body.Energy *= Ratio;
+            Body.Shield *= Ratio;
+            Body.ShieldMax *= Ratio;
+        }
+    }
+}
+
 bool IsAutoAimTarget(const FObjectBody& Body, const FLevel& Level)
 {
     return HuntsPlayer(Body) && 0.f < Body.Energy && !Body.bInvisible && !Level.Objects[Body.ObjectIndex].bRemoved && !Level.Objects[Body.ObjectIndex].bWrecked;

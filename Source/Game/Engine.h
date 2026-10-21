@@ -1079,6 +1079,13 @@ size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inven
 size_t PreviousPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inventory);
 // What the pad's aim may lock onto: a live, visible object that hunts the player (ObjectHuntsPlayer at 004371b0), not yet a wreck.
 bool IsAutoAimTarget(const FObjectBody& Body, const FLevel& Level);
+// The port's co-op: the hunters' energy and shield for a number of players, so the extra guns do not make a level easier, and their scaling by a ratio of two such factors.
+constexpr float CoopHunterScale(const size_t PlayerCount)
+{
+    constexpr float PerExtraPlayer = 0.6f;
+    return 1.f + PerExtraPlayer * float(PlayerCount > 1 ? PlayerCount - 1 : 0);
+}
+void ScaleHunters(std::span<FObjectBody> Bodies, float Ratio);
 // The player's death branch of EngineUpdateObjects (004406e0): ObjectDestroy keeps the player object but sets off its explosions.
 void ExplodePlayer(FCombat& Combat, FCollisionPoint Position, float Altitude, size_t PlayerObject);
 // FUN_00437740: takes the slot's weapon in hand and, with option flag 8, lists its weapon and ammo for 4 seconds.

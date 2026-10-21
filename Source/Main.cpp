@@ -4231,6 +4231,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // Session +0x101c: the last step, which the draw pass plays again.
     uint32_t LastStepMilliseconds = 0;
     std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
+    // The co-op toughening the hunters have now (CoopHunterScale).
+    float HunterScale = 1.f;
     Local.Index = PlayerObject.Index.value_or(Level->Objects.size());
     const size_t PlayerIndex = Local.Index;
     std::vector<FPickup> Pickups = CreatePickups(*Level);
@@ -4392,6 +4394,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                         Combat->CreatedObjects.push_back(*Created);
                     }
+                }
+
+                // The hunters toughen for every player beyond the first.
+                if (const float Wanted = CoopHunterScale(Players.size()); Wanted != HunterScale)
+                {
+                    ScaleHunters(Bodies, Wanted / HunterScale);
+                    HunterScale = Wanted;
                 }
 
                 for (const FEffectClass& Effect : Combat->EffectClasses)
@@ -6314,6 +6323,18 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             if (std::optional<FPlacedAnimation> Placed = PlacedAnimationFor(Sprite, *Objects, *Level, ActorAnimations))
                             {
                                 PlacedAnimations.push_back(std::move(*Placed));
+                            }
+                        }
+                    }
+
+                    // Hunters born during the level toughen as the placed ones did.
+                    if (HunterScale != 1.f)
+                    {
+                        for (FObjectBody& Body : Bodies)
+                        {
+                            if (std::ranges::contains(Combat->CreatedObjects, Body.ObjectIndex))
+                            {
+                                ScaleHunters(std::span(&Body, 1), HunterScale);
                             }
                         }
                     }
