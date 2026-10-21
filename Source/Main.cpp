@@ -4067,6 +4067,8 @@ struct FCheats
     bool bInfiniteAmmo = false;
     bool bAllWeapons = false;
     bool bInfiniteMoney = false;
+    // A development aid rather than a cheat: a second ship that follows the player, for trying the co-op paths.
+    bool bCoopDummy = false;
 };
 
 // The cash --infiniteMoney keeps the player at.
@@ -4081,6 +4083,7 @@ bool FCheats::* CheatFlag(const std::string_view Argument)
         { "--allweapons", &FCheats::bAllWeapons },
         { "--allweapon", &FCheats::bAllWeapons },
         { "--infinitemoney", &FCheats::bInfiniteMoney },
+        { "--coopdummy", &FCheats::bCoopDummy },
     };
     std::string Lower(Argument);
     std::ranges::transform(Lower, Lower.begin(), [](const char Character) { return char(std::tolower(uint8_t(Character))); });
@@ -4367,6 +4370,29 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
                 }
 
+                // --coopDummy puts a second ship of the player's class beside the first; the steps' created objects give it its sprites.
+                constexpr float DummyGap = 64.f;
+                if (Cheats.bCoopDummy && !Demo)
+                {
+                    if (const std::optional<size_t> Created = CreateLevelObject(*Level, PlayerObject->ClassName, PlayerObject->X + DummyGap, PlayerObject->Y))
+                    {
+                        FLevelPlayer& Dummy = Players.emplace_back();
+                        Dummy.Object = { .Objects = &Level->Objects, .Index = *Created };
+                        Dummy.Index = *Created;
+                        Dummy.Name = "Dummy";
+                        if (std::expected<FMovementClass, std::string> DummyClass = ReadMovementClass(*Dummy.Object))
+                        {
+                            Dummy.Class = *DummyClass;
+                            Dummy.State = SpawnPlayer(*Dummy.Object, *Dummy.Class);
+                            Dummy.Inventory = CreateInventory(*Dummy.Object);
+                            ApplyDifficulty(Settings.Difficulty(), *Combat, {}, Dummy.Inventory, true);
+                            Dummy.Inventory.Arms = Combat->StartArms;
+                        }
+
+                        Combat->CreatedObjects.push_back(*Created);
+                    }
+                }
+
                 for (const FEffectClass& Effect : Combat->EffectClasses)
                 {
                     if (!FindOrLoadSheet(*Objects, Archive, Renderer, Effect.GafPath))
@@ -4584,9 +4610,15 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
         }
 
-        PlayerObject->X = Player->Position.X;
-        PlayerObject->Y = Player->Position.Y;
-        PlayerObject->Direction = (Player->Pose - 1) / (PlayerPoseCount / ObjectDirectionCount);
+        for (const FLevelPlayer& Each : Players)
+        {
+            if (Each.Object && Each.State)
+            {
+                Each.Object->X = Each.State->Position.X;
+                Each.Object->Y = Each.State->Position.Y;
+                Each.Object->Direction = (Each.State->Pose - 1) / (PlayerPoseCount / ObjectDirectionCount);
+            }
+        }
     };
     const auto CarriedNow = [&]
     {
@@ -5209,6 +5241,24 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     const auto Current = std::ranges::find(DebugLevels, LevelPath);
     const size_t CurrentIndex = Current == DebugLevels.end() ? DebugLevels.size() : size_t(Current - DebugLevels.begin());
     // ReadPlayerInput through InputActionPressed (0041d4c0), the live part: the keys, the mouse's sight and the port's pad. It runs once per step of a living player.
+    // --coopDummy's ship heads for the local player and thrusts while it is further than a short gap, nearly facing it.
+    const auto FollowIntent = [&](const FPlayerState& Self) -> FPlayerIntent
+    {
+        constexpr float FollowGap = 160.f;
+        constexpr float ThrustDirections = 2.f;
+        if (!Player || Player->bDying)
+        {
+            return {};
+        }
+
+        const FCollisionPoint Toward{ .X = Player->Position.X - Self.Position.X, .Y = Player->Position.Y - Self.Position.Y };
+        const EPlayerTurn Turn = TurnTowardAim(Self, Toward);
+        return {
+            .bForward = std::hypot(Toward.X, Toward.Y) > FollowGap && AimOffDirections(Self, Toward) <= ThrustDirections,
+            .bTurnLeft = Turn == EPlayerTurn::Left,
+            .bTurnRight = Turn == EPlayerTurn::Right,
+        };
+    };
     const auto ReadPlayerIntent = [&]
     {
         // A held strafe drops the turn on its side.
@@ -5770,8 +5820,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                     StepCodeTimeouts(Owned, *Level, MessagesOf(Each), StepMilliseconds);
 
-                    // Only the local player has keys, a mouse and a pad here; the others stand still until their input comes from elsewhere.
-                    const FPlayerIntent Intent = bLocal ? ReadPlayerIntent() : FPlayerIntent{};
+                    // Only the local player has keys, a mouse and a pad here; until the others' input comes from elsewhere, they follow it.
+                    const FPlayerIntent Intent = bLocal ? ReadPlayerIntent() : FollowIntent(State);
                     Each.bThrustInput = IsThrustIntent(Intent, Owned.Surprises, bFinaleStarted);
                     FPlayerCommand Command = PlayerCommandFromIntent(Intent, Owned.Surprises, bFinaleStarted);
                     // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its velocity in collision units, and drives with the replayed input.
@@ -6273,22 +6323,27 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         SyncGeneratorLights(PlacedAnimations, *Objects, Bodies);
         StepPlacedAnimations(PlacedAnimations, *Objects, *Level, ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), int(GameViewWidth), *Level), int32_t(DrawStepMilliseconds), true);
         UpdateObjectSprites(*Objects, *Level, ActorAnimations, *Doors, PlacedAnimations);
-        if (Player)
+        for (FLevelPlayer& Each : Players)
         {
+            if (!Each.State || !Each.Object)
+            {
+                continue;
+            }
+
             // The player's 48 poses are the frames of the rot animation that follows its 24 direction animations; odd poses match them.
-            const size_t RotAnimation = size_t(PlayerObject->GafIndex - 1 + ObjectDirectionCount);
+            const size_t RotAnimation = size_t(Each.Object->GafIndex - 1 + ObjectDirectionCount);
             for (FObjectSprite& Sprite : Objects->Sprites)
             {
                 const std::vector<Gaf::FAnimation>& Animations = Objects->Animations[Sprite.SheetIndex];
-                if (Sprite.ObjectIndex == PlayerIndex && !Sprite.bShadow && RotAnimation < Animations.size() &&
+                if (Sprite.ObjectIndex == Each.Index && !Sprite.bShadow && RotAnimation < Animations.size() &&
                     Animations[RotAnimation].Frames.size() == size_t(PlayerPoseCount))
                 {
-                    Sprite.Frame = Animations[RotAnimation].Frames[size_t(Player->Pose - 1)];
+                    Sprite.Frame = Animations[RotAnimation].Frames[size_t(Each.State->Pose - 1)];
                     const std::vector<FSpriteFrame>& Frames = Objects->Sheets[Sprite.SheetIndex].Frames;
                     if (Sprite.Frame.BitmapIndex != 0 && Sprite.Frame.BitmapIndex <= Frames.size())
                     {
                         const FSpriteFrame& Bitmap = Frames[Sprite.Frame.BitmapIndex - 1];
-                        PlayerSpriteSize = float(std::min(Bitmap.Width, Bitmap.Height));
+                        Each.SpriteSize = float(std::min(Bitmap.Width, Bitmap.Height));
                     }
                 }
             }
@@ -7452,6 +7507,7 @@ Playing:
   --skipIntro               Go straight to the main menu, without the story page and the intro.
                             Extras still plays the intro.
   --windowed                Start in a window instead of fullscreen; Alt+Enter or F11 switches either way.
+  --coopDummy               Add a second ship that follows the player about, for trying out co-op. Do not save the game with it.
 
 Cheats (combine freely, any case; never applied to the demo):
   --godMode                 Energy and shield stay full, so nothing can kill the player.
