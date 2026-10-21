@@ -368,12 +368,25 @@ std::string ToWindows1251(const std::string_view Utf8)
     return Result;
 }
 
+// The port's own texts, which the exe never had: co-op's. A text missing here shows in English.
+constexpr FTranslation PortTranslations[] = {
+    { "%s is back !", "%s снова в строю !" },
+    { "%s is down !\nGet close to bring them back.", "%s подбит !\nПодлетите ближе, чтобы помочь." },
+    { "Back in the fight !", "Снова в бою !" },
+    { "You are down !\nStay close to a teammate to get back up.", "Вы подбиты !\nДержитесь рядом с напарником, чтобы подняться." },
+};
+
 const std::unordered_map<std::string_view, std::string>& RussianTexts()
 {
     static const std::unordered_map<std::string_view, std::string> Texts = []
     {
         std::unordered_map<std::string_view, std::string> Result;
         for (const FTranslation& Translation : Translations)
+        {
+            Result.emplace(Translation.English, ToWindows1251(Translation.Russian));
+        }
+
+        for (const FTranslation& Translation : PortTranslations)
         {
             Result.emplace(Translation.English, ToWindows1251(Translation.Russian));
         }

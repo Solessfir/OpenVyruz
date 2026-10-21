@@ -4055,6 +4055,9 @@ struct FLevelPlayer
     // Object +0xcc of the dead player: EngineUpdateObjects ends the game when it runs out.
     std::optional<int32_t> DeathTimer;
     FDeathDrift DeathDrift;
+    // The port's co-op: a player out of energy is down for this long, unable to steer or fire and left alone by the enemies, unless a teammate stays close long enough to bring it back.
+    std::optional<int32_t> DownTimer;
+    int32_t ReviveTime = 0;
     // The forward input of the last step, which a blocked motor answers with start-engine.wav, and the fire input, which the voices follow.
     bool bThrustInput = false;
     bool bFireInput = false;
@@ -4650,6 +4653,25 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // EngineReadActionKeys (0043b5c0) and InputActionPressed (0041d4c0) read the actions through the device's bindings (InputActionDown at 0041d650).
     const auto ActionDown = [&](const EAction Action) { return IsActionDown(Window, Settings.Controls(), Action) || IsGamepadActionDown(Action); };
     bool bEscapeDown = ActionDown(EAction::Menu);
+    // Where a co-op player who stayed down comes back: the level's start, then the place the team last saved.
+    FCollisionPoint TeamRespawn = PlayerObject ? FCollisionPoint{ .X = PlayerObject->X, .Y = PlayerObject->Y } : FCollisionPoint{};
+    // A co-op player's ship, once a teammate is out of energy, waits to be revived rather than exploding.
+    const auto IsCoop = [&] { return Players.size() > 1; };
+    // The port's co-op messages, centred as the original's key and code messages are.
+    const auto SayToLocal = [&](std::string Text, const uint32_t Color)
+    {
+        constexpr int32_t CentreOffset = -100;
+        constexpr uint32_t LifeMilliseconds = 3000;
+        constexpr uint32_t Font = 6;
+        Messages.Add({
+            .Text = std::move(Text),
+            .X = float((Messages.ViewWidth >> 1) + CentreOffset),
+            .Y = float((int32_t(ScreenHeight) >> 1) + CentreOffset),
+            .LifeMilliseconds = LifeMilliseconds,
+            .Font = Font,
+            .Color = { .Diffuse = Color },
+        }, EMessagePlacement::Replace);
+    };
     double CameraX = PlayerObject ? PlayerObject->X - GameViewWidth * 0.5 : 0.0;
     double CameraY = PlayerObject ? PlayerObject->Y - ScreenHeight * 0.5 : 0.0;
     std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
@@ -5831,6 +5853,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         continue;
                     }
 
+                    // A downed ship coasts to a stop and can still be pushed, but takes no command and no surprise.
+                    if (Each.DownTimer)
+                    {
+                        StepPlayer(State, *Each.Class, {}, StepMilliseconds, *Terrain, *Level, Bodies);
+                        continue;
+                    }
+
                     // The player's update starts with its surprises (FUN_0041d290).
                     if (Combat)
                     {
@@ -5937,7 +5966,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 // The bodies' shields rise with the local player's while it lives.
                 for (FLevelPlayer& Each : Players)
                 {
-                    if (Each.State && !Each.DeathTimer)
+                    if (Each.State && !Each.DeathTimer && !Each.DownTimer)
                     {
                         StepShields(bFullUpdate && &Each == &Local ? std::span<FObjectBody>(Bodies) : std::span<FObjectBody>(), *Level, Each.Inventory);
                     }
@@ -5995,10 +6024,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             continue;
                         }
 
-                        const bool bLiveFire = &Each != &Local ? false : Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
+                        const bool bLiveFire = &Each != &Local || Each.DownTimer ? false : Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
                         Each.bFireInput = bLiveFire;
                         const bool bFire = !Each.Inventory.Surprises.bBlockedMotor && !bFinaleStarted && bLiveFire;
-                        if (!Each.DeathTimer)
+                        if (!Each.DeathTimer && !Each.DownTimer)
                         {
                             StepPlayerWeapon(*Combat, bFire, *Each.State, *Each.Object, Each.Index, Each.SpriteSize, Each.Inventory, MessagesOf(Each));
                         }
@@ -6155,8 +6184,19 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             ApplyCheats(Cheats, Owned);
                         }
 
-                        // Spent energy kills the player like any object: its explosions go off and the object stays hidden.
-                        if (!Each.DeathTimer && Owned.Energy <= 0.f)
+                        // Spent energy kills the player like any object: its explosions go off and the object stays hidden. In co-op the player is down instead.
+                        if (!Each.DeathTimer && !Each.DownTimer && Owned.Energy <= 0.f && IsCoop())
+                        {
+                            constexpr int32_t DownMilliseconds = 30000;
+                            constexpr uint32_t DownColor = 0xff4020;
+                            Each.DownTimer = DownMilliseconds;
+                            Each.ReviveTime = 0;
+                            Each.State->bDying = true;
+                            Owned.Energy = 0.f;
+                            SayToLocal(bLocal ? Format("You are down !\nStay close to a teammate to get back up.") : Format("%s is down !\nGet close to bring them back.", Each.Name), DownColor);
+                        }
+
+                        if (!Each.DeathTimer && !Each.DownTimer && Owned.Energy <= 0.f)
                         {
                             ExplodePlayer(*Combat, Each.State->Position, Each.Object->Altitude, Each.Index);
                             Each.Object->bRemoved = true;
@@ -6175,6 +6215,72 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                                 Owned.Surprises.Gamma = { DeathRed, 0, 0 };
                             }
                         }
+                    }
+
+                    // A downed player comes back after a teammate has stayed close for two seconds, or by itself where the team last saved once its time is up.
+                    // With every player down at once the team is lost: each downed ship dies as a lone player's does, and the local one's death ends the game.
+                    constexpr float ReviveRange = 100.f;
+                    constexpr int32_t ReviveMilliseconds = 2000;
+                    constexpr float ReviveEnergyShare = 0.3f;
+                    constexpr float RespawnEnergyShare = 0.5f;
+                    constexpr uint32_t BackColor = 0x80ff20;
+                    const auto Standing = [](const FLevelPlayer& Each) { return Each.State && !Each.DownTimer && !Each.DeathTimer; };
+                    const bool bTeamLost = IsCoop() && std::ranges::none_of(Players, Standing) && std::ranges::any_of(Players, [](const FLevelPlayer& Each) { return Each.DownTimer.has_value(); });
+                    for (FLevelPlayer& Each : Players)
+                    {
+                        if (!Each.DownTimer || !Each.State)
+                        {
+                            continue;
+                        }
+
+                        FPlayerState& State = *Each.State;
+                        FPlayerInventory& Owned = Each.Inventory;
+                        const bool bLocal = &Each == &Local;
+                        if (bTeamLost)
+                        {
+                            Each.DownTimer.reset();
+                            ExplodePlayer(*Combat, State.Position, Each.Object->Altitude, Each.Index);
+                            Each.Object->bRemoved = true;
+                            Each.DeathTimer = DeathMilliseconds;
+                            if (bLocal && GameAudio)
+                            {
+                                GameAudio->PlayDeath();
+                                GameAudio->StopMotor();
+                            }
+
+                            constexpr int32_t DeathRed = 0x50;
+                            if (bLocal && Settings.Details.bGammaFx)
+                            {
+                                Owned.Surprises.Gamma = { DeathRed, 0, 0 };
+                            }
+
+                            continue;
+                        }
+
+                        const bool bHelped = std::ranges::any_of(Players, [&](const FLevelPlayer& Other)
+                        {
+                            return &Other != &Each && Standing(Other) && std::hypot(Other.State->Position.X - State.Position.X, Other.State->Position.Y - State.Position.Y) <= ReviveRange;
+                        });
+                        Each.ReviveTime = bHelped ? Each.ReviveTime + int32_t(StepMilliseconds) : 0;
+                        *Each.DownTimer -= int32_t(StepMilliseconds);
+                        const bool bRevived = Each.ReviveTime >= ReviveMilliseconds;
+                        if (!bRevived && *Each.DownTimer > 0)
+                        {
+                            continue;
+                        }
+
+                        if (!bRevived)
+                        {
+                            State.Position = State.PreviousPosition = TeamRespawn;
+                            State.Center = CollisionFromWorld(TeamRespawn);
+                            State.Velocity = {};
+                        }
+
+                        Each.DownTimer.reset();
+                        Each.ReviveTime = 0;
+                        State.bDying = false;
+                        Owned.Energy = Owned.EnergyMax * (bRevived ? ReviveEnergyShare : RespawnEnergyShare);
+                        SayToLocal(bLocal ? Format("Back in the fight !") : Format("%s is back !", Each.Name), BackColor);
                     }
                 }
                 // Objects the step created, such as dropped items, join the pickups and the drawn objects.
@@ -6219,7 +6325,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 {
                     FMessages Unheard;
                     const bool bLocal = &Each == &Local;
-                    if (Each.State && Each.Class && !Each.DeathTimer &&
+                    if (Each.State && Each.Class && !Each.DeathTimer && !Each.DownTimer &&
                         CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Unheard, Combat ? &*Combat : nullptr, Each.Index, Players.size(),
                             bLocal ? nullptr : &Local.Inventory) != 0 && bLocal)
                     {
@@ -6243,6 +6349,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                     SyncObjects();
                     PendingSave = CurrentSession();
+                    TeamRespawn = Player->Position;
                     Renderer.RequestCapture(ThumbnailWidth, ThumbnailHeight);
                 }
 
@@ -6724,6 +6831,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     const uint32_t Since = Combat->Clock - *Each.HitClock;
                     Red = Since < HitGlowMilliseconds ? (HitGlowMilliseconds - Since) >> HitGlowShift : 0;
                     Each.HitClock = Since < HitGlowMilliseconds ? Each.HitClock : std::nullopt;
+                }
+
+                // A downed ship pulses red until it is back.
+                constexpr double DownPulseStrength = 120.;
+                if (Each.DownTimer)
+                {
+                    Red = std::max(Red, uint32_t(std::abs(std::sin(double(Combat->Clock) * PulseRadiansPerMillisecond) * DownPulseStrength)));
                 }
 
                 const uint32_t Green = Each.Inventory.ShieldUpStep != 0.f ? uint32_t(std::abs(int32_t(std::sin(double(Combat->Clock) * PulseRadiansPerMillisecond) * PulseStrength))) : 0;
