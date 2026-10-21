@@ -5875,7 +5875,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                     if (const FObjectBody* const Struck = StepPlayer(State, Movement, Command, StepMilliseconds, *Terrain, *Level, Bodies))
                     {
-                        ReportDoorContact(*Doors, *Struck, State, Owned, MessagesOf(Each));
+                        ReportDoorContact(*Doors, *Struck, State, Local.Inventory, MessagesOf(Each));
                     }
 
                     if (Combat)
@@ -5909,6 +5909,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             .Inventory = Each.Inventory,
                             .ObjectIndex = Each.Index,
                             .Name = &Each == &Local ? std::string_view(Settings.PlayerName) : std::string_view(Each.Name),
+                            .Team = &Each == &Local ? nullptr : &Local.Inventory,
                         });
                     }
                 }
@@ -6041,8 +6042,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                                 constexpr uint32_t BonusColor = 0xff2010;
                                 constexpr int32_t BonusBlinkMilliseconds = 10;
                                 const int32_t Bonus = ((Owned.Arms.FastKillCount - 2) * 5 + 10) * 1000;
-                                Owned.Money += float(Bonus);
-                                Owned.Earned += float(Bonus);
+                                Local.Inventory.Money += float(Bonus);
+                                Local.Inventory.Earned += float(Bonus);
                                 if (&Each == &Local)
                                 {
                                     Messages.Add({
@@ -6219,7 +6220,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     FMessages Unheard;
                     const bool bLocal = &Each == &Local;
                     if (Each.State && Each.Class && !Each.DeathTimer &&
-                        CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Unheard, Combat ? &*Combat : nullptr) != 0 && bLocal)
+                        CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Unheard, Combat ? &*Combat : nullptr, Each.Index, Players.size(),
+                            bLocal ? nullptr : &Local.Inventory) != 0 && bLocal)
                     {
                         if (GameAudio)
                         {
@@ -6892,10 +6894,17 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         const auto IsOutlined = [&](const FObjectSprite& Sprite)
         { return !Sprite.bShadow && Sprite.Blend == ESpriteBlend::Opaque && Sprite.ObjectIndex < OutlineTints.size() && OutlineTints[Sprite.ObjectIndex] != 0; };
         bool bRedrawUncovered = false;
+        // A pack the local player took is gone for it while the others still have theirs.
+        std::vector<bool> TakenHere(Level->Objects.size());
+        for (const FPickup& Pickup : Pickups)
+        {
+            TakenHere[Pickup.ObjectIndex] = std::ranges::contains(Pickup.Takers, Local.Index);
+        }
+
         const auto DrawObject = [&](const FObjectSprite& Sprite, const uint32_t OutlineTint = 0)
         {
             const Gaf::FAnimationFrame& Frame = Sprite.Frame;
-            if (Frame.BitmapIndex == 0 || (Sprite.ObjectIndex != NoObjectIndex && Level->Objects[Sprite.ObjectIndex].bRemoved))
+            if (Frame.BitmapIndex == 0 || (Sprite.ObjectIndex != NoObjectIndex && (Level->Objects[Sprite.ObjectIndex].bRemoved || TakenHere[Sprite.ObjectIndex])))
             {
                 return;
             }

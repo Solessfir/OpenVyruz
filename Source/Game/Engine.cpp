@@ -2364,8 +2364,9 @@ void CarrySurprise(FCombat& Combat, FPlayerInventory& Inventory, const ESurprise
 }
 
 size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level,
-    FMessages& Messages, FCombat* const Combat)
+    FMessages& Messages, FCombat* const Combat, const size_t PlayerObject, const size_t PlayerCount, FPlayerInventory* const Team)
 {
+    FPlayerInventory& Purse = Team ? *Team : Inventory;
     // Energy is only topped up below 95% of its maximum; shield below its maximum; money always.
     constexpr float EnergyRefillLimit = 0.95f;
     constexpr uint32_t EnergyColor = 0x80ff20;
@@ -2384,6 +2385,12 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
             continue;
         }
 
+        const bool bEach = PlayerCount > 1 && !Pickup.Key && Pickup.Surprise == ESurprise::None && (Pickup.AddEnergy != 0.f || Pickup.AddShield != 0.f || Pickup.AddAmmo != 0.f);
+        if (bEach && std::ranges::contains(Pickup.Takers, PlayerObject))
+        {
+            continue;
+        }
+
         bool bUsed = false;
         int32_t OffsetY = 0;
         if (Pickup.AddEnergy != 0.f && Inventory.Energy < Inventory.EnergyMax * EnergyRefillLimit)
@@ -2393,10 +2400,10 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
             bUsed = true;
         }
 
-        if (Pickup.AddMoney != 0.f)
+        if (Pickup.AddMoney != 0.f && Pickup.Takers.empty())
         {
-            Inventory.Money += Pickup.AddMoney;
-            Inventory.Earned += Pickup.AddMoney;
+            Purse.Money += Pickup.AddMoney;
+            Purse.Earned += Pickup.AddMoney;
             AddPickupMessage(Messages, Object, OffsetY, Format("Money +%d", int32_t(Pickup.AddMoney)), MoneyColor);
             bUsed = true;
             // EngineUpdateObjects cheers six times in sixteen by the game clock.
@@ -2437,11 +2444,11 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
         if (Pickup.Key)
         {
             const FCarriedKey& Key = *Pickup.Key;
-            Inventory.Keys.push_back(Key);
+            Purse.Keys.push_back(Key);
             if (Key.Id != 0)
             {
                 const std::string Text = !Key.bCode                ? Format("Key #%d !", Key.Id)
-                                         : CarriesKey(Inventory.Keys, Key.Id) ? Format("Code #%d complete !", Key.Id)
+                                         : CarriesKey(Purse.Keys, Key.Id) ? Format("Code #%d complete !", Key.Id)
                                                                               : Format("Code #%d : part %d !", Key.Id, Key.PartId);
                 AddCentreMessage(Messages, Text, KeyColor);
                 constexpr uint32_t KeyVoiceDuration = 1000;
@@ -2465,7 +2472,8 @@ size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, F
 
         if (bUsed)
         {
-            Object.bRemoved = true;
+            Pickup.Takers.push_back(PlayerObject);
+            Object.bRemoved = !bEach || Pickup.Takers.size() >= PlayerCount;
             ++Collected;
         }
     }
@@ -2690,7 +2698,7 @@ FHolder FindHolder(const FLevel& Level, const std::vector<FObjectBody*>& BodyOf,
     if (Id != 0)
     {
         const auto Carrier = std::ranges::find_if(Players, [&](const FPlayerTarget& Player)
-            { return !Player.State.bInvisible && Near(Player.State.Position) && CarriesKey(Player.Inventory.Keys, Id); });
+            { return !Player.State.bInvisible && Near(Player.State.Position) && CarriesKey(PurseOf(Player).Keys, Id); });
         return Carrier != Players.end() ? FHolder{ .Kind = EHolder::Player, .Player = &*Carrier } : FHolder{};
     }
 
@@ -2762,7 +2770,7 @@ bool ObjectOverlapsSolid(const FLevel& Level, const std::vector<FObjectBody*>& B
 void UseKey(FDoor& Door, const FHolder& Holder, FMessages& Messages)
 {
     constexpr uint32_t PlainColor = 0xffffff;
-    if ((Door.Flags & DoorDestroyKey) != 0 && Holder.Player && std::erase_if(Holder.Player->Inventory.Keys, [&](const FCarriedKey& Key) { return Key.Id == Door.Id; }) != 0)
+    if ((Door.Flags & DoorDestroyKey) != 0 && Holder.Player && std::erase_if(PurseOf(*Holder.Player).Keys, [&](const FCarriedKey& Key) { return Key.Id == Door.Id; }) != 0)
     {
         AddCentreMessage(Messages, Format((Door.Flags & DoorNeedsCode) != 0 ? "Using Code #%d !" : "Using Key #%d !", Door.Id), PlainColor);
     }
@@ -2943,7 +2951,7 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
     {
         const FBox Rider = CircleBox(Player.State.Center, Player.Radius);
         return !Player.State.bInvisible && Lift.MinX <= Rider.MinX && Rider.MaxX <= Lift.MaxX && Lift.MinY <= Rider.MinY && Rider.MaxY <= Lift.MaxY &&
-               !(Body.Reward < 0.f && Player.Inventory.Money < -Body.Reward);
+               !(Body.Reward < 0.f && PurseOf(Player).Money < -Body.Reward);
     };
     const auto Rider = bAccess ? std::ranges::find_if(Players, Rides) : Players.end();
     if (Rider == Players.end())
@@ -2953,7 +2961,7 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
 
     if (Body.Reward < 0.f)
     {
-        Rider->Inventory.Money += Body.Reward;
+        PurseOf(*Rider).Money += Body.Reward;
     }
 
     --Door.UsageCount;

@@ -535,9 +535,10 @@ struct FPickup
     std::optional<FCarriedKey> Key;
     // The TYPE Item's Surprise-type.
     ESurprise Surprise = ESurprise::None;
+    // The port's co-op: the player objects that took a pack every player has their own of, which stays in the level until each has.
+    std::vector<size_t> Takers;
 };
 
-// The player's Energy, Shield, money and ammo, as the item pickup branch of EngineUpdateObjects (004406e0) changes them.
 // The player's part of the combat: the weapon in hand and each slot's trigger state, the lock warning and the fast-kill window.
 struct FPlayerArms
 {
@@ -555,6 +556,7 @@ struct FPlayerArms
     int FastKillCount = 0;
 };
 
+// The player's Energy, Shield, money and ammo, as the item pickup branch of EngineUpdateObjects (004406e0) changes them.
 struct FPlayerInventory
 {
     // Object flag 0x200: AreaDamage (0043cb20) marks the player it damages, and ObjectDraw turns the mark into a red glow.
@@ -972,7 +974,15 @@ struct FPlayerTarget
     size_t ObjectIndex = 0;
     // The session's player name (session +0x2754), which the original starts as Jack.
     std::string_view Name = "Jack";
+    // The port's co-op: the inventory holding the team's money, keys and codes, null for the player's own (the first player's, or a lone one's).
+    FPlayerInventory* Team = nullptr;
 };
+
+// The inventory a player's money, keys and codes go to.
+inline FPlayerInventory& PurseOf(const FPlayerTarget& Player)
+{
+    return Player.Team ? *Player.Team : Player.Inventory;
+}
 
 // The players a step meets, each a level object with its own state and inventory.
 using FPlayerTargets = std::span<const FPlayerTarget>;
@@ -1084,8 +1094,9 @@ std::optional<FPickup> CreatePickup(const FLevel& Level, size_t ObjectIndex);
 void CarrySurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Type, const FLevelObject& Item, FMessages& Messages);
 FPlayerInventory CreateInventory(const FLevelObject& Player);
 // Collects every pickup the player's circle touches; returns how many were taken and marks them removed in the level.
+// With several players, a pack of energy, shield or ammo is every player's own and stays until each has taken it, its money going to the first; Team takes the money, keys and codes.
 size_t CollectPickups(const FPlayerState& Player, const FMovementClass& Class, FPlayerInventory& Inventory, std::vector<FPickup>& Pickups, FLevel& Level,
-    FMessages& Messages, FCombat* Combat = nullptr);
+    FMessages& Messages, FCombat* Combat = nullptr, size_t PlayerObject = 0, size_t PlayerCount = 1, FPlayerInventory* Team = nullptr);
 // FUN_0041d290 for the player once a step, before it moves: surprises wait, start, and end. Then the invisible drone's return (FUN_00445380).
 // AnimUpdateBounds at 0041b4b0 recomputes the collision centre from the world position.
 FCollisionPoint CollisionFromWorld(FCollisionPoint World);
