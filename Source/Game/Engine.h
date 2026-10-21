@@ -538,6 +538,23 @@ struct FPickup
 };
 
 // The player's Energy, Shield, money and ammo, as the item pickup branch of EngineUpdateObjects (004406e0) changes them.
+// The player's part of the combat: the weapon in hand and each slot's trigger state, the lock warning and the fast-kill window.
+struct FPlayerArms
+{
+    FWeaponState Weapon;
+    // Session +0x1028: the 1-based weapon slot in hand; a slot past the player's weapons leaves it unarmed.
+    // Each ADD Weapon keeps its own trigger state, which SlotStates holds for the slots not in hand.
+    size_t Slot = 1;
+    std::vector<FWeaponState> SlotStates;
+    // Counts PlayerSelectWeapon's switches, each of which plays weapon-switch.wav.
+    uint32_t Switches = 0;
+    // Session +0x20 bit 0x200000: EngineUpdateObjects clears it, and SeekerUpdate sets it for a seeker engaging the player.
+    bool bLocked = false;
+    // Session +0x274c and +0x2750: the fast-kill window and the hunters the player's blasts finished off in it.
+    int32_t FastKillTimer = 0;
+    int FastKillCount = 0;
+};
+
 struct FPlayerInventory
 {
     // Object flag 0x200: AreaDamage (0043cb20) marks the player it damages, and ObjectDraw turns the mark into a red glow.
@@ -571,6 +588,8 @@ struct FPlayerInventory
     float BaseShieldMax = 0.f;
     float BaseEnergyMax = 0.f;
     float AppliedShieldUpRatio = 1.f;
+    // Each level starts it from the combat's loadout (FCombat::StartArms).
+    FPlayerArms Arms;
 };
 
 // A difficulty level's values (DAT_0050d328, ten per level), which COMMON\DIFFICULTY.3DC overrides; ConfigLoad's difficulty-level picks one and copies it to session +0x26b8.
@@ -905,15 +924,9 @@ struct FCombat
     float ViewWidth = 640.f;
     std::vector<FWeaponClass> Weapons;
     std::vector<FAmmoClass> AmmoClasses;
-    // The player's ADD Weapon entries, as indices into Weapons, and the one in hand.
+    // The player class's ADD Weapon entries, as indices into Weapons, and the arms every player starts the level with: the first in hand.
     std::vector<size_t> PlayerWeapons;
-    FWeaponState PlayerWeapon;
-    // Session +0x1028: the 1-based weapon slot in hand; a slot past the player's weapons leaves it unarmed.
-    // Each ADD Weapon keeps its own trigger state, which PlayerSlotStates holds for the slots not in hand.
-    size_t PlayerSlot = 1;
-    // Counts PlayerSelectWeapon's switches, each of which plays weapon-switch.wav.
-    uint32_t WeaponSwitches = 0;
-    std::vector<FWeaponState> PlayerSlotStates;
+    FPlayerArms StartArms;
     // The player class's TYPE Explosion blocks, set off when it dies.
     std::vector<FExplosionBlock> PlayerExplosions;
     // Common\Data\Object\Item\surprise.gaf's animations, one per surprise icon.
@@ -927,17 +940,12 @@ struct FCombat
     FRandom Random;
     // Session +0x259c, the Misc stream of EngineCreateRandomStreams (0043c7a0), which EngineRunLevel seeds like the shared generator; the panel's weapon lights draw from it (RandomPushStream at 00428e20, RandomPopStream at 00428eb0).
     FRandom MiscRandom;
-    // Session +0x20 bit 0x200000: EngineUpdateObjects clears it, and SeekerUpdate sets it for a seeker engaging the player.
-    bool bPlayerLocked = false;
     // Every level object's bob, by object index.
     std::vector<FObjectBob> Bobs;
     // The game clock in milliseconds; never zero, since a zero last-shot time means no shot yet.
     uint32_t Clock = 1;
     // A Final-object died: the level is destroyed and the finale runs (FUN_0043db70, then FUN_00445dd0 in EngineRunLevel).
     bool bFinale = false;
-    // Session +0x274c and +0x2750: the fast-kill window and the hunters the player's blasts finished off in it.
-    int32_t FastKillTimer = 0;
-    int FastKillCount = 0;
     // Level objects the steps created, such as dropped items, for the window and the pickups to take on.
     std::vector<size_t> CreatedObjects;
     // Mines fired this step, which StepProjectiles adds to the level once its object list may grow.
@@ -1062,13 +1070,13 @@ bool IsAutoAimTarget(const FObjectBody& Body, const FLevel& Level);
 // The player's death branch of EngineUpdateObjects (004406e0): ObjectDestroy keeps the player object but sets off its explosions.
 void ExplodePlayer(FCombat& Combat, FCollisionPoint Position, float Altitude);
 // FUN_00437740: takes the slot's weapon in hand and, with option flag 8, lists its weapon and ammo for 4 seconds.
-void SelectPlayerWeapon(FCombat& Combat, size_t Slot, const FPlayerInventory& Inventory, FMessages& Messages);
+void SelectPlayerWeapon(const FCombat& Combat, size_t Slot, FPlayerInventory& Inventory, FMessages& Messages);
 // The stock that feeds the weapon in hand, if the player carries one.
 const FAmmoStock* PlayerSlotAmmo(const FCombat& Combat, const FPlayerInventory& Inventory);
 // The stock bound to a 1-based slot's weapon, if the slot holds one (ObjectBindAmmo at 00437540).
 const FAmmoStock* SlotAmmo(const FCombat& Combat, size_t Slot, const FPlayerInventory& Inventory);
 // FUN_004375f0 on every slot, as the inventory's weapon list binds them in turn: each ADD Weapon's last shot (entry +0x14) is cleared, the one in hand's too.
-void ClearLastShots(FCombat& Combat);
+void ClearLastShots(FPlayerInventory& Inventory);
 std::optional<FPickup> CreatePickup(const FLevel& Level, size_t ObjectIndex);
 // FUN_0041cf40 with the item it comes from: the surprise in effect ends and the new one is carried, announced and waits half a second.
 void CarrySurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Type, const FLevelObject& Item, FMessages& Messages);

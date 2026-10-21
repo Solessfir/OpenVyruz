@@ -4280,17 +4280,19 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 Combat->Details = Settings.Details;
                 // EngineActivateObjects applies the difficulty (FUN_0043c4a0) to the player and every hunter as the level starts.
                 ApplyDifficulty(Settings.Difficulty(), *Combat, Bodies, Inventory, true);
+                // A carried inventory's arms are the last level's; every level arms the player afresh.
+                Inventory.Arms = Combat->StartArms;
                 const FPlayerTarget Target{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
                 ActivateGenerators(*Level, Bodies, FPlayerTargets(&Target, 1));
                 // The carried player object brings its weapons, loaded first and in the same order, and the game clock runs on.
                 if (Carried)
                 {
                     Combat->Clock = Carried->Clock;
-                    if (Carried->Weapon.Weapon < Combat->Weapons.size() && Carried->WeaponSlots.size() == Combat->PlayerSlotStates.size())
+                    if (Carried->Weapon.Weapon < Combat->Weapons.size() && Carried->WeaponSlots.size() == Inventory.Arms.SlotStates.size())
                     {
-                        Combat->PlayerWeapon = Carried->Weapon;
-                        Combat->PlayerSlot = Carried->WeaponSlot;
-                        Combat->PlayerSlotStates = Carried->WeaponSlots;
+                        Inventory.Arms.Weapon = Carried->Weapon;
+                        Inventory.Arms.Slot = Carried->WeaponSlot;
+                        Inventory.Arms.SlotStates = Carried->WeaponSlots;
                     }
                 }
 
@@ -4304,7 +4306,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     Inventory.ShotsHit = Restore->ShotsHit;
                     Inventory.ShotsMissed = Restore->ShotsMissed;
                     FMessages Unused;
-                    if (Restore->WeaponSlot >= 1 && Restore->WeaponSlot <= Combat->PlayerSlotStates.size())
+                    if (Restore->WeaponSlot >= 1 && Restore->WeaponSlot <= Inventory.Arms.SlotStates.size())
                     {
                         SelectPlayerWeapon(*Combat, Restore->WeaponSlot, Inventory, Unused);
                     }
@@ -4405,7 +4407,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             .Clock = Combat ? Combat->Clock : 0,
             .Energy = Inventory.Energy,
             .Shield = Inventory.Shield,
-            .WeaponSlot = Combat ? Combat->PlayerSlot : 1,
+            .WeaponSlot = Inventory.Arms.Slot,
             .DifficultyLevel = Settings.DifficultyLevel,
             .ShotsHit = Inventory.ShotsHit,
             .ShotsMissed = Inventory.ShotsMissed,
@@ -4565,9 +4567,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             .Object = *PlayerObject,
             .State = *Player,
             .Inventory = Inventory,
-            .Weapon = Combat ? Combat->PlayerWeapon : FWeaponState{},
-            .WeaponSlot = Combat ? Combat->PlayerSlot : 1,
-            .WeaponSlots = Combat ? Combat->PlayerSlotStates : std::vector<FWeaponState>{},
+            .Weapon = Inventory.Arms.Weapon,
+            .WeaponSlot = Inventory.Arms.Slot,
+            .WeaponSlots = Inventory.Arms.SlotStates,
             .Clock = Combat ? Combat->Clock : 1,
         };
     };
@@ -4618,7 +4620,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             .Kills = Inventory.Kills,
             .Enemies = CountEnemies(*Level, Bodies),
             .bBoost = PlayerClass && PlayerClass->SpeedMax != ClassSpeedMax,
-            .bLocked = Combat && Combat->bPlayerLocked,
+            .bLocked = Inventory.Arms.bLocked,
             .bSurprise = Inventory.Surprises.Active != ESurprise::None,
         };
         for (const FCarriedSurprise& Surprise : Inventory.Surprises.Carried)
@@ -4637,9 +4639,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         if (Combat)
         {
             Values.TimeMilliseconds = Combat->Clock;
-            Values.WeaponSlot = Combat->PlayerSlot;
+            Values.WeaponSlot = Inventory.Arms.Slot;
             // The weapon in hand's ammo stock (object +0x248); an empty slot holds none.
-            if (Combat->PlayerSlot >= 1 && Combat->PlayerSlot <= Combat->PlayerSlotStates.size() && Combat->PlayerWeapon.Weapon < Combat->Weapons.size())
+            if (Inventory.Arms.Slot >= 1 && Inventory.Arms.Slot <= Inventory.Arms.SlotStates.size() && Inventory.Arms.Weapon.Weapon < Combat->Weapons.size())
             {
                 const FAmmoStock* const Stock = PlayerSlotAmmo(*Combat, Inventory);
                 Values.Ammo = Stock ? Stock->Count : 0.f;
@@ -4981,7 +4983,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             FInfoLayout Layout = LayoutInventory(Inventory.Keys, Weapons, Scroll, VisibleRows, Top);
             if (Layout.bWalkedWeapons && Combat)
             {
-                ClearLastShots(*Combat);
+                ClearLastShots(Inventory);
             }
 
             return Layout;
@@ -5591,7 +5593,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                 for (size_t Slot = 1; Slot < WeaponKeysNow.size(); ++Slot)
                 {
-                    if (WeaponKeysNow[Slot] && !WeaponKeysDown[Slot] && Combat->PlayerSlot != Slot && !bFinaleStarted)
+                    if (WeaponKeysNow[Slot] && !WeaponKeysDown[Slot] && Inventory.Arms.Slot != Slot && !bFinaleStarted)
                     {
                         SelectPlayerWeapon(*Combat, Slot, Inventory, Messages);
                     }
@@ -5684,7 +5686,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     if ((DemoInput & (FirstWeaponBit << (Slot - 1))) != 0)
                     {
                         // PlayerSelectWeaponAction (0043bad0) switches only to another slot.
-                        if (Combat->PlayerSlot != Slot)
+                        if (Inventory.Arms.Slot != Slot)
                         {
                             SelectPlayerWeapon(*Combat, Slot, Inventory, Messages);
                         }
@@ -5703,10 +5705,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             if (Player)
             {
                 // EngineUpdateObjects clears the lock before its objects update, dead player or not; nothing locks onto a dead player again.
-                if (Combat)
-                {
-                    Combat->bPlayerLocked = false;
-                }
+                Inventory.Arms.bLocked = false;
 
                 // The dead player's object skips its updates until the timer ends the game (game update result 0).
                 if (DeathTimer)
@@ -5854,14 +5853,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     Player->Velocity = { .X = Player->Velocity.X + Inventory.Shove.X, .Y = Player->Velocity.Y + Inventory.Shove.Y };
                     Inventory.Shove = {};
                     // EngineRunLevel each step: once the fast-kill window closes with the player alive, two or more kills in it pay ((kills - 2) * 5 + 10) * 1000, say so for 8 seconds in red v-bonus font 5, fading, and cheer by the game clock.
-                    if (Combat->FastKillTimer > int32_t(StepMilliseconds))
+                    if (Inventory.Arms.FastKillTimer > int32_t(StepMilliseconds))
                     {
-                        Combat->FastKillTimer -= int32_t(StepMilliseconds);
+                        Inventory.Arms.FastKillTimer -= int32_t(StepMilliseconds);
                     }
                     else if (Inventory.Energy > 0.f)
                     {
-                        Combat->FastKillTimer = 0;
-                        if (Combat->FastKillCount > 1)
+                        Inventory.Arms.FastKillTimer = 0;
+                        if (Inventory.Arms.FastKillCount > 1)
                         {
                             constexpr int32_t BonusX = 100;
                             constexpr int32_t BonusRise = 0x66;
@@ -5869,7 +5868,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             constexpr uint32_t BonusFont = 5;
                             constexpr uint32_t BonusColor = 0xff2010;
                             constexpr int32_t BonusBlinkMilliseconds = 10;
-                            const int32_t Bonus = ((Combat->FastKillCount - 2) * 5 + 10) * 1000;
+                            const int32_t Bonus = ((Inventory.Arms.FastKillCount - 2) * 5 + 10) * 1000;
                             Inventory.Money += float(Bonus);
                             Inventory.Earned += float(Bonus);
                             Messages.Add({
@@ -5892,7 +5891,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             QueueVoice(FastKillVoices[Combat->Clock % FastKillVoices.size()], CheerDelay, CheerDuration, CheerHold);
                         }
 
-                        Combat->FastKillCount = 0;
+                        Inventory.Arms.FastKillCount = 0;
                     }
 
                     // FUN_0043db70 starts the finale: the motor channel stops and Yeepee replaces the queued lines. With Gamma FX each flash plays electric.wav.
@@ -6217,25 +6216,25 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             }
 
             // ObjectsUpdateWeaponSounds (0043df70): object flag 2 is the trigger, which a jammed weapon, a blocked motor and invisibility clear.
-            if (Combat && Combat->PlayerSlot >= 1 && Combat->PlayerSlot <= Combat->PlayerWeapons.size())
+            if (Combat && Inventory.Arms.Slot >= 1 && Inventory.Arms.Slot <= Combat->PlayerWeapons.size())
             {
-                if (HeardWeaponSwitches && *HeardWeaponSwitches != Combat->WeaponSwitches)
+                if (HeardWeaponSwitches && *HeardWeaponSwitches != Inventory.Arms.Switches)
                 {
                     // PlayerSelectWeapon also names the slot: Gun for slot 1 through Mine for slot 9.
                     GameAudio->PlayWeaponSwitch();
                     constexpr size_t NamedSlots = 9;
                     constexpr uint32_t SlotVoiceDelay = 750;
                     constexpr uint32_t SlotVoiceDuration = 500;
-                    if (Combat->PlayerSlot >= 1 && Combat->PlayerSlot <= NamedSlots)
+                    if (Inventory.Arms.Slot >= 1 && Inventory.Arms.Slot <= NamedSlots)
                     {
-                        QueueVoice(EVoice(size_t(EVoice::Gun) + Combat->PlayerSlot - 1), SlotVoiceDelay, SlotVoiceDuration, 0);
+                        QueueVoice(EVoice(size_t(EVoice::Gun) + Inventory.Arms.Slot - 1), SlotVoiceDelay, SlotVoiceDuration, 0);
                     }
                 }
 
-                HeardWeaponSwitches = Combat->WeaponSwitches;
-                const FWeaponClass& Weapon = Combat->Weapons[Combat->PlayerWeapon.Weapon];
+                HeardWeaponSwitches = Inventory.Arms.Switches;
+                const FWeaponClass& Weapon = Combat->Weapons[Inventory.Arms.Weapon.Weapon];
                 const FAmmoStock* const Stock = PlayerSlotAmmo(*Combat, Inventory);
-                const bool bFiring = bFireInput && !DeathTimer && Inventory.Surprises.JammedWeapon != Combat->PlayerWeapon.Weapon &&
+                const bool bFiring = bFireInput && !DeathTimer && Inventory.Surprises.JammedWeapon != Inventory.Arms.Weapon.Weapon &&
                     !Inventory.Surprises.bBlockedMotor && !Player->bInvisible;
                 GameAudio->UpdatePlayerWeapon(Weapon, bFiring, Stock != nullptr, Stock ? Stock->Count : 0.f);
             }

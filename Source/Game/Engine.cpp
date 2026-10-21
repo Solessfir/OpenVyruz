@@ -4248,7 +4248,7 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
         break;
     }
     case ESurprise::WeaponJam:
-        State.JammedWeapon = Combat.PlayerWeapon.Weapon;
+        State.JammedWeapon = Inventory.Arms.Weapon.Weapon;
         break;
     case ESurprise::Extasy:
     {
@@ -4871,12 +4871,12 @@ std::expected<FCombat, std::string> CreateCombat(FLevel& Level, const FLevelObje
 
     for (const size_t Weapon : Combat.PlayerWeapons)
     {
-        Combat.PlayerSlotStates.push_back({ .Weapon = Weapon, .Slope = Combat.Weapons[Weapon].InitialSlope });
+        Combat.StartArms.SlotStates.push_back({ .Weapon = Weapon, .Slope = Combat.Weapons[Weapon].InitialSlope });
     }
 
-    if (!Combat.PlayerSlotStates.empty())
+    if (!Combat.StartArms.SlotStates.empty())
     {
-        Combat.PlayerWeapon = Combat.PlayerSlotStates.front();
+        Combat.StartArms.Weapon = Combat.StartArms.SlotStates.front();
     }
 
     for (const FLevelPropertyBlock& Child : Player.Properties.Children)
@@ -5114,10 +5114,10 @@ const FAmmoStock* SlotAmmo(const FCombat& Combat, const size_t Slot, const FPlay
     return BoundAmmo(Combat.Weapons[Combat.PlayerWeapons[Slot - 1]], Inventory);
 }
 
-void ClearLastShots(FCombat& Combat)
+void ClearLastShots(FPlayerInventory& Inventory)
 {
-    Combat.PlayerWeapon.LastFireTime = 0;
-    for (FWeaponState& State : Combat.PlayerSlotStates)
+    Inventory.Arms.Weapon.LastFireTime = 0;
+    for (FWeaponState& State : Inventory.Arms.SlotStates)
     {
         State.LastFireTime = 0;
     }
@@ -5142,7 +5142,7 @@ void ExplodePlayer(FCombat& Combat, const FCollisionPoint Position, const float 
 
 size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inventory)
 {
-    const size_t Current = Combat.PlayerSlot;
+    const size_t Current = Inventory.Arms.Slot;
     if (Current == 0 || Current > WeaponSlotCount)
     {
         return Current;
@@ -5162,7 +5162,7 @@ size_t NextPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inven
 
 size_t PreviousPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& Inventory)
 {
-    const size_t Current = Combat.PlayerSlot;
+    const size_t Current = Inventory.Arms.Slot;
     if (Current == 0 || Current > WeaponSlotCount)
     {
         return Current;
@@ -5182,26 +5182,27 @@ size_t PreviousPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& I
 
 const FAmmoStock* PlayerSlotAmmo(const FCombat& Combat, const FPlayerInventory& Inventory)
 {
-    return SlotAmmo(Combat, Combat.PlayerSlot, Inventory);
+    return SlotAmmo(Combat, Inventory.Arms.Slot, Inventory);
 }
 
-void SelectPlayerWeapon(FCombat& Combat, const size_t Slot, const FPlayerInventory& Inventory, FMessages& Messages)
+void SelectPlayerWeapon(const FCombat& Combat, const size_t Slot, FPlayerInventory& Inventory, FMessages& Messages)
 {
     // FUN_004375f0 keeps the weapon in hand's state with its ADD Weapon entry and clears the new one's last shot.
-    if (Combat.PlayerSlot >= 1 && Combat.PlayerSlot <= Combat.PlayerSlotStates.size())
+    FPlayerArms& Arms = Inventory.Arms;
+    if (Arms.Slot >= 1 && Arms.Slot <= Arms.SlotStates.size())
     {
-        Combat.PlayerSlotStates[Combat.PlayerSlot - 1] = Combat.PlayerWeapon;
+        Arms.SlotStates[Arms.Slot - 1] = Arms.Weapon;
     }
 
-    Combat.PlayerSlot = Slot;
-    ++Combat.WeaponSwitches;
-    if (Slot == 0 || Slot > Combat.PlayerSlotStates.size())
+    Arms.Slot = Slot;
+    ++Arms.Switches;
+    if (Slot == 0 || Slot > Arms.SlotStates.size())
     {
         return;
     }
 
-    Combat.PlayerWeapon = Combat.PlayerSlotStates[Slot - 1];
-    Combat.PlayerWeapon.LastFireTime = 0;
+    Arms.Weapon = Arms.SlotStates[Slot - 1];
+    Arms.Weapon.LastFireTime = 0;
 
     // Option flag 8 ("HUD Green Info") lists the weapon and its ammo at 400, 140 in the panel's font 3. The port keeps the flag on.
     constexpr int32_t ListX = 400;
@@ -5232,7 +5233,7 @@ void SelectPlayerWeapon(FCombat& Combat, const size_t Slot, const FPlayerInvento
         return;
     }
 
-    const FWeaponClass& Weapon = Combat.Weapons[Combat.PlayerWeapon.Weapon];
+    const FWeaponClass& Weapon = Combat.Weapons[Inventory.Arms.Weapon.Weapon];
     List(WeaponLines[0], Format("WEAPON      %s", Upper(Weapon.Name)));
     List(WeaponLines[1], Format("FIRE-RANGE  %d", int32_t(Weapon.FireRange)));
     List(WeaponLines[2], Format("FIRE-DELAY  %d", Weapon.Delay));
@@ -5278,22 +5279,22 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, FPlayerState& Player, c
 
     Combat.bOneRoundPerVolley = Surprises.bTripleFire || Surprises.bCircularFire;
 
-    if (Combat.PlayerSlot == 0 || Combat.PlayerSlot > Combat.PlayerSlotStates.size())
+    if (Inventory.Arms.Slot == 0 || Inventory.Arms.Slot > Inventory.Arms.SlotStates.size())
     {
         return;
     }
 
     // WeaponHasAmmo at 00444450: firing an empty weapon moves to the next one with ammo, and the shot goes out from that.
-    if (const FAmmoStock* const Stock = SlotAmmo(Combat, Combat.PlayerSlot, Inventory); bFire && Stock && Stock->Count == 0.f)
+    if (const FAmmoStock* const Stock = SlotAmmo(Combat, Inventory.Arms.Slot, Inventory); bFire && Stock && Stock->Count == 0.f)
     {
         SelectPlayerWeapon(Combat, NextPlayerWeaponSlot(Combat, Inventory), Inventory, Messages);
-        if (Combat.PlayerSlot == 0 || Combat.PlayerSlot > Combat.PlayerSlotStates.size())
+        if (Inventory.Arms.Slot == 0 || Inventory.Arms.Slot > Inventory.Arms.SlotStates.size())
         {
             return;
         }
     }
 
-    FWeaponState& State = Combat.PlayerWeapon;
+    FWeaponState& State = Inventory.Arms.Weapon;
     const FWeaponClass& Weapon = Combat.Weapons[State.Weapon];
     UpdateSlope(State, Weapon, bFire);
     // WeaponFire holds back the jammed weapon (session +0x220c).
@@ -5303,7 +5304,7 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, FPlayerState& Player, c
     }
 
     // ObjectUpdateWeapon fires only Usable-when-invisible ammo while the player is invisible, and says so with option flag 8.
-    const FAmmoStock* const BoundStock = SlotAmmo(Combat, Combat.PlayerSlot, Inventory);
+    const FAmmoStock* const BoundStock = SlotAmmo(Combat, Inventory.Arms.Slot, Inventory);
     const auto AmmoClass = std::ranges::find(Combat.AmmoClasses, BoundStock ? ToLowerName(BoundStock->Name) : Weapon.Ammo, &FAmmoClass::Name);
     if (Player.bInvisible && (AmmoClass == Combat.AmmoClasses.end() || !AmmoClass->bUsableWhenInvisible))
     {
@@ -5923,9 +5924,9 @@ void UpdateSeeker(FCombat* const Combat, FObjectBody& Body, FSeeker& Seeker, con
         {
             Work.Timer -= Step;
             Engage(Combat, Body, Work, &Seeker, Target, Step);
-            if (Combat && Target)
+            if (Hunted)
             {
-                Combat->bPlayerLocked = true;
+                Hunted->Inventory.Arms.bLocked = true;
             }
 
             return;
@@ -6422,7 +6423,7 @@ void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrai
         else
         {
             Turret.ScanTimer -= Step;
-            Combat.bPlayerLocked = true;
+            Aimed->Inventory.Arms.bLocked = true;
             // SeekerEngage (0042caa0): within Min-distance the top turns toward the line to the target (the previous step's direction), then the line is refreshed.
             const float MinDistance = float(uint32_t(int(Turret.MinDistance) * int(Turret.MinDistance)));
             bEngaged = DistanceSquared <= MinDistance;
@@ -6869,14 +6870,15 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             {
                 if (WasAlive[Index] && Bodies[Index].Energy <= 0.f && HuntsPlayer(Bodies[Index]))
                 {
-                    if (Combat.FastKillTimer < 1)
+                    FPlayerArms& Arms = Shooter->Inventory.Arms;
+                    if (Arms.FastKillTimer < 1)
                     {
-                        Combat.FastKillCount = 1;
-                        Combat.FastKillTimer = FastKillWindowMilliseconds;
+                        Arms.FastKillCount = 1;
+                        Arms.FastKillTimer = FastKillWindowMilliseconds;
                     }
                     else
                     {
-                        ++Combat.FastKillCount;
+                        ++Arms.FastKillCount;
                     }
                 }
             }
@@ -7553,6 +7555,7 @@ std::expected<std::string, std::string> VerifyMines(FResourceArchive& Archive)
     }
 
     FPlayerInventory Inventory = CreateInventory(Level->Objects[*PlayerIndex]);
+    Inventory.Arms = Combat->StartArms;
     const auto Placed = std::ranges::find_if(Bodies, [](const FObjectBody& Body) { return Body.Mine.has_value(); });
     if (Placed == Bodies.end())
     {
@@ -7718,6 +7721,7 @@ std::expected<std::string, std::string> VerifyFireSurprises(FResourceArchive& Ar
 
     const auto Template = Level->ClassObjects.find(ToLowerName(Level->Objects[*PlayerIndex].ClassName));
     FPlayerInventory Inventory = CreateInventory(Template != Level->ClassObjects.end() ? Template->second : Level->Objects[*PlayerIndex]);
+    Inventory.Arms = Combat->StartArms;
     FPlayerState Player = SpawnPlayer(Level->Objects[*PlayerIndex], *Class);
     const auto Fire = [&]
     {
@@ -7726,11 +7730,11 @@ std::expected<std::string, std::string> VerifyFireSurprises(FResourceArchive& Ar
     };
 
     // A plain volley, then one under Triple Fire, which opens the spread and goes out three times as wide for a single round.
-    const FAmmoStock* const Stock = SlotAmmo(*Combat, Combat->PlayerSlot, Inventory);
+    const FAmmoStock* const Stock = SlotAmmo(*Combat, Inventory.Arms.Slot, Inventory);
     const size_t PlainBefore = Combat->Projectiles.size();
     Fire();
     const size_t PlainShots = Combat->Projectiles.size() - PlainBefore;
-    Combat->Clock += Combat->Weapons[Combat->PlayerWeapon.Weapon].Delay;
+    Combat->Clock += Combat->Weapons[Inventory.Arms.Weapon.Weapon].Delay;
     Inventory.Surprises.bTripleFire = true;
     const float RoundsBefore = Stock ? Stock->Count : 0.f;
     const size_t ShotsBefore = Combat->Projectiles.size();
@@ -7847,6 +7851,7 @@ std::expected<std::string, std::string> VerifyDebris(FResourceArchive& Archive)
     }
 
     FPlayerInventory Inventory = CreateInventory(Level->Objects[*PlayerIndex]);
+    Inventory.Arms = Combat->StartArms;
     const FPlayerState Player = SpawnPlayer(Level->Objects[*PlayerIndex], *Class);
     SpawnEffect(*Combat, Boom, Player.Position, 0.f);
     for (uint32_t Time = 0; Time < FlightMilliseconds; Time += StepMilliseconds)
@@ -7916,6 +7921,7 @@ std::expected<std::string, std::string> VerifyWeldSeams(FResourceArchive& Archiv
         }
 
         FPlayerInventory Inventory = CreateInventory(Level->Objects[*PlayerIndex]);
+        Inventory.Arms = Combat->StartArms;
         const FPlayerState Player = SpawnPlayer(Level->Objects[*PlayerIndex], *Class);
         if (First->Explosions.empty())
         {
@@ -7973,6 +7979,7 @@ std::expected<std::string, std::string> VerifyOrbiters(FResourceArchive& Archive
     }
 
     FPlayerInventory Inventory = CreateInventory(Level->Objects[*PlayerIndex]);
+    Inventory.Arms = Combat->StartArms;
     // The player waits far away, out of every fight.
     FPlayerState Player = SpawnPlayer(Level->Objects[*PlayerIndex], *Class);
     uint32_t OpenedAt = 0;
@@ -8049,6 +8056,7 @@ std::expected<std::string, std::string> VerifyDifficultySwitch(FResourceArchive&
         }
 
         FPlayerInventory Inventory = CreateInventory(Level->Objects[*PlayerIndex]);
+        Inventory.Arms = Combat->StartArms;
         ApplyDifficulty(Table.Levels[Start], *Combat, Bodies, Inventory, true);
         for (const size_t Next : Through)
         {
@@ -8214,6 +8222,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
         // The class's own stocks, as a player arriving by lift brings them: some levels' player objects start empty (t2u2 has no Gatling ammo).
         const auto Template = Level->ClassObjects.find(ToLowerName(PlayerObject->ClassName));
         FPlayerInventory Inventory = CreateInventory(Template != Level->ClassObjects.end() ? Template->second : *PlayerObject);
+        Inventory.Arms = Combat->StartArms;
         const size_t BodyCount = Bodies.size();
         size_t LevelShots = 0;
         const FPlayerCommand Spin{ .Turn = EPlayerTurn::Left };
