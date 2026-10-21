@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -4038,6 +4039,27 @@ struct FObjectHandle
     explicit operator bool() const { return Index.has_value(); }
 };
 
+// One player of a level: its object, movement class, ship and inventory, and what its steps carry from one to the next.
+struct FLevelPlayer
+{
+    FObjectHandle Object;
+    size_t Index = 0;
+    // The name a player other than the local one goes by; the local one's is the settings' session name.
+    std::string Name;
+    std::optional<FMovementClass> Class;
+    std::optional<FPlayerState> State;
+    FPlayerInventory Inventory;
+    // The smaller side of the player's current frame, which AnimUpdateBounds makes the body's bounds.
+    float SpriteSize = 0.f;
+    std::optional<uint32_t> HitClock;
+    // Object +0xcc of the dead player: EngineUpdateObjects ends the game when it runs out.
+    std::optional<int32_t> DeathTimer;
+    FDeathDrift DeathDrift;
+    // The forward input of the last step, which a blocked motor answers with start-engine.wav, and the fire input, which the voices follow.
+    bool bThrustInput = false;
+    bool bFireInput = false;
+};
+
 // Command-line cheats, which the original does not have (its own are typed codes): each holds for the whole game and none touches a demo.
 struct FCheats
 {
@@ -4165,7 +4187,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
     const std::optional<size_t> PlayerFound = FindPlayerObject(*Level);
     // By index: dropped objects and mines grow the object list during the level, which would leave an iterator behind.
-    const FObjectHandle PlayerObject{ .Objects = &Level->Objects, .Index = PlayerFound };
+    // The level's players, the local one first; a deque keeps each where it is as others join, so the names below stay bound to the local one.
+    std::deque<FLevelPlayer> Players(1);
+    FLevelPlayer& Local = Players.front();
+    Local.Object = { .Objects = &Level->Objects, .Index = PlayerFound };
+    const FObjectHandle& PlayerObject = Local.Object;
     // LoopLevels puts the carried player object where the new level's player starts; a session's player keeps the level's object.
     if (Carried && !Carried->Object.ClassName.empty() && PlayerObject)
     {
@@ -4191,18 +4217,18 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // The port's wide view, which every view-bound pass follows; a demo keeps the original's, so its recorded steps meet the same objects.
     const auto LevelViewWidth = [&] { return Demo ? ScreenWidth : WideViewWidth(Window); };
     float GameViewWidth = LevelViewWidth();
-    std::optional<FMovementClass> PlayerClass;
-    std::optional<FPlayerState> Player;
+    std::optional<FMovementClass>& PlayerClass = Local.Class;
+    std::optional<FPlayerState>& Player = Local.State;
     std::optional<FTerrainCollision> Terrain;
     const uint32_t FramePeriod = DisplayFramePeriod();
     std::optional<FCombat> Combat;
     // Session +0x101c: the last step, which the draw pass plays again.
     uint32_t LastStepMilliseconds = 0;
-    std::optional<uint32_t> PlayerHitClock;
-    // The smaller side of the player's current frame, which AnimUpdateBounds makes the body's bounds.
-    float PlayerSpriteSize = 0.f;
+    std::optional<uint32_t>& PlayerHitClock = Local.HitClock;
+    float& PlayerSpriteSize = Local.SpriteSize;
     std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
-    const size_t PlayerIndex = PlayerObject.Index.value_or(Level->Objects.size());
+    Local.Index = PlayerObject.Index.value_or(Level->Objects.size());
+    const size_t PlayerIndex = Local.Index;
     std::vector<FPickup> Pickups = CreatePickups(*Level);
     std::vector<std::optional<FActorAnimation>> ActorAnimations = CreateActorAnimations(Bodies, *Level, *Objects);
     std::vector<FPlacedAnimation> PlacedAnimations = CreatePlacedAnimations(*Objects, *Level, ActorAnimations);
@@ -4240,7 +4266,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     }
 
     const FSpriteSheet ColorSheet = Renderer.CreateSpriteSheet(RadarPixels);
-    FPlayerInventory Inventory = Carried ? Carried->Inventory : PlayerObject ? CreateInventory(*PlayerObject) : FPlayerInventory{};
+    FPlayerInventory& Inventory = Local.Inventory;
+    Inventory = Carried ? Carried->Inventory : PlayerObject ? CreateInventory(*PlayerObject) : FPlayerInventory{};
     // A carried or saved inventory takes the class's absorptions and weight from this level's player.
     if (Carried && PlayerObject)
     {
@@ -4695,9 +4722,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         AnnounceLevel();
     }
     bool bPauseKeyDown = ActionDown(EAction::Pause);
-    // The forward input of the last step, which a blocked motor answers with start-engine.wav, and the surprise whose tune plays.
-    bool bThrustInput = false;
-    bool bFireInput = false;
+    bool& bThrustInput = Local.bThrustInput;
+    bool& bFireInput = Local.bFireInput;
+    // The surprise whose tune plays.
     ESurprise TuneSurprise = ESurprise::None;
     // The weapon switches already heard; the level's own first selection plays nothing.
     std::optional<uint32_t> HeardWeaponSwitches;
@@ -4726,7 +4753,6 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     std::optional<FSpriteSheet> FailedSheet;
     // A white pixel that the fade without Gamma FX stretches over rows.
     std::optional<FSpriteSheet> WhiteSheet;
-    FDeathDrift DeathDrift;
     // When the eased death view last moved.
     std::optional<uint32_t> DeathCameraAt;
     // The presses since the death, which end the game early.
@@ -4838,9 +4864,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             ObjectFades[Body.ObjectIndex] = 0;
         }
     }
-    // Object +0xcc of the dead player: EngineUpdateObjects ends the game when it runs out.
     constexpr int32_t DeathMilliseconds = 10000;
-    std::optional<int32_t> DeathTimer;
+    std::optional<int32_t>& DeathTimer = Local.DeathTimer;
     // The inventory (session +0x20d0 bit 0x200) and help (bit 0x400) screens, which EngineRunLevel runs in place of a frame (FUN_00439b00, FUN_0043ab50).
     bool bInventoryPending = false;
     bool bHelpPending = false;
@@ -5705,55 +5730,73 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             if (Player)
             {
                 // EngineUpdateObjects clears the lock before its objects update, dead player or not; nothing locks onto a dead player again.
-                Inventory.Arms.bLocked = false;
+                for (FLevelPlayer& Each : Players)
+                {
+                    Each.Inventory.Arms.bLocked = false;
+                }
 
+                // The messages of a player other than the local one have no screen to show on.
+                FMessages Unseen;
+                const auto MessagesOf = [&](const FLevelPlayer& Each) -> FMessages& { return &Each == &Local ? Messages : Unseen; };
                 // The dead player's object skips its updates until the timer ends the game (game update result 0).
-                if (DeathTimer)
+                if (DeathTimer && *DeathTimer - int32_t(StepMilliseconds) <= 0)
                 {
                     *DeathTimer -= int32_t(StepMilliseconds);
-                    if (*DeathTimer <= 0)
+                    break;
+                }
+
+                for (FLevelPlayer& Each : Players)
+                {
+                    if (!Each.State || !Each.Class)
                     {
-                        break;
+                        continue;
                     }
 
-                    StepDeathDrift(DeathDrift, *Player, *Level, StepMilliseconds);
-                }
-                else
-                {
+                    FPlayerState& State = *Each.State;
+                    FPlayerInventory& Owned = Each.Inventory;
+                    const bool bLocal = &Each == &Local;
+                    if (Each.DeathTimer)
+                    {
+                        *Each.DeathTimer -= int32_t(StepMilliseconds);
+                        StepDeathDrift(Each.DeathDrift, State, *Level, StepMilliseconds);
+                        continue;
+                    }
+
                     // The player's update starts with its surprises (FUN_0041d290).
                     if (Combat)
                     {
-                        StepSurprises(*Combat, *Level, Bodies, *Player, *PlayerClass, Inventory, Messages, StepMilliseconds);
+                        StepSurprises(*Combat, *Level, Bodies, State, *Each.Class, Owned, MessagesOf(Each), StepMilliseconds);
                     }
 
-                    StepCodeTimeouts(Inventory, *Level, Messages, StepMilliseconds);
+                    StepCodeTimeouts(Owned, *Level, MessagesOf(Each), StepMilliseconds);
 
-                    const FPlayerIntent Intent = ReadPlayerIntent();
-                    bThrustInput = IsThrustIntent(Intent, Inventory.Surprises, bFinaleStarted);
-                    FPlayerCommand Command = PlayerCommandFromIntent(Intent, Inventory.Surprises, bFinaleStarted);
+                    // Only the local player has keys, a mouse and a pad here; the others stand still until their input comes from elsewhere.
+                    const FPlayerIntent Intent = bLocal ? ReadPlayerIntent() : FPlayerIntent{};
+                    Each.bThrustInput = IsThrustIntent(Intent, Owned.Surprises, bFinaleStarted);
+                    FPlayerCommand Command = PlayerCommandFromIntent(Intent, Owned.Surprises, bFinaleStarted);
                     // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its velocity in collision units, and drives with the replayed input.
-                    if (Demo && DemoCursor >= 1)
+                    if (bLocal && Demo && DemoCursor >= 1)
                     {
                         const FDemoRecord& Placed = (*Demo)[DemoCursor - 1];
-                        if (Player->Position.X != Placed.X || Player->Position.Y != Placed.Y)
+                        if (State.Position.X != Placed.X || State.Position.Y != Placed.Y)
                         {
-                            Player->Position = { .X = Placed.X, .Y = Placed.Y };
-                            Player->Center = CollisionFromWorld(Player->Position);
-                            const FCollisionPoint Before = CollisionFromWorld(Player->PreviousPosition);
-                            Player->Velocity = { .X = Player->Center.X - Before.X, .Y = Player->Center.Y - Before.Y };
+                            State.Position = { .X = Placed.X, .Y = Placed.Y };
+                            State.Center = CollisionFromWorld(State.Position);
+                            const FCollisionPoint Before = CollisionFromWorld(State.PreviousPosition);
+                            State.Velocity = { .X = State.Center.X - Before.X, .Y = State.Center.Y - Before.Y };
                         }
 
                         if (Placed.Direction >= 0 && Placed.Direction < ObjectDirectionCount)
                         {
-                            Player->Direction = Placed.Direction;
-                            Player->Pose = Player->TargetPose = Placed.Direction * (PlayerPoseCount / ObjectDirectionCount) + 1;
+                            State.Direction = Placed.Direction;
+                            State.Pose = State.TargetPose = Placed.Direction * (PlayerPoseCount / ObjectDirectionCount) + 1;
                         }
 
                         Command = PlayerCommandFromInput(DemoInput);
-                        bThrustInput = (DemoInput & PlayerInputForward) != 0;
+                        Each.bThrustInput = (DemoInput & PlayerInputForward) != 0;
                     }
 
-                    FMovementClass Movement = *PlayerClass;
+                    FMovementClass Movement = *Each.Class;
                     Movement.TurnTimeout = int(float(Movement.TurnTimeout) / Intent.TurnRate);
                     if (Intent.Throttle)
                     {
@@ -5761,27 +5804,48 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         Command.Strafe *= *Intent.Throttle;
                     }
 
-                    if (const FObjectBody* const Struck = StepPlayer(*Player, Movement, Command, StepMilliseconds, *Terrain, *Level, Bodies))
+                    if (const FObjectBody* const Struck = StepPlayer(State, Movement, Command, StepMilliseconds, *Terrain, *Level, Bodies))
                     {
-                        ReportDoorContact(*Doors, *Struck, *Player, Inventory, Messages);
+                        ReportDoorContact(*Doors, *Struck, State, Owned, MessagesOf(Each));
                     }
 
                     if (Combat)
                     {
-                        ThrowPlayerBounceSpark(*Combat, *Player, Inventory.Surprises.Active);
+                        ThrowPlayerBounceSpark(*Combat, State, Owned.Surprises.Active);
                     }
 
                     // EngineUpdateObjects puts the sound listener where the player stands (SoundSetListener at 0045edb0).
-                    SetSoundListener(Player->Position.X, Player->Position.Y, PlayerObject->Altitude);
-                    if (Combat)
+                    if (bLocal)
                     {
-                        SetVoiceClock(Combat->Clock);
-                        StepPlayerVoices(Combat->Clock, bFireInput);
+                        SetSoundListener(State.Position.X, State.Position.Y, Each.Object->Altitude);
+                        if (Combat)
+                        {
+                            SetVoiceClock(Combat->Clock);
+                            StepPlayerVoices(Combat->Clock, Each.bFireInput);
+                        }
+                    }
+                }
+
+                // Every player meets the step's bodies, actors, doors, generators, turrets and shots, each as its own target.
+                std::vector<FPlayerTarget> Targets;
+                std::vector<FLevelPlayer*> TargetPlayers;
+                for (FLevelPlayer& Each : Players)
+                {
+                    if (Each.State && Each.Class)
+                    {
+                        TargetPlayers.push_back(&Each);
+                        Targets.push_back({
+                            .State = *Each.State,
+                            .Radius = Each.Class->Radius,
+                            .Inventory = Each.Inventory,
+                            .ObjectIndex = Each.Index,
+                            .Name = &Each == &Local ? std::string_view(Settings.PlayerName) : std::string_view(Each.Name),
+                        });
                     }
                 }
 
                 // EngineRunLevel runs the full EngineUpdateObjects only when Time Warp's counter (session +0x21f0) has run out, then sets it to the divisor (+0x21f4);
-                // the steps between update the player alone, so the rest of the level moves at a quarter of its speed.
+                // the steps between update the player alone, so the rest of the level moves at a quarter of its speed. The local player's Time Warp sets the pace.
                 FSurpriseState& Warp = Inventory.Surprises;
                 const bool bFullUpdate = Warp.WarpCounter-- == 0;
                 ++FrameSteps;
@@ -5789,25 +5853,32 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 if (bFullUpdate)
                 {
                     Warp.WarpCounter = Warp.WarpDivisor;
-                    const FPlayerTarget Pushed{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
-                    const FCollisionPoint Push = StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level, &Pushed);
-                    Player->Velocity.X = float(double(Push.X) + double(Player->Velocity.X));
-                    Player->Velocity.Y = float(double(Push.Y) + double(Player->Velocity.Y));
-                    Player->bPushed = Player->bPushed || Push.X != 0.f || Push.Y != 0.f;
+                    const std::vector<FCollisionPoint> Pushes = StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level, Targets);
+                    for (size_t Target = 0; Target < Targets.size(); ++Target)
+                    {
+                        FPlayerState& State = *TargetPlayers[Target]->State;
+                        const FCollisionPoint Push = Pushes[Target];
+                        State.Velocity.X = float(double(Push.X) + double(State.Velocity.X));
+                        State.Velocity.Y = float(double(Push.Y) + double(State.Velocity.Y));
+                        State.bPushed = State.bPushed || Push.X != 0.f || Push.Y != 0.f;
+                    }
                 }
 
-                if (!DeathTimer)
+                // The bodies' shields rise with the local player's while it lives.
+                for (FLevelPlayer& Each : Players)
                 {
-                    StepShields(bFullUpdate ? std::span<FObjectBody>(Bodies) : std::span<FObjectBody>(), *Level, Inventory);
+                    if (Each.State && !Each.DeathTimer)
+                    {
+                        StepShields(bFullUpdate && &Each == &Local ? std::span<FObjectBody>(Bodies) : std::span<FObjectBody>(), *Level, Each.Inventory);
+                    }
                 }
 
-                const FPlayerTarget Rider{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
                 if (bFullUpdate && !bFinaleStarted)
                 {
-                    StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, FPlayerTargets(&Rider, 1));
+                    StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, Targets);
                 }
 
-                if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, FPlayerTargets(&Rider, 1), StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer)
+                if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, Targets, StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer)
                 {
                     // A starred 3do-file (only "*End of Tower 3*" in the campaign) ends the game instead of loading a level.
                     NextLevel = Lift->NextLevel.starts_with('*') ? Lift->NextLevel : NextLevelPath(LevelPath, *Lift);
@@ -5821,77 +5892,113 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
                 if (Combat)
                 {
-                    const float MoneyBefore = Inventory.Money;
+                    // Each player's numbers before the step's shots and blasts, which the finale keeps and the local player's hit flash and log compare against.
+                    struct FBefore
+                    {
+                        float Money = 0.f;
+                        float Energy = 0.f;
+                        float Shield = 0.f;
+                    };
+                    std::vector<FBefore> Before;
+                    for (const FLevelPlayer& Each : Players)
+                    {
+                        Before.push_back({ .Money = Each.Inventory.Money });
+                    }
+
                     Combat->Clock += StepMilliseconds;
-                    const float EnergyBefore = Inventory.Energy;
-                    const float ShieldBefore = Inventory.Shield;
+                    for (size_t Index = 0; Index < Players.size(); ++Index)
+                    {
+                        Before[Index].Energy = Players[Index].Inventory.Energy;
+                        Before[Index].Shield = Players[Index].Inventory.Shield;
+                    }
+
                     if (bFullUpdate && !bFinaleStarted)
                     {
-                        StepGenerators(*Combat, *Level, Bodies, FPlayerTargets(&Rider, 1), StepMilliseconds);
+                        StepGenerators(*Combat, *Level, Bodies, Targets, StepMilliseconds);
                     }
 
                     constexpr uint32_t FireBit = 0x2;
-                    const bool bLiveFire = Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
-                    bFireInput = bLiveFire;
-                    const bool bFire = !Inventory.Surprises.bBlockedMotor && !bFinaleStarted && bLiveFire;
-                    if (!DeathTimer)
+                    for (FLevelPlayer& Each : Players)
                     {
-                        StepPlayerWeapon(*Combat, bFire, *Player, *PlayerObject, PlayerIndex, PlayerSpriteSize, Inventory, Messages);
+                        if (!Each.State)
+                        {
+                            continue;
+                        }
+
+                        const bool bLiveFire = &Each != &Local ? false : Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
+                        Each.bFireInput = bLiveFire;
+                        const bool bFire = !Each.Inventory.Surprises.bBlockedMotor && !bFinaleStarted && bLiveFire;
+                        if (!Each.DeathTimer)
+                        {
+                            StepPlayerWeapon(*Combat, bFire, *Each.State, *Each.Object, Each.Index, Each.SpriteSize, Each.Inventory, MessagesOf(Each));
+                        }
                     }
 
                     if (bFullUpdate)
                     {
                         if (!bFinaleStarted)
                         {
-                            StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, FPlayerTargets(&Rider, 1));
+                            StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Targets);
                         }
 
-                        StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies,
-                            { .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex, .Name = Settings.PlayerName }, Messages);
+                        StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Targets, Messages);
                     }
 
-                    Player->Velocity = { .X = Player->Velocity.X + Inventory.Shove.X, .Y = Player->Velocity.Y + Inventory.Shove.Y };
-                    Inventory.Shove = {};
-                    // EngineRunLevel each step: once the fast-kill window closes with the player alive, two or more kills in it pay ((kills - 2) * 5 + 10) * 1000, say so for 8 seconds in red v-bonus font 5, fading, and cheer by the game clock.
-                    if (Inventory.Arms.FastKillTimer > int32_t(StepMilliseconds))
+                    for (FLevelPlayer& Each : Players)
                     {
-                        Inventory.Arms.FastKillTimer -= int32_t(StepMilliseconds);
-                    }
-                    else if (Inventory.Energy > 0.f)
-                    {
-                        Inventory.Arms.FastKillTimer = 0;
-                        if (Inventory.Arms.FastKillCount > 1)
+                        if (!Each.State)
                         {
-                            constexpr int32_t BonusX = 100;
-                            constexpr int32_t BonusRise = 0x66;
-                            constexpr uint32_t BonusLifeMilliseconds = 8000;
-                            constexpr uint32_t BonusFont = 5;
-                            constexpr uint32_t BonusColor = 0xff2010;
-                            constexpr int32_t BonusBlinkMilliseconds = 10;
-                            const int32_t Bonus = ((Inventory.Arms.FastKillCount - 2) * 5 + 10) * 1000;
-                            Inventory.Money += float(Bonus);
-                            Inventory.Earned += float(Bonus);
-                            Messages.Add({
-                                .Text = Format("Well done %s !!!\nFast Kill Bonus +%d $", Settings.PlayerName, Bonus),
-                                .X = float(BonusX),
-                                .Y = float(int32_t(ScreenHeight) / 2 - BonusRise),
-                                .LifeMilliseconds = BonusLifeMilliseconds,
-                                .bTypewriter = true,
-                                .Gaf = EMessageGaf::Bonus,
-                                .Font = BonusFont,
-                                .Color = { .Diffuse = BonusColor },
-                                .BlinkPeriod = BonusBlinkMilliseconds,
-                                .bFade = true,
-                            }, EMessagePlacement::Always);
-                            constexpr std::array FastKillVoices = { EVoice::WellDone, EVoice::Yeepee, EVoice::ComeOn, EVoice::Ariba, EVoice::Laugh, EVoice::TheBest, EVoice::WantMore,
-                                EVoice::Hey };
-                            constexpr uint32_t CheerDelay = 500;
-                            constexpr uint32_t CheerDuration = 1000;
-                            constexpr uint32_t CheerHold = 5000;
-                            QueueVoice(FastKillVoices[Combat->Clock % FastKillVoices.size()], CheerDelay, CheerDuration, CheerHold);
+                            continue;
                         }
 
-                        Inventory.Arms.FastKillCount = 0;
+                        FPlayerState& State = *Each.State;
+                        FPlayerInventory& Owned = Each.Inventory;
+                        State.Velocity = { .X = State.Velocity.X + Owned.Shove.X, .Y = State.Velocity.Y + Owned.Shove.Y };
+                        Owned.Shove = {};
+                        // EngineRunLevel each step: once the fast-kill window closes with the player alive, two or more kills in it pay ((kills - 2) * 5 + 10) * 1000, say so for 8 seconds in red v-bonus font 5, fading, and cheer by the game clock.
+                        if (Owned.Arms.FastKillTimer > int32_t(StepMilliseconds))
+                        {
+                            Owned.Arms.FastKillTimer -= int32_t(StepMilliseconds);
+                        }
+                        else if (Owned.Energy > 0.f)
+                        {
+                            Owned.Arms.FastKillTimer = 0;
+                            if (Owned.Arms.FastKillCount > 1)
+                            {
+                                constexpr int32_t BonusX = 100;
+                                constexpr int32_t BonusRise = 0x66;
+                                constexpr uint32_t BonusLifeMilliseconds = 8000;
+                                constexpr uint32_t BonusFont = 5;
+                                constexpr uint32_t BonusColor = 0xff2010;
+                                constexpr int32_t BonusBlinkMilliseconds = 10;
+                                const int32_t Bonus = ((Owned.Arms.FastKillCount - 2) * 5 + 10) * 1000;
+                                Owned.Money += float(Bonus);
+                                Owned.Earned += float(Bonus);
+                                if (&Each == &Local)
+                                {
+                                    Messages.Add({
+                                        .Text = Format("Well done %s !!!\nFast Kill Bonus +%d $", Settings.PlayerName, Bonus),
+                                        .X = float(BonusX),
+                                        .Y = float(int32_t(ScreenHeight) / 2 - BonusRise),
+                                        .LifeMilliseconds = BonusLifeMilliseconds,
+                                        .bTypewriter = true,
+                                        .Gaf = EMessageGaf::Bonus,
+                                        .Font = BonusFont,
+                                        .Color = { .Diffuse = BonusColor },
+                                        .BlinkPeriod = BonusBlinkMilliseconds,
+                                        .bFade = true,
+                                    }, EMessagePlacement::Always);
+                                    constexpr std::array FastKillVoices = { EVoice::WellDone, EVoice::Yeepee, EVoice::ComeOn, EVoice::Ariba, EVoice::Laugh, EVoice::TheBest, EVoice::WantMore,
+                                        EVoice::Hey };
+                                    constexpr uint32_t CheerDelay = 500;
+                                    constexpr uint32_t CheerDuration = 1000;
+                                    constexpr uint32_t CheerHold = 5000;
+                                    QueueVoice(FastKillVoices[Combat->Clock % FastKillVoices.size()], CheerDelay, CheerDuration, CheerHold);
+                                }
+                            }
+
+                            Owned.Arms.FastKillCount = 0;
+                        }
                     }
 
                     // FUN_0043db70 starts the finale: the motor channel stops and Yeepee replaces the queued lines. With Gamma FX each flash plays electric.wav.
@@ -5940,51 +6047,63 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             NextLevel = "*";
                         }
                     }
-                    if (Inventory.Money != MoneyBefore || Inventory.Energy != EnergyBefore || Inventory.Shield != ShieldBefore)
-                    {
-                        std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
-                        std::fflush(stdout);
-                    }
 
-                    // Shots and blasts still in flight during the finale leave the player unharmed.
-                    if (bFinaleStarted)
+                    for (size_t Index = 0; Index < Players.size(); ++Index)
                     {
-                        Inventory.Energy = std::max(Inventory.Energy, EnergyBefore);
-                        Inventory.Shield = std::max(Inventory.Shield, ShieldBefore);
-                    }
-
-                    // Measured before the cheats refill the player, so god mode still shows its hits. A quarter of the shield or more is the full flash.
-                    if (const float Lost = (EnergyBefore - Inventory.Energy) + (ShieldBefore - Inventory.Shield); Lost > 0.f)
-                    {
-                        constexpr float FullFlashShare = 0.25f;
-                        constexpr float MinHitFlash = 0.35f;
-                        const float FullFlashLoss = std::max(1.f, Inventory.ShieldMax * FullFlashShare);
-                        HitFlash = std::max(HitFlash, std::clamp(Lost / FullFlashLoss, MinHitFlash, 1.f));
-                    }
-
-                    if (!Demo)
-                    {
-                        ApplyCheats(Cheats, Inventory);
-                    }
-
-                    // Spent energy kills the player like any object: its explosions go off and the object stays hidden.
-                    if (!DeathTimer && Inventory.Energy <= 0.f)
-                    {
-                        ExplodePlayer(*Combat, Player->Position, PlayerObject->Altitude);
-                        PlayerObject->bRemoved = true;
-                        DeathTimer = DeathMilliseconds;
-                        Player->bDying = true;
-                        if (GameAudio)
+                        FLevelPlayer& Each = Players[Index];
+                        FPlayerInventory& Owned = Each.Inventory;
+                        const bool bLocal = &Each == &Local;
+                        if (!Each.State)
                         {
-                            GameAudio->PlayDeath();
-                            GameAudio->StopMotor();
+                            continue;
                         }
 
-                        // With Gamma FX the screen turns red until the game ends.
-                        constexpr int32_t DeathRed = 0x50;
-                        if (Settings.Details.bGammaFx)
+                        if (bLocal && (Owned.Money != Before[Index].Money || Owned.Energy != Before[Index].Energy || Owned.Shield != Before[Index].Shield))
                         {
-                            Inventory.Surprises.Gamma = { DeathRed, 0, 0 };
+                            std::printf("Energy %.0f, shield %.0f, money %.0f\n", Owned.Energy, Owned.Shield, Owned.Money);
+                            std::fflush(stdout);
+                        }
+
+                        // Shots and blasts still in flight during the finale leave the players unharmed.
+                        if (bFinaleStarted)
+                        {
+                            Owned.Energy = std::max(Owned.Energy, Before[Index].Energy);
+                            Owned.Shield = std::max(Owned.Shield, Before[Index].Shield);
+                        }
+
+                        // Measured before the cheats refill the player, so god mode still shows its hits. A quarter of the shield or more is the full flash.
+                        if (const float Lost = (Before[Index].Energy - Owned.Energy) + (Before[Index].Shield - Owned.Shield); bLocal && Lost > 0.f)
+                        {
+                            constexpr float FullFlashShare = 0.25f;
+                            constexpr float MinHitFlash = 0.35f;
+                            const float FullFlashLoss = std::max(1.f, Owned.ShieldMax * FullFlashShare);
+                            HitFlash = std::max(HitFlash, std::clamp(Lost / FullFlashLoss, MinHitFlash, 1.f));
+                        }
+
+                        if (bLocal && !Demo)
+                        {
+                            ApplyCheats(Cheats, Owned);
+                        }
+
+                        // Spent energy kills the player like any object: its explosions go off and the object stays hidden.
+                        if (!Each.DeathTimer && Owned.Energy <= 0.f)
+                        {
+                            ExplodePlayer(*Combat, Each.State->Position, Each.Object->Altitude);
+                            Each.Object->bRemoved = true;
+                            Each.DeathTimer = DeathMilliseconds;
+                            Each.State->bDying = true;
+                            if (bLocal && GameAudio)
+                            {
+                                GameAudio->PlayDeath();
+                                GameAudio->StopMotor();
+                            }
+
+                            // With Gamma FX the screen turns red until the game ends.
+                            constexpr int32_t DeathRed = 0x50;
+                            if (bLocal && Settings.Details.bGammaFx)
+                            {
+                                Owned.Surprises.Gamma = { DeathRed, 0, 0 };
+                            }
                         }
                     }
                 }
@@ -6026,15 +6145,21 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     Combat->CreatedObjects.clear();
                 }
 
-                if (!DeathTimer && CollectPickups(*Player, *PlayerClass, Inventory, Pickups, *Level, Messages, Combat ? &*Combat : nullptr) != 0)
+                for (FLevelPlayer& Each : Players)
                 {
-                    if (GameAudio)
+                    FMessages Unheard;
+                    const bool bLocal = &Each == &Local;
+                    if (Each.State && Each.Class && !Each.DeathTimer &&
+                        CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Unheard, Combat ? &*Combat : nullptr) != 0 && bLocal)
                     {
-                        GameAudio->PlayPickup();
-                    }
+                        if (GameAudio)
+                        {
+                            GameAudio->PlayPickup();
+                        }
 
-                    std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
-                    std::fflush(stdout);
+                        std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
+                        std::fflush(stdout);
+                    }
                 }
 
                 const float CashBeforePlot = Inventory.Money;

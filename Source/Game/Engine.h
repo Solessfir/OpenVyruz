@@ -1151,8 +1151,9 @@ void ThrowPlayerBounceSpark(FCombat& Combat, const FPlayerState& Player, ESurpri
 // Actors that run into the player hurt it by their knocks.
 void StepActors(FCombat* Combat, std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
     FPlayerTargets Players);
-FCollisionPoint StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
-    const FPlayerTarget* Player = nullptr);
+// Returns each player's push from the bodies that knocked it, in the players' order.
+std::vector<FCollisionPoint> StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
+    FPlayerTargets Players = {});
 // Every gate and lift of the level, in their activation state (AnimInitializeGraphics at 00417b30): open ones are passable and show the last frame of their first animation.
 std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, FResourceArchive& Archive, std::span<FObjectBody> Bodies);
 // One step of every gate (GateUpdate at 00443620) and lift (ObjectUpdateLevelExit at 00442bf0) after its animation advances.

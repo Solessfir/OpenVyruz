@@ -1485,10 +1485,27 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
     return Bodies;
 }
 
-FCollisionPoint StepObjectBodies(const std::span<FObjectBody> Bodies, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
-    const FPlayerTarget* const Player)
+namespace
 {
-    FCollisionPoint Push;
+// The player nearest a body, whatever it can see, or none without players.
+const FPlayerTarget* NearestPlayer(const FObjectBody& Body, const FPlayerTargets Players)
+{
+    const auto Squared = [&](const FPlayerTarget& Player)
+    {
+        const float X = Player.State.Center.X - Body.State.Center.X;
+        const float Y = Player.State.Center.Y - Body.State.Center.Y;
+        return X * X + Y * Y;
+    };
+    const auto Nearest = std::ranges::min_element(Players, {}, Squared);
+    return Nearest != Players.end() ? &*Nearest : nullptr;
+}
+
+}
+
+std::vector<FCollisionPoint> StepObjectBodies(const std::span<FObjectBody> Bodies, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
+    const FPlayerTargets Players)
+{
+    std::vector<FCollisionPoint> Pushes(Players.size());
     for (FObjectBody& Body : Bodies)
     {
         // Actors move every step in StepActors.
@@ -1497,6 +1514,8 @@ FCollisionPoint StepObjectBodies(const std::span<FObjectBody> Bodies, const uint
             continue;
         }
 
+        // A drifting body knocks the player nearest it.
+        const FPlayerTarget* const Player = NearestPlayer(Body, Players);
         std::optional<FPlayerKnock> Knock;
         if (Player)
         {
@@ -1515,11 +1534,12 @@ FCollisionPoint StepObjectBodies(const std::span<FObjectBody> Bodies, const uint
             ApplyDamage(Player->Inventory, Knock->Damage);
         }
 
+        FCollisionPoint& Push = Pushes[size_t(Player - Players.data())];
         Push.X = float(double(Knock->Push.X) / double(Player->Inventory.Weight) + double(Push.X));
         Push.Y = float(double(Knock->Push.Y) / double(Player->Inventory.Weight) + double(Push.Y));
     }
 
-    return Push;
+    return Pushes;
 }
 
 std::expected<void, std::string> VerifyPlayerMovement()
@@ -5891,19 +5911,6 @@ const FPlayerTarget* FindNearestTarget(const FObjectBody& Body, const FSeeker& S
     return Nearest;
 }
 
-// The player nearest a body, whatever it can see, or none without players.
-const FPlayerTarget* NearestPlayer(const FObjectBody& Body, const FPlayerTargets Players)
-{
-    const auto Squared = [&](const FPlayerTarget& Player)
-    {
-        const float X = Player.State.Center.X - Body.State.Center.X;
-        const float Y = Player.State.Center.Y - Body.State.Center.Y;
-        return X * X + Y * Y;
-    };
-    const auto Nearest = std::ranges::min_element(Players, {}, Squared);
-    return Nearest != Players.end() ? &*Nearest : nullptr;
-}
-
 // SeekerUpdate at 0042c5a0 for a moving seeker or tracker.
 void UpdateSeeker(FCombat* const Combat, FObjectBody& Body, FSeeker& Seeker, const FPlayerTargets Players,
     std::optional<std::vector<FPathObstacle>>& Obstacles, const FTerrainCollision& Terrain, const int32_t Step)
@@ -7641,7 +7648,7 @@ std::expected<std::string, std::string> VerifyMines(FResourceArchive& Archive)
         const FPlayerTarget Struck{ .State = Blocker, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = *PlayerIndex };
         for (int Step = 0; Step < ShoveSteps && Mine.State.bPushed && !Mine.Mine->bStruck; ++Step)
         {
-            const FCollisionPoint Push = StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level, &Struck);
+            const FCollisionPoint Push = StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level, FPlayerTargets(&Struck, 1)).front();
             bPlayerPushed = Mine.Mine->bStruck && Push.X * Facing.X + Push.Y * Facing.Y > 0.f;
         }
     }
