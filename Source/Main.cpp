@@ -4667,6 +4667,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // The arrival starts black; the departure counts its own steps and ends the level once the screen is black.
     int MenuFadeStep = Carried ? 0 : MenuFadeSteps;
     uint32_t MenuFadeTime = ClockMilliseconds();
+    // The game menu's fade out leaves the ramp black with Gamma FX, and Retry Level starts the new level without a fade, so a level that does not fade in starts at the user's gamma.
+    if (MenuFadeStep == MenuFadeSteps)
+    {
+        Renderer.ResetGamma();
+    }
     std::optional<int> LiftFadeStep;
     int32_t FinaleTimer = 0;
     int32_t FinaleFlashTimer = 0;
