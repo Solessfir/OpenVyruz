@@ -2962,11 +2962,10 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
 
 // AreaDamage at 0043cb20: every live object near the blast takes damage falling off linearly over Damage-zone collision units.
 // A Player-direct-fire-only object only takes the blasts of a player's own shots (FUN_0043c990 on the blast's source).
-// A player's blast hurts that player as the original's does, but spares the other players, the port's co-op having no friendly fire.
+// A player's blast, from its shot or its death, hurts that player as the original's does, but spares the other players, the port's co-op having no friendly fire.
 void AreaDamage(FCombat& Combat, const FCollisionPoint Center, const FWorldCell Cell, const float Damage, const float Zone, std::vector<FObjectBody>& Bodies,
-    const FPlayerTargets Players, const FPlayerTarget* const Shooter)
+    const FPlayerTargets Players, const FPlayerTarget* const Shooter, const bool bByPlayer)
 {
-    const bool bByPlayer = Shooter != nullptr;
     if (Damage == 0.f || Zone == 0.f)
     {
         return;
@@ -5152,11 +5151,17 @@ void ThrowPlayerBounceSpark(FCombat& Combat, const FPlayerState& Player, const E
     }
 }
 
-void ExplodePlayer(FCombat& Combat, const FCollisionPoint Position, const float Altitude)
+void ExplodePlayer(FCombat& Combat, const FCollisionPoint Position, const float Altitude, const size_t PlayerObject)
 {
+    const size_t Before = Combat.Effects.size();
     for (const FExplosionBlock& Explosion : Combat.PlayerExplosions)
     {
         SpawnEffect(Combat, Explosion.BoomEffect, Position, Altitude, Explosion.Damage, Explosion.Zone);
+    }
+
+    for (FEffect& Effect : Combat.Effects | std::views::drop(Before))
+    {
+        Effect.Owner = PlayerObject;
     }
 }
 
@@ -6870,7 +6875,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
             // AmmoHit at 0043d7d0 blasts around the shot's last committed centre, then AmmoImpact (0043d350) shoves and damages what it struck.
             const bool bPlayerShot = Shooter != nullptr;
-            AreaDamage(Combat, Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies, Players, Shooter);
+            AreaDamage(Combat, Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies, Players, Shooter, bPlayerShot);
             // AreaDamage opens a 500 ms window (session +0x2748) on the first hunter a player's blast finishes off and counts each one after it.
             constexpr int32_t FastKillWindowMilliseconds = 0x1f4;
             for (size_t Index = 0; Index < WasAlive.size(); ++Index)
@@ -7119,7 +7124,8 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             if (bBlast)
             {
                 Effect.BlastTimer = -1;
-                AreaDamage(Combat, CollisionFromWorld(Effect.Position), CellOf(Effect.Position), Effect.Damage, Effect.Zone, Bodies, Players, nullptr);
+                const FPlayerTarget* const Owner = Effect.Owner ? PlayerAt(Players, *Effect.Owner) : nullptr;
+                AreaDamage(Combat, CollisionFromWorld(Effect.Position), CellOf(Effect.Position), Effect.Damage, Effect.Zone, Bodies, Players, Owner, false);
                 Effect.Damage = 0.f;
             }
         }

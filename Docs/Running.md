@@ -27,7 +27,7 @@ The game plays the intro when `Intro.avi` is beside the archive ([Intro.md](Intr
 | `--start <x>,<y>` | Put the player at that world position as the level starts; skips the menu |
 | `--skipIntro` | Go straight to the main menu, without the story page and the intro |
 | `--windowed` | Start in a window instead of fullscreen |
-| `--coopDummy` | Add a second ship that follows the player, for trying out co-op ([Tools.md](Tools.md#development-aids)); do not save the game with it |
+| `--coopDummy` | Add a second ship that follows the player, for trying out co-op ([Tools.md](Tools.md#development-aids)) |
 
 Cheats, which the original does not take this way, combine freely and never touch the demo:
 

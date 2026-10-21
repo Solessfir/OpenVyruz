@@ -23,6 +23,6 @@ Each check exits non-zero on any failure.
 
 ## Development aids
 
-`--dump-gaf <archive path>` lists an archive GAF's animations with their frame counts, flags and durations. `--start X,Y` puts the player at a world position as the level starts. `--coopDummy` adds a second ship of the player's class beside it, which heads for the player and keeps close: it meets the enemies, shots, pickups, doors and lifts as a co-op player would, and has no input, HUD or sound of its own. A game saved with it keeps the second ship in the level.
+`--dump-gaf <archive path>` lists an archive GAF's animations with their frame counts, flags and durations. `--start X,Y` puts the player at a world position as the level starts. `--coopDummy` adds a second ship of the player's class beside it, which heads for the player and keeps close: it meets the enemies, shots, pickups, doors and lifts as a co-op player would, and has no input, HUD or sound of its own. Its death blast spares the player, and sessions leave it out.
 
 In a level, N starts the next of the 25 levels (the list goes to the console at startup) and wraps to the first after the last, without a carried player, for checking every level. A level without a player scrolls with the arrow keys instead.

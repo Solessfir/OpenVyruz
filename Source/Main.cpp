@@ -4227,8 +4227,6 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     std::optional<FCombat> Combat;
     // Session +0x101c: the last step, which the draw pass plays again.
     uint32_t LastStepMilliseconds = 0;
-    std::optional<uint32_t>& PlayerHitClock = Local.HitClock;
-    float& PlayerSpriteSize = Local.SpriteSize;
     std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
     Local.Index = PlayerObject.Index.value_or(Level->Objects.size());
     const size_t PlayerIndex = Local.Index;
@@ -4468,6 +4466,16 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             .Earned = int(Inventory.Earned),
             .Money = int(Inventory.Money),
         };
+        // A session holds the local player only; the other players' ships stay out of its objects.
+        std::vector<std::pair<FLevelObject*, bool>> Others;
+        for (FLevelPlayer& Each : Players)
+        {
+            if (&Each != &Local && Each.Object)
+            {
+                Others.emplace_back(&*Each.Object, std::exchange(Each.Object->bRemoved, true));
+            }
+        }
+
         const FSessionPlayer Writer{
             .ObjectIndex = Player ? PlayerIndex : SIZE_MAX,
             .X = Player ? Player->Position.X : 0.f,
@@ -4477,7 +4485,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             .State = Player ? &*Player : nullptr,
             .TurnTimeout = PlayerClass ? PlayerClass->TurnTimeout : 0,
         };
-        return std::pair(Written, FormatSessionObjects(*Level, Bodies, *Doors, Writer, Settings.DifficultyLevel));
+        std::pair<FSession, std::string> Current(Written, FormatSessionObjects(*Level, Bodies, *Doors, Writer, Settings.DifficultyLevel));
+        for (const auto& [Object, bRemoved] : Others)
+        {
+            Object->bRemoved = bRemoved;
+        }
+
+        return Current;
     };
     const auto WriteCurrentSession = [&](const bool bDefault, const std::pair<FSession, std::string>& Current, const std::span<const uint16_t> Thumbnail)
     {
@@ -6138,7 +6152,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         // Spent energy kills the player like any object: its explosions go off and the object stays hidden.
                         if (!Each.DeathTimer && Owned.Energy <= 0.f)
                         {
-                            ExplodePlayer(*Combat, Each.State->Position, Each.Object->Altitude);
+                            ExplodePlayer(*Combat, Each.State->Position, Each.Object->Altitude, Each.Index);
                             Each.Object->bRemoved = true;
                             Each.DeathTimer = DeathMilliseconds;
                             Each.State->bDying = true;
@@ -6690,25 +6704,28 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             constexpr double PulseStrength = 50.;
             constexpr uint32_t RedShift = 16;
             constexpr uint32_t GreenShift = 8;
-            if (std::exchange(Inventory.bHit, false))
+            for (FLevelPlayer& Each : Players)
             {
-                PlayerHitClock = Combat->Clock;
-            }
-
-            uint32_t Red = 0;
-            if (PlayerHitClock)
-            {
-                const uint32_t Since = Combat->Clock - *PlayerHitClock;
-                Red = Since < HitGlowMilliseconds ? (HitGlowMilliseconds - Since) >> HitGlowShift : 0;
-                PlayerHitClock = Since < HitGlowMilliseconds ? PlayerHitClock : std::nullopt;
-            }
-
-            const uint32_t Green = Inventory.ShieldUpStep != 0.f ? uint32_t(std::abs(int32_t(std::sin(double(Combat->Clock) * PulseRadiansPerMillisecond) * PulseStrength))) : 0;
-            for (FObjectSprite& Sprite : Sprites)
-            {
-                if (Sprite.ObjectIndex == PlayerIndex && !Sprite.bShadow)
+                if (std::exchange(Each.Inventory.bHit, false))
                 {
-                    Sprite.Specular = Red << RedShift | Green << GreenShift;
+                    Each.HitClock = Combat->Clock;
+                }
+
+                uint32_t Red = 0;
+                if (Each.HitClock)
+                {
+                    const uint32_t Since = Combat->Clock - *Each.HitClock;
+                    Red = Since < HitGlowMilliseconds ? (HitGlowMilliseconds - Since) >> HitGlowShift : 0;
+                    Each.HitClock = Since < HitGlowMilliseconds ? Each.HitClock : std::nullopt;
+                }
+
+                const uint32_t Green = Each.Inventory.ShieldUpStep != 0.f ? uint32_t(std::abs(int32_t(std::sin(double(Combat->Clock) * PulseRadiansPerMillisecond) * PulseStrength))) : 0;
+                for (FObjectSprite& Sprite : Sprites)
+                {
+                    if (Sprite.ObjectIndex == Each.Index && !Sprite.bShadow)
+                    {
+                        Sprite.Specular = Red << RedShift | Green << GreenShift;
+                    }
                 }
             }
         }
@@ -7507,7 +7524,7 @@ Playing:
   --skipIntro               Go straight to the main menu, without the story page and the intro.
                             Extras still plays the intro.
   --windowed                Start in a window instead of fullscreen; Alt+Enter or F11 switches either way.
-  --coopDummy               Add a second ship that follows the player about, for trying out co-op. Do not save the game with it.
+  --coopDummy               Add a second ship that follows the player about, for trying out co-op.
 
 Cheats (combine freely, any case; never applied to the demo):
   --godMode                 Energy and shield stay full, so nothing can kill the player.

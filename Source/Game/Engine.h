@@ -836,6 +836,8 @@ struct FEffect
     // Its age and its class's CREATE blocks' next times (ObjectUpdateCreates at 00437b00), none once a block has made its last.
     uint32_t Age = 0;
     std::vector<std::optional<uint32_t>> NextCreates;
+    // The player object whose death set it off, whose blast spares the other players.
+    std::optional<size_t> Owner;
 };
 
 // An FX object circling its host (FUN_0041c180 creates it, the FX part of ObjectUpdateWeapon at 00444ca0 moves it): a class's ADD FX, as on the Final-PC,
@@ -1068,7 +1070,7 @@ size_t PreviousPlayerWeaponSlot(const FCombat& Combat, const FPlayerInventory& I
 // What the pad's aim may lock onto: a live, visible object that hunts the player (ObjectHuntsPlayer at 004371b0), not yet a wreck.
 bool IsAutoAimTarget(const FObjectBody& Body, const FLevel& Level);
 // The player's death branch of EngineUpdateObjects (004406e0): ObjectDestroy keeps the player object but sets off its explosions.
-void ExplodePlayer(FCombat& Combat, FCollisionPoint Position, float Altitude);
+void ExplodePlayer(FCombat& Combat, FCollisionPoint Position, float Altitude, size_t PlayerObject);
 // FUN_00437740: takes the slot's weapon in hand and, with option flag 8, lists its weapon and ammo for 4 seconds.
 void SelectPlayerWeapon(const FCombat& Combat, size_t Slot, FPlayerInventory& Inventory, FMessages& Messages);
 // The stock that feeds the weapon in hand, if the player carries one.
