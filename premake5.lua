@@ -1,5 +1,6 @@
 local Root = path.getabsolute(_MAIN_SCRIPT_DIR)
 local GlfwRoot = path.join(Root, "External/glfw")
+local EnetRoot = path.join(Root, "External/enet")
 local GeneratedRoot = path.join(Root, "Intermediate/Generated/GLFW")
 local VulkanSdk = os.getenv("VULKAN_SDK")
 local ShaderOutputRoot = path.join(Root, "Intermediate/Generated/Shaders")
@@ -93,6 +94,35 @@ project "GLFW"
 
     filter {}
 
+-- ENet, the co-op's UDP transport: reliable and unreliable channels over one socket.
+project "ENet"
+    kind "StaticLib"
+    language "C"
+    cdialect "C99"
+    location(path.join(Root, "Intermediate/ProjectFiles"))
+    warnings "Off"
+
+    includedirs { path.join(EnetRoot, "include") }
+    files {
+        path.join(EnetRoot, "callbacks.c"),
+        path.join(EnetRoot, "compress.c"),
+        path.join(EnetRoot, "host.c"),
+        path.join(EnetRoot, "list.c"),
+        path.join(EnetRoot, "packet.c"),
+        path.join(EnetRoot, "peer.c"),
+        path.join(EnetRoot, "protocol.c")
+    }
+
+    filter "system:windows"
+        defines { "_WINSOCK_DEPRECATED_NO_WARNINGS" }
+        files { path.join(EnetRoot, "win32.c") }
+
+    filter "system:linux"
+        defines { "_DEFAULT_SOURCE", "HAS_SOCKLEN_T=1", "HAS_MSGHDR_FLAGS=1", "HAS_POLL=1", "HAS_FCNTL=1", "HAS_INET_PTON=1", "HAS_INET_NTOP=1", "HAS_GETADDRINFO=1", "HAS_GETNAMEINFO=1" }
+        files { path.join(EnetRoot, "unix.c") }
+
+    filter {}
+
 -- Each .slang file compiles to <Name>.vert.h / <Name>.frag.h SPIR-V word arrays that Render/Renderer.cpp includes,
 -- so no shader files ship next to the exe. This is its own project because gmake orders custom build outputs only
 -- before linking, not before the objects that include them.
@@ -120,9 +150,9 @@ project "Vyruz"
     debugdir(Root)
 
     files { "Source/**.h", "Source/**.cpp" }
-    includedirs { "Source", path.join(GlfwRoot, "include"), path.join(Root, "External/miniaudio"), path.join(Root, "External/SDL_GameControllerDB"), path.join(Root, "External/stb"), ShaderOutputRoot }
+    includedirs { "Source", path.join(GlfwRoot, "include"), path.join(EnetRoot, "include"), path.join(Root, "External/miniaudio"), path.join(Root, "External/SDL_GameControllerDB"), path.join(Root, "External/stb"), ShaderOutputRoot }
     defines { "GLFW_INCLUDE_VULKAN" }
-    links { "GLFW" }
+    links { "GLFW", "ENet" }
     dependson { "Shaders" }
 
     filter "system:windows"
@@ -130,7 +160,7 @@ project "Vyruz"
         files { "Resources/Windows/Vyruz.rc" }
         includedirs { path.join(VulkanSdk or "", "Include") }
         libdirs { path.join(VulkanSdk or "", "Lib") }
-        links { "vulkan-1" }
+        links { "vulkan-1", "ws2_32", "winmm" }
 
     filter "system:linux"
         links { "vulkan", "pthread", "dl", "m" }

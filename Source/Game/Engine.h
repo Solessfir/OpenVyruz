@@ -1086,6 +1086,9 @@ constexpr float CoopHunterScale(const size_t PlayerCount)
     return 1.f + PerExtraPlayer * float(PlayerCount > 1 ? PlayerCount - 1 : 0);
 }
 void ScaleHunters(std::span<FObjectBody> Bodies, float Ratio);
+// The port's co-op client: its level shows what the host sends, so its own steps deal no damage and create no births, drops or mines.
+void SetPuppetWorld(bool bPuppet);
+bool IsPuppetWorld();
 // The player's death branch of EngineUpdateObjects (004406e0): ObjectDestroy keeps the player object but sets off its explosions.
 void ExplodePlayer(FCombat& Combat, FCollisionPoint Position, float Altitude, size_t PlayerObject);
 // FUN_00437740: takes the slot's weapon in hand and, with option flag 8, lists its weapon and ammo for 4 seconds.

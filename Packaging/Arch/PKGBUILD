@@ -18,9 +18,11 @@ options=('!debug')
 _premake=premake-5.0.0-beta8-linux.tar.gz
 source=('git+https://github.com/Solessfir/OpenVyruz.git'
         'git+https://github.com/glfw/glfw.git'
+        'git+https://github.com/lsalzman/enet.git'
         "https://github.com/premake/premake-core/releases/download/v5.0.0-beta8/${_premake}")
 noextract=("${_premake}")
 sha256sums=('SKIP'
+            'SKIP'
             'SKIP'
             '63edd3e7461eebdd45b500a3c7e8ad4e7a67d68f230010f9a97cbb71b4ec59c8')
 
@@ -33,6 +35,7 @@ prepare() {
     cd OpenVyruz
     git submodule init
     git config submodule.External/glfw.url "${srcdir}/glfw"
+    git config submodule.External/enet.url "${srcdir}/enet"
     git -c protocol.file.allow=always submodule update
 
     # GenerateProjectFiles.sh downloads premake when it is missing; makepkg fetched it already.

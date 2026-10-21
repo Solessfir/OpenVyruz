@@ -1,5 +1,6 @@
 #include "Game/Audio.h"
 #include "Game/Collision.h"
+#include "Game/Coop.h"
 #include "Game/Engine.h"
 #include "Game/Input.h"
 #include "Game/Language.h"
@@ -1277,6 +1278,9 @@ void StepFullscreenKey(GLFWwindow* const Window)
     bFullscreenKeyDown = bDown;
 }
 
+// A network game never stands still for a window out of focus, since the other players go on.
+bool bNetworkAwake = false;
+
 void PollEvents(GLFWwindow* const Window)
 {
     glfwPollEvents();
@@ -1291,6 +1295,12 @@ void PollEvents(GLFWwindow* const Window)
         return !glfwWindowShouldClose(Window)
             && (glfwGetWindowAttrib(Window, GLFW_ICONIFIED) != 0 || (bFocusedOnce && glfwGetWindowAttrib(Window, GLFW_FOCUSED) == 0));
     };
+    if (bNetworkAwake && IsInactive())
+    {
+        bCursorToCapture = true;
+        return;
+    }
+
     if (!IsInactive())
     {
         if (bCursorToCapture)
@@ -4046,6 +4056,12 @@ struct FLevelPlayer
     size_t Index = 0;
     // The name a player other than the local one goes by; the local one's is the settings' session name.
     std::string Name;
+    // The network's: the player's slot, and whether its ship moves by what the network says, with the fire it last sent.
+    uint8_t Slot = HostSlot;
+    bool bRemote = false;
+    bool bNetFire = false;
+    // A co-op client's: the host says this player died.
+    bool bNetDead = false;
     std::optional<FMovementClass> Class;
     std::optional<FPlayerState> State;
     FPlayerInventory Inventory;
@@ -4165,13 +4181,44 @@ void ApplyCheats(const FCheats& Cheats, FPlayerInventory& Inventory)
     }
 }
 
+// A co-op client waits for the host to announce a level, with the window kept alive; none once the host is gone or the window closes.
+std::optional<std::string> WaitForCoopLevel(GLFWwindow* const Window, FRenderer& Renderer, FCoopLink& Coop)
+{
+    std::printf("Co-op: waiting for the host's level\n");
+    while (!glfwWindowShouldClose(Window))
+    {
+        PollEvents(Window);
+        Coop.Poll();
+        if (Coop.IsLost())
+        {
+            return std::nullopt;
+        }
+
+        if (std::optional<std::string> Level = Coop.TakeLevel())
+        {
+            return Level;
+        }
+
+        if (Renderer.BeginFrame())
+        {
+            Renderer.EndFrame();
+        }
+
+        glfwWaitEventsTimeout(0.01);
+    }
+
+    return std::nullopt;
+}
+
 // One level of LoopLevels: runs until the window closes, the player takes a lift (the next level's path, with the player in Carried), or a menu ends or restarts the level.
 // A level loaded from a session takes its objects and the player's numbers from Restore; any other becomes the default session, in Session and on disk.
 std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const std::string& LevelPath,
     const std::optional<std::pair<float, float>> Start, const FCheats& Cheats, std::optional<FCarriedPlayer>& Carried, const std::span<const std::string> DebugLevels,
     FPanel* const Panel, const FMenuArt* const MenuArt, std::optional<FSession>& Session, const FSession* const Restore, FSettings& Settings,
-    const std::vector<FDemoRecord>* const Demo, const bool bShowPage)
+    const std::vector<FDemoRecord>* const Demo, const bool bShowPage, FCoopLink* const Coop)
 {
+    // A co-op client's level is the host's: it shows what the host sends and decides nothing of its own.
+    const bool bPuppet = Coop && !Coop->IsHost();
     // SessionLoad (0042ba00) loads the session's .3do in place of the level's, which also sets the difficulty.
     const std::optional<std::string> SessionObjects = Restore ? ReadSessionObjects(*Restore) : std::nullopt;
     if (Restore && !SessionObjects)
@@ -4233,6 +4280,45 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     std::vector<FObjectBody> Bodies = CreateObjectBodies(*Level);
     // The co-op toughening the hunters have now (CoopHunterScale).
     float HunterScale = 1.f;
+    // The level's own objects, which every machine has under the same index; later ones a client maps from the host's.
+    const size_t PlacedObjects = Level->Objects.size();
+    // A further player's ship: a level object of the player's class, whose sprites the steps' created objects bring.
+    const auto AddPlayer = [&](const uint8_t Slot, std::string Name, const float X, const float Y) -> FLevelPlayer*
+    {
+        const std::optional<size_t> Created = PlayerObject && Combat ? CreateLevelObject(*Level, PlayerObject->ClassName, X, Y) : std::nullopt;
+        if (!Created)
+        {
+            return nullptr;
+        }
+
+        FLevelPlayer& Added = Players.emplace_back();
+        Added.Object = { .Objects = &Level->Objects, .Index = *Created };
+        Added.Index = *Created;
+        Added.Slot = Slot;
+        Added.Name = std::move(Name);
+        if (std::expected<FMovementClass, std::string> AddedClass = ReadMovementClass(*Added.Object))
+        {
+            Added.Class = *AddedClass;
+            Added.State = SpawnPlayer(*Added.Object, *Added.Class);
+            Added.Inventory = CreateInventory(*Added.Object);
+            ApplyDifficulty(Settings.Difficulty(), *Combat, {}, Added.Inventory, true);
+            Added.Inventory.Arms = Combat->StartArms;
+        }
+
+        Combat->CreatedObjects.push_back(*Created);
+        return &Added;
+    };
+    // The players in the level, those who left not counted.
+    const auto ActivePlayers = [&] { return size_t(std::ranges::count_if(Players, [](const FLevelPlayer& Each) { return Each.State.has_value(); })); };
+    // The hunters toughen for every player beyond the first.
+    const auto RescaleHunters = [&]
+    {
+        if (const float Wanted = CoopHunterScale(ActivePlayers()); Wanted != HunterScale)
+        {
+            ScaleHunters(Bodies, Wanted / HunterScale);
+            HunterScale = Wanted;
+        }
+    };
     Local.Index = PlayerObject.Index.value_or(Level->Objects.size());
     const size_t PlayerIndex = Local.Index;
     std::vector<FPickup> Pickups = CreatePickups(*Level);
@@ -4375,33 +4461,40 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                 // --coopDummy puts a second ship of the player's class beside the first; the steps' created objects give it its sprites.
                 constexpr float DummyGap = 64.f;
-                if (Cheats.bCoopDummy && !Demo)
+                if (Cheats.bCoopDummy && !Demo && !Coop)
                 {
-                    if (const std::optional<size_t> Created = CreateLevelObject(*Level, PlayerObject->ClassName, PlayerObject->X + DummyGap, PlayerObject->Y))
-                    {
-                        FLevelPlayer& Dummy = Players.emplace_back();
-                        Dummy.Object = { .Objects = &Level->Objects, .Index = *Created };
-                        Dummy.Index = *Created;
-                        Dummy.Name = "Dummy";
-                        if (std::expected<FMovementClass, std::string> DummyClass = ReadMovementClass(*Dummy.Object))
-                        {
-                            Dummy.Class = *DummyClass;
-                            Dummy.State = SpawnPlayer(*Dummy.Object, *Dummy.Class);
-                            Dummy.Inventory = CreateInventory(*Dummy.Object);
-                            ApplyDifficulty(Settings.Difficulty(), *Combat, {}, Dummy.Inventory, true);
-                            Dummy.Inventory.Arms = Combat->StartArms;
-                        }
+                    AddPlayer(Net::MaxPeers + 1, "Dummy", PlayerObject->X + DummyGap, PlayerObject->Y);
+                }
 
-                        Combat->CreatedObjects.push_back(*Created);
+                // Every other member of a network game arrives beside the local player; the host adds the later ones as they join.
+                if (Coop)
+                {
+                    Local.Slot = Coop->GetLocalSlot();
+                    // Each client starts its ship along the row from the host's, in its slot's place, as the host places the others.
+                    if (Local.Slot != HostSlot && Player)
+                    {
+                        Player->Position.X += DummyGap * float(Local.Slot);
+                        Player->PreviousPosition = Player->Position;
+                        Player->Center = CollisionFromWorld(Player->Position);
+                        PlayerObject->X = Player->Position.X;
+                    }
+
+                    Coop->TakeJoined();
+                    Coop->TakeLeft();
+                    const float StartX = PlayerObject->X - DummyGap * float(Local.Slot);
+                    for (const FCoopMember& Member : Coop->GetMembers())
+                    {
+                        if (Member.Slot != Local.Slot)
+                        {
+                            if (FLevelPlayer* const Added = AddPlayer(Member.Slot, Member.Name, StartX + DummyGap * float(Member.Slot), PlayerObject->Y))
+                            {
+                                Added->bRemote = true;
+                            }
+                        }
                     }
                 }
 
-                // The hunters toughen for every player beyond the first.
-                if (const float Wanted = CoopHunterScale(Players.size()); Wanted != HunterScale)
-                {
-                    ScaleHunters(Bodies, Wanted / HunterScale);
-                    HunterScale = Wanted;
-                }
+                RescaleHunters();
 
                 for (const FEffectClass& Effect : Combat->EffectClasses)
                 {
@@ -4513,8 +4606,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
     };
 
-    // EngineRunLevel writes the default session as the level starts, unless the level came from a session.
-    if (!Restore && !Demo)
+    // EngineRunLevel writes the default session as the level starts, unless the level came from a session; a co-op client's level is the host's.
+    if (!Restore && !Demo && !bPuppet)
     {
         const std::pair<FSession, std::string> Current = CurrentSession();
         WriteCurrentSession(true, Current, {});
@@ -4684,7 +4777,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // Where a co-op player who stayed down comes back: the level's start, then the place the team last saved.
     FCollisionPoint TeamRespawn = PlayerObject ? FCollisionPoint{ .X = PlayerObject->X, .Y = PlayerObject->Y } : FCollisionPoint{};
     // A co-op player's ship, once a teammate is out of energy, waits to be revived rather than exploding.
-    const auto IsCoop = [&] { return Players.size() > 1; };
+    const auto IsCoop = [&] { return ActivePlayers() > 1; };
     // The port's co-op messages, centred as the original's key and code messages are.
     const auto SayToLocal = [&](std::string Text, const uint32_t Color)
     {
@@ -5310,6 +5403,341 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     const auto Current = std::ranges::find(DebugLevels, LevelPath);
     const size_t CurrentIndex = Current == DebugLevels.end() ? DebugLevels.size() : size_t(Current - DebugLevels.begin());
     // ReadPlayerInput through InputActionPressed (0041d4c0), the live part: the keys, the mouse's sight and the port's pad. It runs once per step of a living player.
+    // A ship as the network carries it, and the state a remote one takes from it.
+    const auto MakeShip = [&](const FLevelPlayer& Each)
+    {
+        FCoopShip Ship{ .Slot = Each.Slot, .bFire = Each.bFireInput, .bThrust = Each.bThrustInput, .WeaponSlot = uint8_t(Each.Inventory.Arms.Slot) };
+        if (Each.State)
+        {
+            const FPlayerState& State = *Each.State;
+            Ship.Position = State.Position;
+            Ship.Velocity = State.Velocity;
+            Ship.Speed = State.Speed;
+            Ship.SpeedMagnitude = State.SpeedMagnitude;
+            Ship.Direction = State.Direction;
+            Ship.Pose = State.Pose;
+            Ship.TargetPose = State.TargetPose;
+            Ship.ReactorMilliseconds = State.ReactorMilliseconds;
+        }
+
+        return Ship;
+    };
+    const auto ApplyShip = [&](FLevelPlayer& Each, const FCoopShip& Ship)
+    {
+        if (!Each.State)
+        {
+            return;
+        }
+
+        FPlayerState& State = *Each.State;
+        State.PreviousPosition = State.Position;
+        State.Position = Ship.Position;
+        State.Center = CollisionFromWorld(Ship.Position);
+        State.Velocity = Ship.Velocity;
+        State.Speed = Ship.Speed;
+        State.SpeedMagnitude = Ship.SpeedMagnitude;
+        State.Direction = Ship.Direction;
+        State.Pose = std::clamp(Ship.Pose, 1, PlayerPoseCount);
+        State.TargetPose = std::clamp(Ship.TargetPose, 1, PlayerPoseCount);
+        State.ReactorMilliseconds = Ship.ReactorMilliseconds;
+        Each.bNetFire = Ship.bFire;
+        Each.bThrustInput = Ship.bThrust;
+        if (Combat && Ship.WeaponSlot != Each.Inventory.Arms.Slot)
+        {
+            FMessages Unheard;
+            SelectPlayerWeapon(*Combat, Ship.WeaponSlot, Each.Inventory, Unheard);
+        }
+    };
+    const auto PlayerInSlot = [&](const uint8_t Slot) -> FLevelPlayer*
+    {
+        const auto Found = std::ranges::find(Players, Slot, &FLevelPlayer::Slot);
+        return Found != Players.end() && Found->State ? &*Found : nullptr;
+    };
+    const auto IsPlayerObject = [&](const size_t Index) { return std::ranges::contains(Players, Index, &FLevelPlayer::Index); };
+    // The host: the objects it created since its last snapshot, the players' ships left out, and the world now.
+    size_t SentObjects = Level->Objects.size();
+    uint32_t SnapshotAt = 0;
+    uint32_t ShipAt = 0;
+    const auto SendWorld = [&]
+    {
+        std::vector<FCoopCreated> Created;
+        for (size_t Index = SentObjects; Index < Level->Objects.size(); ++Index)
+        {
+            if (!IsPlayerObject(Index))
+            {
+                const FLevelObject& Object = Level->Objects[Index];
+                Created.push_back({ .Object = uint32_t(Index), .ClassName = Object.ClassName, .Position = { .X = Object.X, .Y = Object.Y } });
+            }
+        }
+
+        SentObjects = Level->Objects.size();
+        Coop->SendCreated(Created);
+        FCoopSnapshot Snapshot{ .Clock = Combat ? Combat->Clock : 0, .Money = Local.Inventory.Money, .Earned = Local.Inventory.Earned };
+        for (const FCarriedKey& Key : Local.Inventory.Keys)
+        {
+            Snapshot.Keys.push_back({ .Id = Key.Id, .bCode = Key.bCode, .PartId = Key.PartId, .PartCount = Key.PartCount, .CodeString = Key.CodeString });
+        }
+
+        for (const FLevelPlayer& Each : Players)
+        {
+            if (!Each.State)
+            {
+                continue;
+            }
+
+            FCoopPlayer& Sent = Snapshot.Players.emplace_back(FCoopPlayer{
+                .Ship = MakeShip(Each),
+                .Name = &Each == &Local ? Settings.PlayerName : Each.Name,
+                .Energy = Each.Inventory.Energy,
+                .EnergyMax = Each.Inventory.EnergyMax,
+                .Shield = Each.Inventory.Shield,
+                .ShieldMax = Each.Inventory.ShieldMax,
+                .bDown = Each.DownTimer.has_value(),
+                .bDead = Each.DeathTimer.has_value(),
+            });
+            for (const FAmmoStock& Stock : Each.Inventory.Ammo)
+            {
+                Sent.Ammo.push_back(Stock.Count);
+            }
+        }
+
+        for (const FObjectBody& Body : Bodies)
+        {
+            Snapshot.Bodies.push_back({
+                .Object = uint32_t(Body.ObjectIndex),
+                .Position = Body.State.Position,
+                .Direction = Body.State.Direction,
+                .Pose = Body.State.Pose,
+                .TopPose = Body.Actor ? Body.Actor->TopPose : 0,
+                .TurretDirection = Body.Turret ? Body.Turret->Direction : 0,
+                .Energy = Body.Energy,
+                .Shield = Body.Shield,
+                .bInvisible = Body.bInvisible,
+                .bPassable = Body.bPassable,
+            });
+        }
+
+        const size_t Bytes = (Level->Objects.size() + 7) / 8;
+        Snapshot.Removed.resize(Bytes);
+        Snapshot.Wrecked.resize(Bytes);
+        for (size_t Index = 0; Index < Level->Objects.size(); ++Index)
+        {
+            // A player's ship is its own machine's business, whose index the others give to another ship.
+            if (IsPlayerObject(Index))
+            {
+                continue;
+            }
+
+            const uint8_t Bit = uint8_t(1u << (Index % 8));
+            Snapshot.Removed[Index / 8] |= Level->Objects[Index].bRemoved ? Bit : 0;
+            Snapshot.Wrecked[Index / 8] |= Level->Objects[Index].bWrecked ? Bit : 0;
+        }
+
+        for (const FPickup& Pickup : Pickups)
+        {
+            uint8_t Slots = 0;
+            for (const size_t Taker : Pickup.Takers)
+            {
+                const auto Each = std::ranges::find(Players, Taker, &FLevelPlayer::Index);
+                Slots |= Each != Players.end() ? uint8_t(1u << Each->Slot) : 0;
+            }
+
+            if (Slots != 0)
+            {
+                Snapshot.Takers.emplace_back(uint32_t(Pickup.ObjectIndex), Slots);
+            }
+        }
+
+        Coop->SendSnapshot(Snapshot);
+    };
+    // A client: the host's later objects under this machine's own indices.
+    std::unordered_map<size_t, size_t> HostObjects;
+    const auto LocalObject = [&](const size_t HostIndex) -> std::optional<size_t>
+    {
+        if (HostIndex < PlacedObjects)
+        {
+            return HostIndex;
+        }
+
+        const auto Found = HostObjects.find(HostIndex);
+        return Found != HostObjects.end() ? std::optional(Found->second) : std::nullopt;
+    };
+    const auto TakeCreated = [&](const std::vector<FCoopCreated>& Created)
+    {
+        for (const FCoopCreated& Object : Created)
+        {
+            if (HostObjects.contains(Object.Object))
+            {
+                continue;
+            }
+
+            if (const std::optional<size_t> Index = CreateLevelObject(*Level, Object.ClassName, Object.Position.X, Object.Position.Y))
+            {
+                HostObjects[Object.Object] = *Index;
+                if (std::optional<FObjectBody> Body = CreateObjectBody(*Level, *Index))
+                {
+                    Bodies.push_back(std::move(*Body));
+                }
+
+                if (Combat)
+                {
+                    Combat->CreatedObjects.push_back(*Index);
+                }
+            }
+        }
+    };
+    const auto TakeSnapshot = [&](const FCoopSnapshot& Snapshot)
+    {
+        if (Combat)
+        {
+            Combat->Clock = Snapshot.Clock;
+        }
+
+        Local.Inventory.Money = Snapshot.Money;
+        Local.Inventory.Earned = Snapshot.Earned;
+        Local.Inventory.Keys.clear();
+        for (const FCoopKey& Key : Snapshot.Keys)
+        {
+            Local.Inventory.Keys.push_back({ .Id = Key.Id, .bCode = Key.bCode, .PartId = Key.PartId, .PartCount = Key.PartCount, .CodeString = Key.CodeString });
+        }
+
+        for (const FCoopPlayer& Sent : Snapshot.Players)
+        {
+            FLevelPlayer* Each = PlayerInSlot(Sent.Ship.Slot);
+            if (!Each && Sent.Ship.Slot != Local.Slot && PlayerObject)
+            {
+                Each = AddPlayer(Sent.Ship.Slot, Sent.Name, Sent.Ship.Position.X, Sent.Ship.Position.Y);
+                if (Each)
+                {
+                    Each->bRemote = true;
+                    RescaleHunters();
+                }
+            }
+
+            if (!Each || !Each->State)
+            {
+                continue;
+            }
+
+            if (Each != &Local)
+            {
+                ApplyShip(*Each, Sent.Ship);
+            }
+
+            FPlayerInventory& Owned = Each->Inventory;
+            Owned.bHit = Owned.bHit || Sent.Energy + Sent.Shield < Owned.Energy + Owned.Shield;
+            Owned.Energy = Sent.Energy;
+            Owned.EnergyMax = Sent.EnergyMax;
+            Owned.Shield = Sent.Shield;
+            Owned.ShieldMax = Sent.ShieldMax;
+            for (size_t Stock = 0; Stock < std::min(Sent.Ammo.size(), Owned.Ammo.size()); ++Stock)
+            {
+                Owned.Ammo[Stock].Count = Sent.Ammo[Stock];
+            }
+
+            Each->DownTimer = Sent.bDown ? std::optional<int32_t>(1) : std::nullopt;
+            Each->bNetDead = Sent.bDead;
+            Each->State->bDying = Sent.bDown || Sent.bDead || Each->DeathTimer.has_value();
+        }
+
+        // Players the host no longer has have left.
+        for (FLevelPlayer& Each : Players)
+        {
+            if (&Each != &Local && Each.State && !std::ranges::contains(Snapshot.Players, Each.Slot, [](const FCoopPlayer& Sent) { return Sent.Ship.Slot; }))
+            {
+                Each.State.reset();
+                Each.Object->bRemoved = true;
+                RescaleHunters();
+            }
+        }
+
+        std::vector<FObjectBody*> BodyOf(Level->Objects.size(), nullptr);
+        for (FObjectBody& Body : Bodies)
+        {
+            BodyOf[Body.ObjectIndex] = &Body;
+        }
+
+        for (const FCoopBody& Sent : Snapshot.Bodies)
+        {
+            const std::optional<size_t> Index = LocalObject(Sent.Object);
+            FObjectBody* const Body = Index && *Index < BodyOf.size() ? BodyOf[*Index] : nullptr;
+            if (!Body)
+            {
+                continue;
+            }
+
+            Body->State.PreviousPosition = Body->State.Position;
+            Body->State.Position = Sent.Position;
+            Body->State.Center = CollisionFromWorld(Sent.Position);
+            Body->State.Direction = Sent.Direction;
+            Body->State.Pose = Sent.Pose;
+            if (Body->Actor)
+            {
+                Body->Actor->TopPose = Sent.TopPose;
+            }
+
+            if (Body->Turret)
+            {
+                Body->Turret->Direction = Sent.TurretDirection;
+            }
+
+            Body->Energy = Sent.Energy;
+            Body->Shield = Sent.Shield;
+            Body->bInvisible = Sent.bInvisible;
+            Body->bPassable = Sent.bPassable;
+        }
+
+        // What the host removed goes here too: a body dies in the next step, with its blast and its death's effects but none of its drops, which the host sends.
+        for (size_t HostIndex = 0; HostIndex < Snapshot.Removed.size() * 8; ++HostIndex)
+        {
+            const std::optional<size_t> Index = LocalObject(HostIndex);
+            if (!Index || *Index >= Level->Objects.size() || IsPlayerObject(*Index))
+            {
+                continue;
+            }
+
+            const uint8_t Bit = uint8_t(1u << (HostIndex % 8));
+            FLevelObject& Object = Level->Objects[*Index];
+            Object.bWrecked = HostIndex / 8 < Snapshot.Wrecked.size() && (Snapshot.Wrecked[HostIndex / 8] & Bit) != 0;
+            if ((Snapshot.Removed[HostIndex / 8] & Bit) == 0 || Object.bRemoved)
+            {
+                continue;
+            }
+
+            if (FObjectBody* const Body = *Index < BodyOf.size() ? BodyOf[*Index] : nullptr)
+            {
+                Body->Energy = 0.f;
+                Body->bDamaged = true;
+            }
+            else
+            {
+                Object.bRemoved = true;
+            }
+        }
+
+        for (FPickup& Pickup : Pickups)
+        {
+            Pickup.Takers.clear();
+        }
+
+        for (const auto& [HostIndex, Slots] : Snapshot.Takers)
+        {
+            const std::optional<size_t> Index = LocalObject(HostIndex);
+            const auto Pickup = Index ? std::ranges::find(Pickups, *Index, &FPickup::ObjectIndex) : Pickups.end();
+            if (Pickup == Pickups.end())
+            {
+                continue;
+            }
+
+            for (const FLevelPlayer& Each : Players)
+            {
+                if ((Slots & (1u << Each.Slot)) != 0)
+                {
+                    Pickup->Takers.push_back(Each.Index);
+                }
+            }
+        }
+    };
     // --coopDummy's ship heads for the local player and thrusts while it is further than a short gap, nearly facing it.
     const auto FollowIntent = [&](const FPlayerState& Self) -> FPlayerIntent
     {
@@ -5754,6 +6182,70 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             WeaponKeysDown = WeaponKeysNow;
         }
 
+        // The network: the host takes in who joined and left and every client's ship; a client follows the host's level and world and sends its own ship.
+        if (Coop)
+        {
+            Coop->Poll();
+            constexpr uint32_t ShipPeriodMilliseconds = 16;
+            if (Coop->IsHost())
+            {
+                for (const uint8_t Slot : Coop->TakeJoined())
+                {
+                    const auto Member = std::ranges::find(Coop->GetMembers(), Slot, &FCoopMember::Slot);
+                    if (!PlayerInSlot(Slot) && Player && Member != Coop->GetMembers().end())
+                    {
+                        constexpr float JoinGap = 64.f;
+                        if (FLevelPlayer* const Added = AddPlayer(Slot, Member->Name, Player->Position.X + JoinGap, Player->Position.Y))
+                        {
+                            Added->bRemote = true;
+                        }
+                    }
+                }
+
+                for (const uint8_t Slot : Coop->TakeLeft())
+                {
+                    if (FLevelPlayer* const Gone = PlayerInSlot(Slot))
+                    {
+                        Gone->State.reset();
+                        Gone->Object->bRemoved = true;
+                    }
+                }
+
+                RescaleHunters();
+                for (FLevelPlayer& Each : Players)
+                {
+                    if (const std::optional<FCoopShip> Ship = Each.bRemote ? Coop->GetShip(Each.Slot) : std::nullopt)
+                    {
+                        ApplyShip(Each, *Ship);
+                    }
+                }
+            }
+            else
+            {
+                if (Coop->IsLost())
+                {
+                    return FLevelEnd{ .Kind = ELevelEnd::Menu };
+                }
+
+                if (std::optional<std::string> Next = Coop->TakeLevel(); Next && !NextLevel)
+                {
+                    NextLevel = std::move(*Next);
+                }
+
+                TakeCreated(Coop->TakeCreated());
+                if (const std::optional<FCoopSnapshot> Snapshot = Coop->TakeSnapshot())
+                {
+                    TakeSnapshot(*Snapshot);
+                }
+
+                if (ClockMilliseconds() - ShipAt >= ShipPeriodMilliseconds)
+                {
+                    ShipAt = ClockMilliseconds();
+                    Coop->SendShip(MakeShip(Local));
+                }
+            }
+        }
+
         uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
         if (bPaused || !PageText.empty() || MenuFadeStep < MenuFadeSteps || LiftFadeStep)
         {
@@ -5878,6 +6370,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     {
                         *Each.DeathTimer -= int32_t(StepMilliseconds);
                         StepDeathDrift(Each.DeathDrift, State, *Level, StepMilliseconds);
+                        continue;
+                    }
+
+                    // A remote ship moves by what the network says.
+                    if (Each.bRemote)
+                    {
                         continue;
                     }
 
@@ -6017,7 +6515,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         GameAudio->UpdateVoices();
                     }
                 };
-                if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, Targets, StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer && !LiftWait)
+                if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, Targets, StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer && !LiftWait && !bPuppet)
                 {
                     // In co-op the first player in starts the lift's countdown for the others.
                     if (IsCoop())
@@ -6084,7 +6582,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             continue;
                         }
 
-                        const bool bLiveFire = &Each != &Local || Each.DownTimer ? false : Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
+                        const bool bLiveFire = Each.DownTimer ? false : Each.bRemote ? Each.bNetFire : &Each != &Local ? false : Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
                         Each.bFireInput = bLiveFire;
                         const bool bFire = !Each.Inventory.Surprises.bBlockedMotor && !bFinaleStarted && bLiveFire;
                         if (!Each.DeathTimer && !Each.DownTimer)
@@ -6245,7 +6743,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         }
 
                         // Spent energy kills the player like any object: its explosions go off and the object stays hidden. In co-op the player is down instead.
-                        if (!Each.DeathTimer && !Each.DownTimer && Owned.Energy <= 0.f && IsCoop())
+                        if (!Each.DeathTimer && !Each.DownTimer && Owned.Energy <= 0.f && IsCoop() && !bPuppet)
                         {
                             constexpr int32_t DownMilliseconds = 30000;
                             constexpr uint32_t DownColor = 0xff4020;
@@ -6256,7 +6754,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             SayToLocal(bLocal ? Format("You are down !\nStay close to a teammate to get back up.") : Format("%s is down !\nGet close to bring them back.", Each.Name), DownColor);
                         }
 
-                        if (!Each.DeathTimer && !Each.DownTimer && Owned.Energy <= 0.f)
+                        if (!Each.DeathTimer && !Each.DownTimer && Owned.Energy <= 0.f && (!bPuppet || Each.bNetDead))
                         {
                             ExplodePlayer(*Combat, Each.State->Position, Each.Object->Altitude, Each.Index);
                             Each.Object->bRemoved = true;
@@ -6285,10 +6783,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     constexpr float RespawnEnergyShare = 0.5f;
                     constexpr uint32_t BackColor = 0x80ff20;
                     const auto Standing = [](const FLevelPlayer& Each) { return Each.State && !Each.DownTimer && !Each.DeathTimer; };
-                    const bool bTeamLost = IsCoop() && std::ranges::none_of(Players, Standing) && std::ranges::any_of(Players, [](const FLevelPlayer& Each) { return Each.DownTimer.has_value(); });
+                    const bool bTeamLost = !bPuppet && IsCoop() && std::ranges::none_of(Players, Standing) && std::ranges::any_of(Players, [](const FLevelPlayer& Each) { return Each.DownTimer.has_value(); });
                     for (FLevelPlayer& Each : Players)
                     {
-                        if (!Each.DownTimer || !Each.State)
+                        if (bPuppet || !Each.DownTimer || !Each.State)
                         {
                             continue;
                         }
@@ -6397,8 +6895,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 {
                     FMessages Unheard;
                     const bool bLocal = &Each == &Local;
-                    if (Each.State && Each.Class && !Each.DeathTimer && !Each.DownTimer &&
-                        CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Unheard, Combat ? &*Combat : nullptr, Each.Index, Players.size(),
+                    if (!bPuppet && Each.State && Each.Class && !Each.DeathTimer && !Each.DownTimer &&
+                        CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Unheard, Combat ? &*Combat : nullptr, Each.Index, ActivePlayers(),
                             bLocal ? nullptr : &Local.Inventory) != 0 && bLocal)
                     {
                         if (GameAudio)
@@ -6412,7 +6910,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
 
                 const float CashBeforePlot = Inventory.Money;
-                if (StepSavingPlots(Saving, SavingPlots, *Level, *Player, PlayerClass->Radius, Inventory, Messages, ClockMilliseconds(), Settings.PlayerName))
+                if (!bPuppet && StepSavingPlots(Saving, SavingPlots, *Level, *Player, PlayerClass->Radius, Inventory, Messages, ClockMilliseconds(), Settings.PlayerName))
                 {
                     if (GameAudio && Inventory.Money != CashBeforePlot)
                     {
@@ -6457,6 +6955,14 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 CameraX += (Pressed(GLFW_KEY_RIGHT) - Pressed(GLFW_KEY_LEFT)) * ScrollStep;
                 CameraY += (Pressed(GLFW_KEY_DOWN) - Pressed(GLFW_KEY_UP)) * ScrollStep;
             }
+        }
+
+        // The host sends its world some twenty times a second.
+        constexpr uint32_t SnapshotPeriodMilliseconds = 50;
+        if (Coop && Coop->IsHost() && ClockMilliseconds() - SnapshotAt >= SnapshotPeriodMilliseconds)
+        {
+            SnapshotAt = ClockMilliseconds();
+            SendWorld();
         }
 
         // Game over (EngineGameOver at 00445a40): the game-over image, then the menu.
@@ -7725,6 +8231,8 @@ Playing:
                             Extras still plays the intro.
   --windowed                Start in a window instead of fullscreen; Alt+Enter or F11 switches either way.
   --coopDummy               Add a second ship that follows the player about, for trying out co-op.
+  --host                    Host a co-op game on UDP port 47210, starting at --level or the first level; up to three friends join it.
+  --join <address>          Join a co-op game hosted at that address (and port, as 192.168.1.20:47210); the host's levels follow.
 
 Cheats (combine freely, any case; never applied to the demo):
   --godMode                 Energy and shield stay full, so nothing can kill the player.
@@ -7835,7 +8343,11 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
     // Development aid: --dump-gaf PATH lists an archive GAF's animations with their frame counts and durations.
     std::optional<std::string> DumpGafPath;
     FCheats Cheats;
-    const std::array<std::pair<std::string_view, bool*>, 7> Switches = { {
+    // --host and --join: a co-op game over the network (Coop.md).
+    bool bHostCoop = false;
+    std::optional<std::string> JoinAddress;
+    const std::array<std::pair<std::string_view, bool*>, 8> Switches = { {
+        { "--host", &bHostCoop },
         { "--verify-gaf", &bVerifyGafs },
         { "--verify-levels", &bVerifyLevels },
         { "--verify-game", &bVerifyGame },
@@ -7858,6 +8370,16 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
         else if (bool FCheats::* const Cheat = CheatFlag(Argument))
         {
             Cheats.*Cheat = true;
+        }
+        else if (Argument == "--join")
+        {
+            if (!bHasValue || !Net::ParseAddress(Arguments[Index + 1]))
+            {
+                return Fail("--join takes the host's address, as 192.168.1.20 or 192.168.1.20:47210.");
+            }
+
+            JoinAddress = Arguments[++Index];
+            bSkipMenu = true;
         }
         else if (Argument == "--dump-gaf" || Argument == "--level" || Argument == "--start")
         {
@@ -8116,6 +8638,31 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
     }
 
     FSettings Settings = LoadSettings(Archive, DataPath->parent_path());
+    // The co-op link lives for the whole run; a client plays the levels the host announces.
+    std::unique_ptr<FCoopLink> Coop;
+    if (bHostCoop && JoinAddress)
+    {
+        return Fail("--host and --join do not go together.");
+    }
+
+    if (bHostCoop)
+    {
+        Coop = FCoopLink::Host(Net::DefaultPort, Settings.PlayerName);
+        bSkipMenu = true;
+    }
+    else if (JoinAddress)
+    {
+        const std::optional<std::pair<std::string, uint16_t>> Address = Net::ParseAddress(*JoinAddress);
+        Coop = Address ? FCoopLink::Join(Address->first, Address->second, Settings.PlayerName) : nullptr;
+    }
+
+    if ((bHostCoop || JoinAddress) && !Coop)
+    {
+        return Fail("The co-op game could not start its network.");
+    }
+
+    bNetworkAwake = Coop != nullptr;
+
     // A vzconf.txt asking for Russian over the English data plays in English; the setting itself stays, for the original and the Russian data.
     SetLanguage(ELanguage(Settings.Language) == ELanguage::Russian && (!MenuArt || !MenuArt->HasCyrillic()) ? ELanguage::English : ELanguage(Settings.Language));
     Renderer.SetUserGamma(Settings.Gamma);
@@ -8190,8 +8737,22 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
 
     // Whether the next level starts a new game, which shows its level page.
     bool bNewGame = false;
+    // A co-op client's next level, as the host announced it.
+    std::optional<std::string> CoopPath;
     for (std::string Path = LevelPath;;)
     {
+        if (Coop && !Coop->IsHost())
+        {
+            bMenu = false;
+            CoopPath = CoopPath ? CoopPath : WaitForCoopLevel(Window, Renderer, *Coop);
+            if (!CoopPath)
+            {
+                break;
+            }
+
+            Path = *std::exchange(CoopPath, std::nullopt);
+        }
+
         if (bMenu)
         {
             FSession Chosen;
@@ -8235,8 +8796,15 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
             GameAudio->CenterPans();
         }
 
+        if (Coop && Coop->IsHost())
+        {
+            Coop->AnnounceLevel(Path);
+        }
+
+        SetPuppetWorld(Coop && !Coop->IsHost());
         const std::expected<FLevelEnd, std::string> End = RunLevel(Window, Renderer, Archive, Path, Start, Cheats, Carried, DebugLevels, Panel ? &*Panel : nullptr,
-            MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Settings, Demo ? &*Demo : nullptr, bNewGame || Carried.has_value());
+            MenuArt ? &*MenuArt : nullptr, Session, Restore ? &*Restore : nullptr, Settings, Demo ? &*Demo : nullptr, bNewGame || Carried.has_value(), Demo ? nullptr : Coop.get());
+        SetPuppetWorld(false);
         bNewGame = false;
         Restore.reset();
         Renderer.ReleaseSpriteSheets();
@@ -8274,6 +8842,22 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
         if (End->Kind == ELevelEnd::Quit)
         {
             break;
+        }
+
+        // A co-op client goes where the host does: the level it changed to, or the next one it announces.
+        if (Coop && !Coop->IsHost())
+        {
+            if (End->Kind == ELevelEnd::Quit || Coop->IsLost())
+            {
+                break;
+            }
+
+            if (End->Kind == ELevelEnd::Lift)
+            {
+                CoopPath = End->NextLevel;
+            }
+
+            continue;
         }
 
         if (End->Kind == ELevelEnd::Lift)

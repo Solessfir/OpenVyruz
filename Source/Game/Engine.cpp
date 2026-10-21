@@ -957,8 +957,16 @@ namespace
 {
 // ApplyDamage at 0043ca30: the shield absorbs first and, once it breaks, takes back the class's Shield.Min (class +0x6c); whatever is left comes off the energy.
 // Every class's minimum is zero but four of underground\item.3dc's, whose shields refill whole each time they break.
+// The port's co-op client (SetPuppetWorld).
+bool bPuppetWorld = false;
+
 void ApplyDamage(float& Energy, float& Shield, const float ShieldMin, float Amount)
 {
+    if (bPuppetWorld)
+    {
+        return;
+    }
+
     if (0.f < Shield)
     {
         Shield = float(double(Shield) - double(Amount));
@@ -4671,6 +4679,11 @@ void ActivateGenerators(const FLevel& Level, std::vector<FObjectBody>& Bodies, c
 
 void StepGenerators(FCombat& Combat, FLevel& Level, std::vector<FObjectBody>& Bodies, const FPlayerTargets Players, const uint32_t StepMilliseconds)
 {
+    if (bPuppetWorld)
+    {
+        return;
+    }
+
     // Bodies grows while the loop runs, so the generators are found by index.
     for (size_t Index = 0; Index < Bodies.size(); ++Index)
     {
@@ -6615,6 +6628,16 @@ std::vector<FDecorAnimation> StartMapAnimations(const FLevel& Level, FResourceAr
     return StartLevelMapAnimations(Level, Archive, Random);
 }
 
+void SetPuppetWorld(const bool bPuppet)
+{
+    bPuppetWorld = bPuppet;
+}
+
+bool IsPuppetWorld()
+{
+    return bPuppetWorld;
+}
+
 void ScaleHunters(const std::span<FObjectBody> Bodies, const float Ratio)
 {
     for (FObjectBody& Body : Bodies)
@@ -7298,7 +7321,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         return true;
     });
 
-    for (const FDrop& Drop : Drops)
+    for (const FDrop& Drop : bPuppetWorld ? std::vector<FDrop>() : Drops)
     {
         if (const std::optional<size_t> Index = CreateLevelObject(Level, Drop.ClassName, Drop.X, Drop.Y))
         {
@@ -7307,7 +7330,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
     }
 
     // WeaponFire (00443bd0) makes a mine an object facing the shooter's way; with an active-after ObjectHide (004391d0) leaves it shown but passable, and its off timer runs that long.
-    for (const FCombat::FDroppedMine& Dropped : Combat.DroppedMines)
+    for (const FCombat::FDroppedMine& Dropped : bPuppetWorld ? std::vector<FCombat::FDroppedMine>() : Combat.DroppedMines)
     {
         const FAmmoClass& Ammo = Combat.AmmoClasses[Dropped.AmmoIndex];
         const std::optional<size_t> Index = CreateLevelObject(Level, Ammo.Name, Dropped.Position.X, Dropped.Position.Y);

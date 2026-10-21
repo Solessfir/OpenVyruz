@@ -39,7 +39,7 @@ Comments explain why: original-game quirks, format constraints, engine behavior,
 
 ## Dependencies
 
-- Add dependencies only when the current work needs them. Source dependencies are pinned Git submodules under `External/` (GLFW is upstream `glfw/glfw`; switch to a fork only when a concrete need appears); a single-header library is vendored there instead (miniaudio 0.11.25 in `External/miniaudio`).
+- Add dependencies only when the current work needs them. Source dependencies are pinned Git submodules under `External/` (GLFW is upstream `glfw/glfw`, ENet upstream `lsalzman/enet` at v1.3.18; switch to a fork only when a concrete need appears); a single-header library is vendored there instead (miniaudio 0.11.25 in `External/miniaudio`).
 - Premake is downloaded by `GenerateProjectFiles` into ignored `External/Premake/` with a pinned version and SHA-256. Never commit tool binaries.
 - The Vulkan SDK comes from `VULKAN_SDK` when set; otherwise `GenerateProjectFiles.bat` downloads the pinned 1.4.363.0 into ignored `External/VulkanSDK/` (`Scripts/VulkanSdk.ps1`, SHA-256 checked). Linux uses the system packages.
 - Machine-specific paths and setup never go into tracked files; they belong in the untracked `AGENTS.local.md`.

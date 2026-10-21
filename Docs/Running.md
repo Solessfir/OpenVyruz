@@ -28,6 +28,8 @@ The game plays the intro when `Intro.avi` is beside the archive ([Intro.md](Intr
 | `--skipIntro` | Go straight to the main menu, without the story page and the intro |
 | `--windowed` | Start in a window instead of fullscreen |
 | `--coopDummy` | Add a second ship that follows the player, for trying out co-op ([Tools.md](Tools.md#development-aids)) |
+| `--host` | Host a co-op game on UDP port 47210, from `--level` or the first level ([Coop.md](Coop.md#over-the-network)) |
+| `--join <address>` | Join the co-op game hosted there, as `192.168.1.20` or `192.168.1.20:47210`; the host's levels follow |
 
 Cheats, which the original does not take this way, combine freely and never touch the demo:
 

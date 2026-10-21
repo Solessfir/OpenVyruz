@@ -23,6 +23,14 @@ At zero energy a player is down instead of exploding: its ship coasts to a stop 
 
 The first player into a lift starts a 10-second countdown; the level changes when it runs out, or at once when every standing player is inside the lift.
 
+## Over the network
+
+`--host` listens on UDP port 47210 and plays as usual; `--join <address>` connects to it (`Source/Net/Net.cpp` over ENet, `Source/Game/Coop.cpp` for the messages). Up to three players join, and anyone may join or leave during a level: a newcomer's ship appears beside the host's, and the hunters toughen or soften with the count.
+
+The host's game is the game. Its level, enemies, shots, pickups, inventories, purse, downs and level changes are the truth, which it sends about twenty times a second: every player, every body, the objects removed or wrecked, the packs' takers, the team's money and keys, and, reliably, every object it created, which a client creates too under its own index. Each client moves its own ship and sends it with its fire and weapon some sixty times a second, so its own steering has no lag; the host takes that ship as it comes. Between snapshots a client steps its world as a lone game would, but as a puppet (`SetPuppetWorld`): it deals no damage, gives no birth, drops nothing, decides no down or death, collects nothing, saves nothing and takes no lift of its own; its shots and blasts are for show, and a body dies when the host says so. A client follows the host to every level it starts, including a retry, and waits again when the host's game ends.
+
+A network game never pauses for a window out of focus. A host should start a new game: a saved one, or a session's retry from the main menu, is not shared yet.
+
 ## Trying it
 
-`--coopDummy` ([Tools.md](Tools.md#development-aids)) adds a second ship that follows the player, which is enough to see all of the above before the network comes.
+`--coopDummy` ([Tools.md](Tools.md#development-aids)) adds a second ship that follows the player, which is enough to see the rules without a second machine. Two copies of the game on one machine, one with `--host` and one with `--join 127.0.0.1`, try the network.

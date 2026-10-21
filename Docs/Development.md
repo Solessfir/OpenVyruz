@@ -9,13 +9,14 @@ OpenVyruz is a functional (non-matching) reimplementation of `Vyruz.exe` 1.31.01
 | `Source\Pg\` | Reimplementation of the original `pg\lib\` engine library (archive, GAF, LZSS, fonts, sound mixer, video) |
 | `Source\Game\` | Reimplementation of the original `vzed\` game code (levels, frame clock, collision, route search, movement, combat, panel, menus, sessions) |
 | `Source\Render\` | Vulkan renderer replacing the original Direct3D 6 path |
+| `Source\Net\` | The co-op's UDP transport over ENet |
 | `Source\Shaders\` | Slang shaders |
 | `Source\Tools\` | `--extract` and `--compress` |
 | `Docs\` | These notes |
 | `Resources\` | The app icon: the Windows `.ico` and `.rc` linked into the exe, and the Linux desktop entry and icon |
 | `Packaging\Arch\` | The Arch `PKGBUILD` |
 | `Scripts\` | The WSL build check |
-| `External\` | Third-party code: GLFW as a submodule; miniaudio and a subset of SDL_GameControllerDB vendored |
+| `External\` | Third-party code: GLFW and ENet as submodules; miniaudio and a subset of SDL_GameControllerDB vendored |
 
 ## Original module map
 
