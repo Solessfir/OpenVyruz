@@ -4662,6 +4662,25 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // EngineReadActionKeys (0043b5c0) and InputActionPressed (0041d4c0) read the actions through the device's bindings (InputActionDown at 0041d650).
     const auto ActionDown = [&](const EAction Action) { return IsActionDown(Window, Settings.Controls(), Action) || IsGamepadActionDown(Action); };
     bool bEscapeDown = ActionDown(EAction::Menu);
+    // The port's co-op: the lift the first player took, by index, and the time left before it leaves with everyone.
+    struct FLiftWait
+    {
+        size_t Door = 0;
+        int32_t Timer = 0;
+    };
+    std::optional<FLiftWait> LiftWait;
+    // Whether a player stands fully inside a lift's box, as ObjectUpdateLevelExit asks of the rider.
+    const auto LiftHolds = [&](const FDoor& Lift, const FLevelPlayer& Each)
+    {
+        const auto Body = std::ranges::find(Bodies, Lift.ObjectIndex, &FObjectBody::ObjectIndex);
+        if (Body == Bodies.end() || !Each.State || !Each.Class)
+        {
+            return false;
+        }
+
+        const float Spare = Body->Class.Radius - Each.Class->Radius;
+        return std::abs(Each.State->Center.X - Body->State.Center.X) <= Spare && std::abs(Each.State->Center.Y - Body->State.Center.Y) <= Spare;
+    };
     // Where a co-op player who stayed down comes back: the level's start, then the place the team last saved.
     FCollisionPoint TeamRespawn = PlayerObject ? FCollisionPoint{ .X = PlayerObject->X, .Y = PlayerObject->Y } : FCollisionPoint{};
     // A co-op player's ship, once a teammate is out of energy, waits to be revived rather than exploding.
@@ -5986,16 +6005,48 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, Targets);
                 }
 
-                if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, Targets, StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer)
+                const auto TakeLift = [&](const FDoor& Lift)
                 {
                     // A starred 3do-file (only "*End of Tower 3*" in the campaign) ends the game instead of loading a level.
-                    NextLevel = Lift->NextLevel.starts_with('*') ? Lift->NextLevel : NextLevelPath(LevelPath, *Lift);
+                    NextLevel = Lift.NextLevel.starts_with('*') ? Lift.NextLevel : NextLevelPath(LevelPath, Lift);
                     // ObjectUpdateLevelExit drops the queued lines and says Well Done.
                     constexpr uint32_t WellDoneHold = 10000;
                     ClearVoices();
                     if (QueueVoice(EVoice::WellDone, 0, VoiceDuration, WellDoneHold) && GameAudio)
                     {
                         GameAudio->UpdateVoices();
+                    }
+                };
+                if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, Targets, StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer && !LiftWait)
+                {
+                    // In co-op the first player in starts the lift's countdown for the others.
+                    if (IsCoop())
+                    {
+                        constexpr int32_t LiftWaitMilliseconds = 10000;
+                        constexpr uint32_t LiftColor = 0xffc040;
+                        LiftWait = FLiftWait{ .Door = size_t(Lift - Doors->data()), .Timer = LiftWaitMilliseconds };
+                        const auto Rider = std::ranges::find_if(Players, [&](const FLevelPlayer& Each)
+                            { return LiftHolds(*Lift, Each); });
+                        const bool bLocalRode = Rider == Players.end() || &*Rider == &Local;
+                        SayToLocal(bLocalRode ? Format("The lift leaves in %d seconds.", LiftWaitMilliseconds / 1000)
+                                              : Format("%s is in the lift !\nIt leaves in %d seconds.", Rider->Name, LiftWaitMilliseconds / 1000), LiftColor);
+                    }
+                    else
+                    {
+                        TakeLift(*Lift);
+                    }
+                }
+
+                // The countdown ends early once every player still standing is in the lift.
+                if (LiftWait && !NextLevel && !DeathTimer)
+                {
+                    const FDoor& Lift = (*Doors)[LiftWait->Door];
+                    LiftWait->Timer -= int32_t(StepMilliseconds);
+                    const bool bAllIn = std::ranges::all_of(Players, [&](const FLevelPlayer& Each) { return !Each.State || Each.DownTimer || Each.DeathTimer || LiftHolds(Lift, Each); });
+                    if (LiftWait->Timer <= 0 || bAllIn)
+                    {
+                        TakeLift(Lift);
+                        LiftWait.reset();
                     }
                 }
                 if (Combat)

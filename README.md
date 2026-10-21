@@ -65,7 +65,7 @@ How the original works, as the port reimplements it:
 - [Audio](Docs/Audio.md)
 - [Intro](Docs/Intro.md) and its Indeo Video 5 decoder
 - [Extract and compress](Docs/Extract.md)
-- [Multiplayer](Docs/Multiplayer.md), as far as it is mapped
+- [Co-op](Docs/Coop.md), the port's own, and the original's [multiplayer](Docs/Multiplayer.md) as far as it is mapped
 
 ## License
 

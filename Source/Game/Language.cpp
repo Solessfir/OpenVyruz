@@ -371,8 +371,10 @@ std::string ToWindows1251(const std::string_view Utf8)
 // The port's own texts, which the exe never had: co-op's. A text missing here shows in English.
 constexpr FTranslation PortTranslations[] = {
     { "%s is back !", "%s снова в строю !" },
+    { "%s is in the lift !\nIt leaves in %d seconds.", "%s в лифте !\nОн уходит через %d сек." },
     { "%s is down !\nGet close to bring them back.", "%s подбит !\nПодлетите ближе, чтобы помочь." },
     { "Back in the fight !", "Снова в бою !" },
+    { "The lift leaves in %d seconds.", "Лифт уходит через %d сек." },
     { "You are down !\nStay close to a teammate to get back up.", "Вы подбиты !\nДержитесь рядом с напарником, чтобы подняться." },
 };
 
