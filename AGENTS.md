@@ -6,7 +6,7 @@ Applies to the whole repository. The current user request takes precedence over 
 
 ## Project direction
 
-OpenVyruz is a functional (non-matching) reimplementation of `Vyruz.exe` 1.31.01. The goal is a native Windows 11 and Linux (Wayland first) game that loads the original `vz-data.rsc` and can be completed 100%. Version 1, the single-player campaign plus the intro and cutscenes, is done; later work, such as LAN multiplayer, is listed in [Docs/Roadmap.md](Docs/Roadmap.md).
+OpenVyruz is a functional (non-matching) reimplementation of `Vyruz.exe` 1.31.01. The goal is a native Windows 11 and Linux (Wayland first) game that loads the original `vz-data.rsc` and can be completed 100%. Version 1, the single-player campaign plus the intro and cutscenes, is done; later work, such as co-op multiplayer, is listed in [Docs/Roadmap.md](Docs/Roadmap.md).
 
 - Gameplay must match the original: same frame stepping (a variable millisecond step capped at the display period, 10 ms for demos; see [Docs/MainLoop.md](Docs/MainLoop.md)), RNG, integer and floating-point math, and evaluation order. Only the platform layer (window, input, audio, file I/O, rendering) is redesigned.
 - The original rendered with hardware Direct3D 6 at 640x480x16. The port uses a full Vulkan 1.3 renderer (dynamic rendering, synchronization2) that reproduces the original render states, drawn in the original 640x480 coordinate space and letterboxed; a level widens that space to the screen's shape.
