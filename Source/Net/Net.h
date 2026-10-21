@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -112,6 +113,43 @@ private:
     std::span<const uint8_t> Bytes;
     size_t At = 0;
     bool bFailed = false;
+};
+
+// Finding games on the LAN: a host answers broadcast questions on DiscoveryPort with its name, and a searcher collects the answers.
+inline constexpr uint16_t DiscoveryPort = DefaultPort + 1;
+
+struct FFoundGame
+{
+    std::string Address;
+    std::string Name;
+};
+
+class FDiscovery
+{
+public:
+    FDiscovery() = default;
+    ~FDiscovery();
+    FDiscovery(const FDiscovery&) = delete;
+    FDiscovery& operator=(const FDiscovery&) = delete;
+
+    // A host: answers with Name.
+    bool Answer(std::string_view Name);
+    // A searcher: asks the LAN once a second.
+    bool Search();
+    // Answers the questions, or asks and collects the answers.
+    void Poll(uint32_t NowMilliseconds);
+    const std::vector<FFoundGame>& GetFound() const { return Found; }
+
+private:
+    void Close();
+
+    std::intptr_t Socket = -1;
+    bool bAnswering = false;
+    bool bAcquired = false;
+    std::string Name;
+    uint32_t AskedAt = 0;
+    bool bAsked = false;
+    std::vector<FFoundGame> Found;
 };
 
 // "address" or "address:port", with the default port.

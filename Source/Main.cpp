@@ -2695,8 +2695,9 @@ std::string TypedCharacters;
 
 // FUN_00425f60 edits an item's text after Prefix, at most MaxLength characters, behind a caret that blinks between | and . every half second.
 // Return accepts a text with a letter or digit, its trailing blanks dropped; Escape leaves the old one. Returns the new text when it differs from the old.
+// The port refuses the characters a folder name cannot hold, or those Refused names.
 std::optional<std::string> EditText(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FMenu Menu, FRandom& Random,
-    const size_t Item, const std::string_view Prefix, const std::string_view Old, const size_t MaxLength)
+    const size_t Item, const std::string_view Prefix, const std::string_view Old, const size_t MaxLength, const std::string_view Refused = "\\/:*?\"<>|.")
 {
     // The item shows 20 characters, prefix included, scrolling to keep the caret in view.
     constexpr size_t VisibleCharacters = 0x14;
@@ -2749,7 +2750,7 @@ std::optional<std::string> EditText(GLFWwindow* const Window, FRenderer& Rendere
         bool bEdited = !TypedCharacters.empty();
         for (const char Character : std::exchange(TypedCharacters, {}))
         {
-            if (Text.size() < MaxLength && std::string_view("\\/:*?\"<>|.").find(Character) == std::string_view::npos)
+            if (Text.size() < MaxLength && Refused.find(Character) == std::string_view::npos)
             {
                 Text.insert(Caret++, 1, Character);
             }
@@ -3647,6 +3648,8 @@ bool RunExtrasMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchi
 enum class EMenuChoice : uint8_t
 {
     NewGame,
+    // The Co-op menu's game, whose link the main menu hands over.
+    Coop,
     // Restart Level and Load Game: the session in Chosen.
     Session,
     // Extras' Demo, or 30 seconds of an untouched main menu.
@@ -3654,10 +3657,203 @@ enum class EMenuChoice : uint8_t
     Quit,
 };
 
+// The port's Co-op menu: hosting a game with its lobby, or joining one the LAN offers or an address names. The link of the game to play, or none for Back.
+std::unique_ptr<FCoopLink> RunCoopLobby(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random, const FSettings& Settings)
+{
+    std::unique_ptr<FCoopLink> Link = FCoopLink::Host(Net::DefaultPort, Settings.PlayerName);
+    constexpr size_t StartItem = 0;
+    constexpr size_t FirstMemberItem = 1;
+    constexpr size_t MemberItems = Net::MaxPeers + 1;
+    constexpr size_t BackItem = FirstMemberItem + MemberItems + 1;
+    FMenu Menu{
+        .Left = MenuLeft,
+        .Top = MenuTop,
+        .Right = int32_t(ScreenWidth),
+        .Bottom = int32_t(ScreenHeight),
+        .StepY = MenuStepY,
+        .Title = "Cooperative",
+        .Items = std::vector<FMenuItem>(BackItem + 1),
+        .DefaultItem = BackItem,
+    };
+    Menu.Items[StartItem] = Link ? FMenuItem{ .Text = "Start Game", .Help = "Everyone in plays from the first level." } : FMenuItem{ .Text = "Back", .Help = "Cannot host on this port." };
+    Menu.Items[BackItem] = { .Text = "Back" };
+    const auto Refresh = [&]
+    {
+        if (!Link)
+        {
+            return;
+        }
+
+        Link->Poll();
+        const std::vector<FCoopMember>& Members = Link->GetMembers();
+        for (size_t Member = 0; Member < MemberItems; ++Member)
+        {
+            Menu.Items[FirstMemberItem + Member] = Member < Members.size() ? FMenuItem{ .Text = Members[Member].Name, .Help = Member == 0 ? "Hosting." : "Joined." } : FMenuItem{};
+        }
+    };
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (;;)
+    {
+        Refresh();
+        const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor, [&](const FMenuState&) { Refresh(); });
+        if (!Item || *Item == BackItem || !Link)
+        {
+            return nullptr;
+        }
+
+        if (*Item == StartItem)
+        {
+            return Link;
+        }
+    }
+}
+
+std::unique_ptr<FCoopLink> RunCoopJoin(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random, const FSettings& Settings)
+{
+    constexpr size_t FoundItems = 4;
+    constexpr size_t AddressItem = FoundItems + 1;
+    constexpr size_t BackItem = AddressItem + 1;
+    constexpr size_t MaxAddressLength = 40;
+    // The address typed last, kept for the next search.
+    static std::string Address;
+    Net::FDiscovery Discovery;
+    Discovery.Search();
+    FMenu Menu{
+        .Left = MenuLeft,
+        .Top = MenuTop,
+        .Right = int32_t(ScreenWidth),
+        .Bottom = int32_t(ScreenHeight),
+        .StepY = MenuStepY,
+        .Title = "Cooperative",
+        .Items = std::vector<FMenuItem>(BackItem + 1),
+        .DefaultItem = BackItem,
+        .StartItem = AddressItem,
+    };
+    Menu.Items[BackItem] = { .Text = "Back" };
+    std::string Problem;
+    const auto Refresh = [&]
+    {
+        Discovery.Poll(ClockMilliseconds());
+        const std::vector<Net::FFoundGame>& Found = Discovery.GetFound();
+        for (size_t Game = 0; Game < FoundItems; ++Game)
+        {
+            Menu.Items[Game] = Game < Found.size() ? FMenuItem{ .Text = Format("Game of %s", Found[Game].Name), .Help = Found[Game].Address }
+                                                   : Game == 0 ? FMenuItem{ .Text = "Looking for games ..." } : FMenuItem{};
+        }
+
+        Menu.Items[AddressItem] = { .Text = std::string(Localize("Address : ")) + Address, .Help = Problem.empty() ? std::string("Type the host's address, as 192.168.1.20.") : Problem };
+    };
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (;;)
+    {
+        Refresh();
+        const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor, [&](const FMenuState&) { Refresh(); });
+        if (!Item || *Item == BackItem)
+        {
+            return nullptr;
+        }
+
+        std::string Target;
+        if (*Item < FoundItems && *Item < Discovery.GetFound().size())
+        {
+            Target = Discovery.GetFound()[*Item].Address;
+        }
+        else if (*Item == AddressItem)
+        {
+            if (std::optional<std::string> Typed = EditText(Window, Renderer, Art, Sheets, Menu, Random, AddressItem, Localize("Address : "), Address, MaxAddressLength, "\\/*?\"<>| "))
+            {
+                Address = std::move(*Typed);
+            }
+
+            Target = Address;
+        }
+
+        const std::optional<std::pair<std::string, uint16_t>> Parsed = Net::ParseAddress(Target);
+        if (!Parsed)
+        {
+            continue;
+        }
+
+        std::unique_ptr<FCoopLink> Link = FCoopLink::Join(Parsed->first, Parsed->second, Settings.PlayerName);
+        if (!Link)
+        {
+            Problem = "Cannot reach the host.";
+            continue;
+        }
+
+        // Joining, then waiting for the host to start; Escape gives up.
+        FMenu Waiting = Menu;
+        for (FMenuItem& Shown : Waiting.Items)
+        {
+            Shown = {};
+        }
+
+        bool bCancelled = false;
+        ShowMenuUntil(Window, Renderer, Art, Sheets, Waiting, Random, [&](uint32_t)
+        {
+            Link->Poll();
+            Waiting.Items[0] = { .Text = Link->IsJoined() ? "Joined !" : "Joining ..." };
+            Waiting.Items[1] = { .Text = Link->IsJoined() ? "Waiting for the host ..." : "" };
+            bCancelled = glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+            return bCancelled || Link->IsLost() || Link->HasLevel();
+        });
+        if (Link->HasLevel())
+        {
+            return Link;
+        }
+
+        Problem = bCancelled ? std::string() : std::string("Cannot reach the host.");
+    }
+}
+
+std::unique_ptr<FCoopLink> RunCoopMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random, const FSettings& Settings)
+{
+    enum EItem : size_t
+    {
+        HostItem,
+        JoinItem,
+        GapItem,
+        BackItem,
+    };
+    FMenu Menu{
+        .Left = MenuLeft,
+        .Top = MenuTop,
+        .Right = int32_t(ScreenWidth),
+        .Bottom = int32_t(ScreenHeight),
+        .StepY = MenuStepY,
+        .Title = "Cooperative",
+        .Items = {
+            { .Text = "Host Game", .Help = "Start a new game that friends can join." },
+            { .Text = "Join Game", .Help = "Find a game on the network, or type its address." },
+            {},
+            { .Text = "Back" },
+        },
+        .DefaultItem = BackItem,
+    };
+    std::optional<std::pair<int32_t, int32_t>> Cursor;
+    for (;;)
+    {
+        const std::optional<size_t> Item = RunMenu(Window, Renderer, Art, Sheets, Menu, Random, Cursor);
+        if (!Item || *Item == BackItem)
+        {
+            return nullptr;
+        }
+
+        // The lobby and the search keep running out of focus, as the game will.
+        bNetworkAwake = true;
+        if (std::unique_ptr<FCoopLink> Link = *Item == HostItem ? RunCoopLobby(Window, Renderer, Art, Sheets, Random, Settings) : RunCoopJoin(Window, Renderer, Art, Sheets, Random, Settings))
+        {
+            return Link;
+        }
+
+        bNetworkAwake = false;
+    }
+}
+
 // MenuMain at 004271a0, the main menu. Options can change the player, whose default session the menu then offers.
 // RandomNext's draws here do not matter, since every level reseeds the generator.
 EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResourceArchive& Archive, const FMenuArt& Art, std::optional<FSession>& Session,
-    FSettings& Settings, const std::filesystem::path& DataFolder, FSession& Chosen)
+    FSettings& Settings, const std::filesystem::path& DataFolder, FSession& Chosen, std::unique_ptr<FCoopLink>& Coop)
 {
     if (GameAudio)
     {
@@ -3669,6 +3865,8 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         RestartItem,
         NewGameItem,
         LoadItem,
+        // The port's: co-op over the network.
+        CoopItem,
         OptionsItem,
         ExtrasItem,
         ExitItem,
@@ -3694,6 +3892,7 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
             Session ? FMenuItem{ .Text = "Restart Level", .Help = SessionHelp(*Session) } : FMenuItem{},
             { .Text = "Start New Game" },
             { .Text = "Load Game", .Help = LoadHelp() },
+            { .Text = "Cooperative", .Help = "Play the campaign with friends over the network." },
             { .Text = "Options", .Help = "Video, Audio, Control, User settings, Language." },
             { .Text = "Extras", .Help = "Scores, Credits, Intro, Slide Show, Demo." },
             { .Text = "Exit" },
@@ -3755,6 +3954,14 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
 
             Saved = ReadSavedSessions(Settings.Folder);
             Menu.Items[LoadItem].Help = LoadHelp();
+        }
+        else if (*Item == CoopItem)
+        {
+            if (std::unique_ptr<FCoopLink> Link = RunCoopMenu(Window, Renderer, Art, Sheets, Random, Settings))
+            {
+                Coop = std::move(Link);
+                return EMenuChoice::Coop;
+            }
         }
         else if (*Item == OptionsItem)
         {
@@ -8747,7 +8954,15 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
             CoopPath = CoopPath ? CoopPath : WaitForCoopLevel(Window, Renderer, *Coop);
             if (!CoopPath)
             {
-                break;
+                Coop.reset();
+                bNetworkAwake = false;
+                bMenu = MenuArt.has_value();
+                if (!bMenu || glfwWindowShouldClose(Window))
+                {
+                    break;
+                }
+
+                continue;
             }
 
             Path = *std::exchange(CoopPath, std::nullopt);
@@ -8756,11 +8971,28 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
         if (bMenu)
         {
             FSession Chosen;
-            const EMenuChoice Choice = RunMainMenu(Window, Renderer, Archive, *MenuArt, Session, Settings, DataPath->parent_path(), Chosen);
+            std::unique_ptr<FCoopLink> MenuCoop;
+            const EMenuChoice Choice = RunMainMenu(Window, Renderer, Archive, *MenuArt, Session, Settings, DataPath->parent_path(), Chosen, MenuCoop);
             Renderer.ReleaseSpriteSheets();
             if (Choice == EMenuChoice::Quit)
             {
                 break;
+            }
+
+            // The Co-op menu's game: a host starts a new game; a client goes on to wait for the host's level.
+            if (Choice == EMenuChoice::Coop)
+            {
+                Coop = std::move(MenuCoop);
+                bNetworkAwake = true;
+                bMenu = false;
+                Carried.reset();
+                Restore.reset();
+                Path = LevelPath;
+                bNewGame = Coop->IsHost();
+                if (!Coop->IsHost())
+                {
+                    continue;
+                }
             }
 
             // VzMenuLoop's demo: CAVE\DEMO.3DR on the CAVE\DEMO level, then the menu again.
@@ -8779,7 +9011,7 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
                 Restore.reset();
                 bMenu = false;
             }
-            else
+            else if (Choice != EMenuChoice::Coop)
             {
                 Path = Choice == EMenuChoice::NewGame ? LevelPath : Chosen.LevelPath;
                 bNewGame = Choice == EMenuChoice::NewGame;
@@ -8847,9 +9079,22 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
         // A co-op client goes where the host does: the level it changed to, or the next one it announces.
         if (Coop && !Coop->IsHost())
         {
-            if (End->Kind == ELevelEnd::Quit || Coop->IsLost())
+            if (End->Kind == ELevelEnd::Quit)
             {
                 break;
+            }
+
+            if (Coop->IsLost())
+            {
+                Coop.reset();
+                bNetworkAwake = false;
+                bMenu = MenuArt.has_value();
+                if (!bMenu)
+                {
+                    break;
+                }
+
+                continue;
             }
 
             if (End->Kind == ELevelEnd::Lift)
@@ -8858,6 +9103,13 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
             }
 
             continue;
+        }
+
+        // A host's game that ends for the menu ends the co-op game too, which takes its clients back to their menus.
+        if (Coop && End->Kind != ELevelEnd::Lift && End->Kind != ELevelEnd::Restart)
+        {
+            Coop.reset();
+            bNetworkAwake = false;
         }
 
         if (End->Kind == ELevelEnd::Lift)

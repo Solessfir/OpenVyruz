@@ -3,6 +3,7 @@
 #include <enet/enet.h>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstdio>
 
@@ -238,6 +239,144 @@ void FEndpoint::Close()
     {
         ReleaseENet();
         State->bAcquired = false;
+    }
+}
+
+namespace
+{
+constexpr std::string_view Question = "VYRUZ?";
+constexpr std::string_view Reply = "VYRUZ!";
+constexpr uint32_t AskMilliseconds = 1000;
+constexpr size_t MaxDatagram = 256;
+
+ENetSocket SocketOf(const std::intptr_t Socket)
+{
+    return Socket == -1 ? ENET_SOCKET_NULL : ENetSocket(Socket);
+}
+}
+
+FDiscovery::~FDiscovery()
+{
+    Close();
+}
+
+void FDiscovery::Close()
+{
+    if (Socket != -1)
+    {
+        enet_socket_destroy(SocketOf(Socket));
+        Socket = -1;
+    }
+
+    if (bAcquired)
+    {
+        ReleaseENet();
+        bAcquired = false;
+    }
+}
+
+bool FDiscovery::Answer(const std::string_view HostName)
+{
+    Close();
+    bAcquired = AcquireENet();
+    const ENetSocket Created = bAcquired ? enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM) : ENET_SOCKET_NULL;
+    if (Created == ENET_SOCKET_NULL)
+    {
+        return false;
+    }
+
+    Socket = std::intptr_t(Created);
+    enet_socket_set_option(Created, ENET_SOCKOPT_NONBLOCK, 1);
+    enet_socket_set_option(Created, ENET_SOCKOPT_REUSEADDR, 1);
+    ENetAddress Address{};
+    Address.host = ENET_HOST_ANY;
+    Address.port = DiscoveryPort;
+    if (enet_socket_bind(Created, &Address) != 0)
+    {
+        std::fprintf(stderr, "Cannot answer LAN searches on UDP port %u\n", unsigned(DiscoveryPort));
+        Close();
+        return false;
+    }
+
+    bAnswering = true;
+    Name = std::string(HostName);
+    return true;
+}
+
+bool FDiscovery::Search()
+{
+    Close();
+    bAcquired = AcquireENet();
+    const ENetSocket Created = bAcquired ? enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM) : ENET_SOCKET_NULL;
+    if (Created == ENET_SOCKET_NULL)
+    {
+        return false;
+    }
+
+    Socket = std::intptr_t(Created);
+    enet_socket_set_option(Created, ENET_SOCKOPT_NONBLOCK, 1);
+    enet_socket_set_option(Created, ENET_SOCKOPT_BROADCAST, 1);
+    ENetAddress Address{};
+    Address.host = ENET_HOST_ANY;
+    Address.port = ENET_PORT_ANY;
+    enet_socket_bind(Created, &Address);
+    bAnswering = false;
+    bAsked = false;
+    Found.clear();
+    return true;
+}
+
+void FDiscovery::Poll(const uint32_t NowMilliseconds)
+{
+    if (Socket == -1)
+    {
+        return;
+    }
+
+    const ENetSocket Open = SocketOf(Socket);
+    if (!bAnswering && (!bAsked || NowMilliseconds - AskedAt >= AskMilliseconds))
+    {
+        bAsked = true;
+        AskedAt = NowMilliseconds;
+        ENetAddress Everyone{};
+        Everyone.host = ENET_HOST_BROADCAST;
+        Everyone.port = DiscoveryPort;
+        ENetBuffer Buffer{};
+        Buffer.data = const_cast<char*>(Question.data());
+        Buffer.dataLength = Question.size();
+        enet_socket_send(Open, &Everyone, &Buffer, 1);
+    }
+
+    std::array<char, MaxDatagram> Received{};
+    for (;;)
+    {
+        ENetAddress From{};
+        ENetBuffer Buffer{};
+        Buffer.data = Received.data();
+        Buffer.dataLength = Received.size();
+        const int Length = enet_socket_receive(Open, &From, &Buffer, 1);
+        if (Length <= 0)
+        {
+            break;
+        }
+
+        const std::string_view Datagram(Received.data(), size_t(Length));
+        if (bAnswering && Datagram == Question)
+        {
+            const std::string Text = std::string(Reply) + Name;
+            ENetBuffer Response{};
+            Response.data = const_cast<char*>(Text.data());
+            Response.dataLength = Text.size();
+            enet_socket_send(Open, &From, &Response, 1);
+        }
+        else if (!bAnswering && Datagram.starts_with(Reply))
+        {
+            std::array<char, 64> Ip{};
+            if (enet_address_get_host_ip(&From, Ip.data(), Ip.size()) == 0 && !std::ranges::contains(Found, std::string(Ip.data()), &FFoundGame::Address))
+            {
+                Found.push_back({ .Address = Ip.data(), .Name = std::string(Datagram.substr(Reply.size())) });
+            }
+        }
     }
 }
 

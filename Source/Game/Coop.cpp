@@ -95,6 +95,7 @@ std::unique_ptr<FCoopLink> FCoopLink::Host(const uint16_t Port, const std::strin
 
     Link->bHost = true;
     Link->LocalName = std::string(Name);
+    Link->Discovery.Answer(Name);
     Link->Members.push_back({ .Slot = HostSlot, .Name = Link->LocalName });
     std::printf("Co-op: hosting on UDP port %u\n", unsigned(Port));
     return Link;
@@ -121,6 +122,7 @@ std::optional<uint8_t> FCoopLink::SlotOf(const uint32_t Peer) const
 
 void FCoopLink::Poll()
 {
+    Discovery.Poll(0);
     for (Net::FEvent& Event : Endpoint.Poll())
     {
         switch (Event.Kind)

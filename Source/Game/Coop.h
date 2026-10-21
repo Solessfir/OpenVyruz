@@ -120,6 +120,7 @@ public:
     void AnnounceLevel(std::string_view LevelPath);
     // Client: a level the host announced since the last call.
     std::optional<std::string> TakeLevel();
+    bool HasLevel() const { return PendingLevel.has_value(); }
 
     // Client: its own ship. Host: the latest each client sent, by slot.
     void SendShip(const FCoopShip& Ship);
@@ -142,6 +143,8 @@ private:
     void SendCreatedTo(std::optional<uint32_t> Peer, const std::vector<FCoopCreated>& Created);
 
     Net::FEndpoint Endpoint;
+    // A host answers LAN searches for as long as it hosts.
+    Net::FDiscovery Discovery;
     bool bHost = false;
     bool bWelcomed = false;
     bool bLost = false;
