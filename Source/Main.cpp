@@ -5805,7 +5805,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 const FPlayerTarget Rider{ .State = *Player, .Radius = PlayerClass->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
                 if (bFullUpdate && !bFinaleStarted)
                 {
-                    StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, &Rider);
+                    StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, FPlayerTargets(&Rider, 1));
                 }
 
                 if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, FPlayerTargets(&Rider, 1), StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer)
@@ -5844,7 +5844,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     {
                         if (!bFinaleStarted)
                         {
-                            StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, *Player);
+                            StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, FPlayerTargets(&Rider, 1));
                         }
 
                         StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies,

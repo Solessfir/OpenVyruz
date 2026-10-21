@@ -258,7 +258,8 @@ struct FTurret
     bool bSearching = false;
     FPathSearch Search;
     bool bLocked = false;
-    // The target's world position when it was locked; the lock drops once the target has moved at the next scan.
+    // The player object searched for or locked, and its world position when it was locked; the lock drops once the target has moved at the next scan.
+    std::optional<size_t> TargetObject;
     FCollisionPoint LockedTarget;
     // Direction of the line from the turret to the target, refreshed while engaging.
     int AimDirection = 0;
@@ -327,6 +328,8 @@ struct FSeeker
     int VisionDirections = 0;
     float SensorRange = 0.f;
     bool bHasTarget = false;
+    // The player object hunted, the nearest the sensor found when the route was planned.
+    size_t TargetObject = 0;
     // The target's world position and cell when the route was planned; a moved target ends the route at the next scan.
     FCollisionPoint TargetPosition;
     int TargetCellX = 0;
@@ -1139,7 +1142,7 @@ void ThrowPlayerBounceSpark(FCombat& Combat, const FPlayerState& Player, ESurpri
 // Actors look for the player, patrol, chase and shoot, then move like the player with the resulting command. Without combat they only patrol.
 // Actors that run into the player hurt it by their knocks.
 void StepActors(FCombat* Combat, std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
-    const FPlayerTarget* Player);
+    FPlayerTargets Players);
 FCollisionPoint StepObjectBodies(std::span<FObjectBody> Bodies, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level,
     const FPlayerTarget* Player = nullptr);
 // Every gate and lift of the level, in their activation state (AnimInitializeGraphics at 00417b30): open ones are passable and show the last frame of their first animation.
@@ -1166,10 +1169,15 @@ void StepPlayerWeapon(FCombat& Combat, bool bFire, FPlayerState& Player, const F
     FPlayerInventory& Inventory, FMessages& Messages);
 // The seeker scan, top rotation and fire decision of every turret (SeekerUpdate at 0042c5a0), then its weapon update.
 void StepTurrets(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level, std::vector<FObjectBody>& Bodies,
-    const FPlayerState& Player);
+    FPlayerTargets Players);
 // Moves every shot, detonating it against terrain, bodies or the ground, then runs the effects and their blasts; destroyed bodies are removed, spawn their Boom-fx and pay their Reward.
 void StepProjectiles(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
-    const FPlayerTarget& Player, FMessages& Messages);
+    FPlayerTargets Players, FMessages& Messages);
+inline void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
+    const FPlayerTarget& Player, FMessages& Messages)
+{
+    StepProjectiles(Combat, StepMilliseconds, Terrain, Level, Bodies, FPlayerTargets(&Player, 1), Messages);
+}
 std::expected<void, std::string> VerifyPlayerMovement();
 // Loads every level's weapons and fires them for a few seconds of game time.
 std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive);

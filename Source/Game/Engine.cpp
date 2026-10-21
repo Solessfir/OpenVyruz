@@ -2941,10 +2941,12 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
 }
 
 // AreaDamage at 0043cb20: every live object near the blast takes damage falling off linearly over Damage-zone collision units.
-// A Player-direct-fire-only object only takes the blasts of the player's own shots (FUN_0043c990 on the blast's source).
+// A Player-direct-fire-only object only takes the blasts of a player's own shots (FUN_0043c990 on the blast's source).
+// A player's blast hurts that player as the original's does, but spares the other players, the port's co-op having no friendly fire.
 void AreaDamage(FCombat& Combat, const FCollisionPoint Center, const FWorldCell Cell, const float Damage, const float Zone, std::vector<FObjectBody>& Bodies,
-    const FPlayerTarget& Player, const bool bByPlayer)
+    const FPlayerTargets Players, const FPlayerTarget* const Shooter)
 {
+    const bool bByPlayer = Shooter != nullptr;
     if (Damage == 0.f || Zone == 0.f)
     {
         return;
@@ -2985,51 +2987,54 @@ void AreaDamage(FCombat& Combat, const FCollisionPoint Center, const FWorldCell 
         }
     }
 
-    // The scan leaves out an invulnerable player (object flag 0x800000) altogether, so it neither flashes nor shakes.
-    if (0.f < Player.Inventory.Energy && !Player.Inventory.Surprises.bInvulnerable)
+    for (const FPlayerTarget& Player : Players)
     {
-        if (const std::optional<float> Amount = Falloff(Player.State.Position, Player.State.Center))
+        // The scan leaves out an invulnerable player (object flag 0x800000) altogether, so it neither flashes nor shakes.
+        if (0.f < Player.Inventory.Energy && !Player.Inventory.Surprises.bInvulnerable && (!Shooter || Shooter == &Player))
         {
-            if (!Player.State.bInvisible)
+            if (const std::optional<float> Amount = Falloff(Player.State.Position, Player.State.Center))
             {
-                ApplyDamage(Player.Inventory, *Amount);
-                Player.Inventory.bHit = true;
-            }
-
-            // The damage that reaches the player, not the blast's, decides the shake, flash and cry.
-            // 200 or more shakes the screen by RandomRange(-n, n) twice from the Misc stream (StartScreenShake at 0043d100 into session +0x2200), n = damage / 100 + 8 up to 32, except during the finale.
-            constexpr float ShakeDamage = 200.f;
-            constexpr int ShakeBase = 8;
-            constexpr int ShakeDivisor = 100;
-            constexpr int ShakeLimit = 0x20;
-            if (ShakeDamage <= *Amount && !Combat.bFinale)
-            {
-                const int Range = std::min(int(*Amount) / ShakeDivisor + ShakeBase, ShakeLimit);
-                Player.Inventory.Surprises.ShakeX = Combat.MiscRandom.Range(-Range, Range);
-                Player.Inventory.Surprises.ShakeY = Combat.MiscRandom.Range(-Range, Range);
-            }
-
-            // 300 or more flashes the screen (60, or 30 below 1000) and makes a living player cry out three times in eight by the game clock.
-            constexpr float CryDamage = 300.f;
-            constexpr float StrongBlast = 1000.f;
-            constexpr int32_t StrongFlash = 60;
-            constexpr int32_t WeakFlash = 30;
-            constexpr int32_t BlastFlashLimit = 100;
-            if (CryDamage <= *Amount && 0.f < Player.Inventory.Energy)
-            {
-                PushGamma(Player.Inventory.Surprises.Gamma, *Amount < StrongBlast ? WeakFlash : StrongFlash, BlastFlashLimit);
-            }
-
-            constexpr std::array Cries = { EVoice::Ooh, EVoice::Looser, EVoice::SadMan };
-            constexpr uint32_t CryMask = 7;
-            if (CryDamage <= *Amount && 0.f < Player.Inventory.Energy)
-            {
-                if (const uint32_t Pick = GetVoiceClock() & CryMask; Pick < Cries.size())
+                if (!Player.State.bInvisible)
                 {
-                    constexpr uint32_t CryDelay = 500;
-                    constexpr uint32_t CryDuration = 2000;
-                    constexpr uint32_t CryHold = 5000;
-                    QueueVoice(Cries[Pick], CryDelay, CryDuration, CryHold);
+                    ApplyDamage(Player.Inventory, *Amount);
+                    Player.Inventory.bHit = true;
+                }
+
+                // The damage that reaches the player, not the blast's, decides the shake, flash and cry.
+                // 200 or more shakes the screen by RandomRange(-n, n) twice from the Misc stream (StartScreenShake at 0043d100 into session +0x2200), n = damage / 100 + 8 up to 32, except during the finale.
+                constexpr float ShakeDamage = 200.f;
+                constexpr int ShakeBase = 8;
+                constexpr int ShakeDivisor = 100;
+                constexpr int ShakeLimit = 0x20;
+                if (ShakeDamage <= *Amount && !Combat.bFinale)
+                {
+                    const int Range = std::min(int(*Amount) / ShakeDivisor + ShakeBase, ShakeLimit);
+                    Player.Inventory.Surprises.ShakeX = Combat.MiscRandom.Range(-Range, Range);
+                    Player.Inventory.Surprises.ShakeY = Combat.MiscRandom.Range(-Range, Range);
+                }
+
+                // 300 or more flashes the screen (60, or 30 below 1000) and makes a living player cry out three times in eight by the game clock.
+                constexpr float CryDamage = 300.f;
+                constexpr float StrongBlast = 1000.f;
+                constexpr int32_t StrongFlash = 60;
+                constexpr int32_t WeakFlash = 30;
+                constexpr int32_t BlastFlashLimit = 100;
+                if (CryDamage <= *Amount && 0.f < Player.Inventory.Energy)
+                {
+                    PushGamma(Player.Inventory.Surprises.Gamma, *Amount < StrongBlast ? WeakFlash : StrongFlash, BlastFlashLimit);
+                }
+
+                constexpr std::array Cries = { EVoice::Ooh, EVoice::Looser, EVoice::SadMan };
+                constexpr uint32_t CryMask = 7;
+                if (CryDamage <= *Amount && 0.f < Player.Inventory.Energy)
+                {
+                    if (const uint32_t Pick = GetVoiceClock() & CryMask; Pick < Cries.size())
+                    {
+                        constexpr uint32_t CryDelay = 500;
+                        constexpr uint32_t CryDuration = 2000;
+                        constexpr uint32_t CryHold = 5000;
+                        QueueVoice(Cries[Pick], CryDelay, CryDuration, CryHold);
+                    }
                 }
             }
         }
@@ -5866,13 +5871,46 @@ bool FindTarget(const FObjectBody& Body, const FSeeker& Seeker, const FPlayerSta
     return Delta.X * Delta.X + Delta.Y * Delta.Y <= float(Range * Range) && DirectionDistance(FindDirection(Delta), Body.State.Direction) <= Vision;
 }
 
+// The nearest player a seeker's sensor finds, which with a single player is that player when found.
+const FPlayerTarget* FindNearestTarget(const FObjectBody& Body, const FSeeker& Seeker, const FPlayerTargets Players)
+{
+    const FPlayerTarget* Nearest = nullptr;
+    float NearestSquared = 0.f;
+    for (const FPlayerTarget& Player : Players)
+    {
+        const FCollisionPoint Delta{ .X = Player.State.Center.X - Body.State.Center.X, .Y = Player.State.Center.Y - Body.State.Center.Y };
+        const float Squared = Delta.X * Delta.X + Delta.Y * Delta.Y;
+        if ((!Nearest || Squared < NearestSquared) && FindTarget(Body, Seeker, Player.State))
+        {
+            Nearest = &Player;
+            NearestSquared = Squared;
+        }
+    }
+
+    return Nearest;
+}
+
+// The player nearest a body, whatever it can see, or none without players.
+const FPlayerTarget* NearestPlayer(const FObjectBody& Body, const FPlayerTargets Players)
+{
+    const auto Squared = [&](const FPlayerTarget& Player)
+    {
+        const float X = Player.State.Center.X - Body.State.Center.X;
+        const float Y = Player.State.Center.Y - Body.State.Center.Y;
+        return X * X + Y * Y;
+    };
+    const auto Nearest = std::ranges::min_element(Players, {}, Squared);
+    return Nearest != Players.end() ? &*Nearest : nullptr;
+}
+
 // SeekerUpdate at 0042c5a0 for a moving seeker or tracker.
-void UpdateSeeker(FCombat* const Combat, FObjectBody& Body, FSeeker& Seeker, const FPlayerState* const Player,
+void UpdateSeeker(FCombat* const Combat, FObjectBody& Body, FSeeker& Seeker, const FPlayerTargets Players,
     std::optional<std::vector<FPathObstacle>>& Obstacles, const FTerrainCollision& Terrain, const int32_t Step)
 {
     FActor& Actor = *Body.Actor;
     FRouteWork& Work = Seeker.Work;
-    const FPlayerState* const Target = Seeker.bHasTarget ? Player : nullptr;
+    const FPlayerTarget* const Hunted = Seeker.bHasTarget ? PlayerAt(Players, Seeker.TargetObject) : nullptr;
+    const FPlayerState* const Target = Hunted ? &Hunted->State : nullptr;
     if (Work.bOnSegment && !KeepSegment(Body, Work))
     {
         return;
@@ -5895,8 +5933,8 @@ void UpdateSeeker(FCombat* const Combat, FObjectBody& Body, FSeeker& Seeker, con
 
         // Every Scan-delay the route is checked: it ends once the target has moved, by position on the last segment and by cell before it.
         const bool bLast = OnLastSegment(Work);
-        const FWorldCell Cell = Player ? CellOf(Player->Position) : FWorldCell{};
-        const bool bMoved = !Target || (bLast ? Player->Position.X != Seeker.TargetPosition.X || Player->Position.Y != Seeker.TargetPosition.Y
+        const FWorldCell Cell = Target ? CellOf(Target->Position) : FWorldCell{};
+        const bool bMoved = !Target || (bLast ? Target->Position.X != Seeker.TargetPosition.X || Target->Position.Y != Seeker.TargetPosition.Y
                                               : Cell.X != Seeker.TargetCellX || Cell.Y != Seeker.TargetCellY);
         if (bMoved)
         {
@@ -5919,15 +5957,18 @@ void UpdateSeeker(FCombat* const Combat, FObjectBody& Body, FSeeker& Seeker, con
 
         Work.Timer += Work.Interval;
         // FUN_0042d8f0 routes to the target, or a guardian without one back to its post.
-        Seeker.bHasTarget = Player && FindTarget(Body, Seeker, *Player);
+        const FPlayerTarget* const Found = FindNearestTarget(Body, Seeker, Players);
+        Seeker.bHasTarget = Found != nullptr;
         bool bPlanned = false;
-        if (Seeker.bHasTarget)
+        if (Found)
         {
-            Seeker.TargetPosition = Player->Position;
-            const FWorldCell Cell = CellOf(Player->Position);
+            const FPlayerState& Player = Found->State;
+            Seeker.TargetObject = Found->ObjectIndex;
+            Seeker.TargetPosition = Player.Position;
+            const FWorldCell Cell = CellOf(Player.Position);
             Seeker.TargetCellX = Cell.X;
             Seeker.TargetCellY = Cell.Y;
-            bPlanned = Work.Search.Start(Body.State.Center, Player->Center);
+            bPlanned = Work.Search.Start(Body.State.Center, Player.Center);
         }
         else if (Seeker.bGuardian)
         {
@@ -6171,9 +6212,8 @@ void UpdateMover(FObjectBody& Body, FRouteWork& Work, const uint32_t Mode, const
 }
 
 void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain,
-    const FLevel& Level, const FPlayerTarget* const Target)
+    const FLevel& Level, const FPlayerTargets Players)
 {
-    const FPlayerState* const Player = Target ? &Target->State : nullptr;
     const int32_t Step = int32_t(StepMilliseconds);
     std::optional<std::vector<FPathObstacle>> Obstacles;
     for (FObjectBody& Body : Bodies)
@@ -6191,7 +6231,7 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
         Actor.bTrigger = false;
         if (Actor.Seeker)
         {
-            UpdateSeeker(Combat, Body, *Actor.Seeker, Player, Obstacles, Terrain, Step);
+            UpdateSeeker(Combat, Body, *Actor.Seeker, Players, Obstacles, Terrain, Step);
         }
 
         // The movement behaviour pauses while the seeker follows its own route.
@@ -6250,6 +6290,8 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
             FireWeapon(*Combat, Seeker.WeaponState, Shooter, &Seeker.Ammo);
         }
 
+        // An actor knocks the player nearest it.
+        const FPlayerTarget* const Target = NearestPlayer(Body, Players);
         std::optional<FPlayerKnock> Knock;
         if (Target)
         {
@@ -6266,7 +6308,7 @@ void StepActors(FCombat* const Combat, const std::span<FObjectBody> Bodies, cons
 }
 
 void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level, std::vector<FObjectBody>& Bodies,
-    const FPlayerState& Player)
+    const FPlayerTargets Players)
 {
     const int32_t Step = int32_t(StepMilliseconds);
     std::optional<std::vector<FPathObstacle>> Obstacles;
@@ -6278,6 +6320,15 @@ void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrai
         }
 
         FTurret& Turret = *Body.Turret;
+        // A turret aims at the player it searched for or locked, else the nearest one, whom its next scan looks for first.
+        const FPlayerTarget* const Kept = Turret.TargetObject ? PlayerAt(Players, *Turret.TargetObject) : nullptr;
+        const FPlayerTarget* const Aimed = Kept ? Kept : NearestPlayer(Body, Players);
+        if (!Aimed)
+        {
+            continue;
+        }
+
+        const FPlayerState& Player = Aimed->State;
         const FWeaponClass& Weapon = Combat.Weapons[Turret.Weapon.Weapon];
         const FCollisionPoint ToTarget{ .X = float(double(Player.Center.X) - double(Body.State.Center.X)), .Y = float(double(Player.Center.Y) - double(Body.State.Center.Y)) };
         const float DistanceSquared = float(double(ToTarget.X) * double(ToTarget.X) + double(ToTarget.Y) * double(ToTarget.Y));
@@ -6323,13 +6374,32 @@ void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrai
             if (Turret.ScanTimer < 1)
             {
                 Turret.ScanTimer += Turret.ScanDelay;
-                const bool bInRange = DistanceSquared <= float(int(Turret.SensorRange) * int(Turret.SensorRange));
-                const bool bInView = DirectionDistance(FindDirection(ToTarget), Turret.BaseDirection) <= Turret.VisionDirections;
-                if (bInRange && bInView && !Player.bInvisible && !Player.bDying && Turret.Search.Start(Body.State.Center, Player.Center))
+                Turret.TargetObject.reset();
+                // The nearest player in range and in view comes first.
+                std::vector<const FPlayerTarget*> Candidates;
+                std::ranges::transform(Players, std::back_inserter(Candidates), [](const FPlayerTarget& Candidate) { return &Candidate; });
+
+                const auto SquaredTo = [&](const FPlayerTarget* const Candidate)
                 {
-                    Turret.bSearching = true;
-                    Turret.SearchTimer = 0;
-                    Turret.LockedTarget = Player.Position;
+                    const double X = double(Candidate->State.Center.X) - double(Body.State.Center.X);
+                    const double Y = double(Candidate->State.Center.Y) - double(Body.State.Center.Y);
+                    return float(X * X + Y * Y);
+                };
+                std::ranges::stable_sort(Candidates, {}, SquaredTo);
+                for (const FPlayerTarget* const Candidate : Candidates)
+                {
+                    const FPlayerState& Seen = Candidate->State;
+                    const FCollisionPoint ToSeen{ .X = float(double(Seen.Center.X) - double(Body.State.Center.X)), .Y = float(double(Seen.Center.Y) - double(Body.State.Center.Y)) };
+                    const bool bInRange = SquaredTo(Candidate) <= float(int(Turret.SensorRange) * int(Turret.SensorRange));
+                    const bool bInView = DirectionDistance(FindDirection(ToSeen), Turret.BaseDirection) <= Turret.VisionDirections;
+                    if (bInRange && bInView && !Seen.bInvisible && !Seen.bDying && Turret.Search.Start(Body.State.Center, Seen.Center))
+                    {
+                        Turret.bSearching = true;
+                        Turret.SearchTimer = 0;
+                        Turret.TargetObject = Candidate->ObjectIndex;
+                        Turret.LockedTarget = Seen.Position;
+                        break;
+                    }
                 }
             }
             else
@@ -6535,6 +6605,7 @@ namespace
 // it goes once its host is gone or the check-event no longer holds (FUN_0041c0b0), or waits hidden for its next on time when its class has one.
 // A circular one stands Ray away from the host at clock * Angular-speed + Phase, through the collision-to-world scales, and bobs with the host's altitude.
 // ponytail: Only-when-visible (FX flag 4) is not traced; no reader of it was found.
+// ponytail: an orbiter without a host follows the first player, whose surprises start it; per-player orbiters come with per-player surprises.
 void StepOrbiters(FCombat& Combat, const FLevel& Level, const std::span<FObjectBody> Bodies, const FPlayerTarget& Player, const uint32_t StepMilliseconds)
 {
     const int32_t Step = int32_t(StepMilliseconds);
@@ -6648,9 +6719,19 @@ void StepOrbiters(FCombat& Combat, const FLevel& Level, const std::span<FObjectB
 }
 
 void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrainCollision& Terrain, FLevel& Level, std::vector<FObjectBody>& Bodies,
-    const FPlayerTarget& Player, FMessages& Messages)
+    const FPlayerTargets Players, FMessages& Messages)
 {
-    StepOrbiters(Combat, Level, Bodies, Player, StepMilliseconds);
+    if (!Players.empty())
+    {
+        StepOrbiters(Combat, Level, Bodies, Players.front(), StepMilliseconds);
+    }
+
+    // An effect or spark only starts near some player's view; the viewer is that player, or the first.
+    const auto ViewerOf = [&](const FCollisionPoint Point)
+    {
+        const auto Near = std::ranges::find_if(Players, [&](const FPlayerTarget& Player) { return IsNearView(Point, Player.State.Position, Combat.ViewWidth); });
+        return Near != Players.end() ? Near->State.Position : Players.empty() ? Point : Players.front().State.Position;
+    };
     const float TimeScale = float(ReferenceStepMilliseconds / double(StepMilliseconds));
     constexpr FPlayerCommand Straight{ .Thrust = EPlayerThrust::Forward };
     // The trails age first, so the ones made this step start at zero. Flying debris moves as any launched object does without a command (object flag 0x8000),
@@ -6695,10 +6776,10 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         }
 
         FMine& Mine = *Body.Mine;
-        if (Mine.Owner == Player.ObjectIndex)
+        if (const FPlayerTarget* const Owner = Mine.Owner ? PlayerAt(Players, *Mine.Owner) : nullptr)
         {
-            Player.Inventory.ShotsHit += Mine.Hits;
-            Player.Inventory.ShotsMissed += Mine.Misses;
+            Owner->Inventory.ShotsHit += Mine.Hits;
+            Owner->Inventory.ShotsMissed += Mine.Misses;
         }
 
         Mine.Hits = 0;
@@ -6761,25 +6842,27 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         const FAmmoClass& Ammo = Combat.AmmoClasses[Shot.AmmoIndex];
         RunCreates(Combat, Level, Ammo.Creates, Shot.NextCreates, Shot.Age, Shot.State.Position, float(Shot.Altitude), Combat.Trails);
 
-        // Target is the object struck, bPlayer the player struck; bSurface marks a wall or other terrain contact.
-        const auto Detonate = [&](FObjectBody* const Target, const bool bPlayer, const bool bSurface)
+        // The player whose shot it is, if any.
+        const FPlayerTarget* const Shooter = PlayerAt(Players, Shot.Owner);
+        // Target is the object struck, StruckPlayer the player struck; bSurface marks a wall or other terrain contact.
+        const auto Detonate = [&](FObjectBody* const Target, const FPlayerTarget* const StruckPlayer, const bool bSurface)
         {
-            // AreaDamage and AmmoHit add every object a player's shot finishes off to the player's kills. Only AmmoHit, on a contact, counts the shot as a hit or a miss.
+            // AreaDamage and AmmoHit add every object a player's shot finishes off to that player's kills. Only AmmoHit, on a contact, counts the shot as a hit or a miss.
             std::vector<bool> WasAlive;
-            if (Shot.Owner == Player.ObjectIndex)
+            if (Shooter)
             {
-                if (Target || bPlayer || bSurface)
+                if (Target || StruckPlayer || bSurface)
                 {
                     const bool bHit = Target && (HuntsPlayer(*Target) || Level.Objects[Target->ObjectIndex].SubType == "item");
-                    ++(bHit ? Player.Inventory.ShotsHit : Player.Inventory.ShotsMissed);
+                    ++(bHit ? Shooter->Inventory.ShotsHit : Shooter->Inventory.ShotsMissed);
                 }
 
                 std::ranges::transform(Bodies, std::back_inserter(WasAlive), [](const FObjectBody& Body) { return 0.f < Body.Energy; });
             }
 
             // AmmoHit at 0043d7d0 blasts around the shot's last committed centre, then AmmoImpact (0043d350) shoves and damages what it struck.
-            const bool bPlayerShot = Shot.Owner == Player.ObjectIndex;
-            AreaDamage(Combat, Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies, Player, bPlayerShot);
+            const bool bPlayerShot = Shooter != nullptr;
+            AreaDamage(Combat, Shot.State.Center, CellOf(Shot.State.Position), Ammo.Damage, Ammo.DamageZone, Bodies, Players, Shooter);
             // AreaDamage opens a 500 ms window (session +0x2748) on the first hunter a player's blast finishes off and counts each one after it.
             constexpr int32_t FastKillWindowMilliseconds = 0x1f4;
             for (size_t Index = 0; Index < WasAlive.size(); ++Index)
@@ -6812,8 +6895,9 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             }
 
             // The player is shoved and its absorptions scale the damage like any object's.
-            if (bPlayer)
+            if (StruckPlayer)
             {
+                const FPlayerTarget& Player = *StruckPlayer;
                 constexpr double ImpactPush = 40.;
                 const FCollisionPoint Facing = FacingVector(Shot.State.Direction);
                 Player.Inventory.Shove.X = float(double(Facing.X) * ImpactPush / double(Player.Inventory.Weight) + double(Player.Inventory.Shove.X));
@@ -6826,16 +6910,21 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
                 }
             }
 
-            const int32_t KillsBefore = Player.Inventory.Kills;
+            int32_t Kills = 0;
             for (size_t Index = 0; Index < WasAlive.size(); ++Index)
             {
-                Player.Inventory.Kills += WasAlive[Index] && Bodies[Index].Energy <= 0.f ? 1 : 0;
+                Kills += WasAlive[Index] && Bodies[Index].Energy <= 0.f ? 1 : 0;
+            }
+
+            if (Shooter)
+            {
+                Shooter->Inventory.Kills += Kills;
             }
 
             // VoiceKillCheer (0043d070) cheers a kill seven times in sixteen by the game clock.
             constexpr std::array KillVoices = { EVoice::Yeah, EVoice::Hey, EVoice::Yo, EVoice::GiveMe, EVoice::TheBest, EVoice::WantMore, EVoice::Laugh };
             constexpr uint32_t KillVoiceMask = 0xf;
-            if (const uint32_t Pick = GetVoiceClock() & KillVoiceMask; Player.Inventory.Kills != KillsBefore && Pick < KillVoices.size())
+            if (const uint32_t Pick = GetVoiceClock() & KillVoiceMask; Kills != 0 && Pick < KillVoices.size())
             {
                 constexpr uint32_t KillVoiceDelay = 1000;
                 constexpr uint32_t KillVoiceDuration = 1500;
@@ -6844,7 +6933,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 
             // AmmoImpact (0043d350) puts the Hit-fx where the shot struck; a shot that sank to the ground leaves a Water-Splash on open water (its cell's terrain marker 0x100, CellsHaveMarker (0042c130))
             // and a Bullet-Ground-Impact elsewhere. Either goes at the spot clamped into the level, only near the view (FUN_00436690), and a Uniq-at-xy class not where one of its own stands.
-            const bool bHit = Target || bPlayer || bSurface;
+            const bool bHit = Target || StruckPlayer || bSurface;
             if (bHit || Shot.Altitude < 1)
             {
                 const FWorldCell Cell = CellOf(Shot.State.Position);
@@ -6859,7 +6948,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
                     {
                         return Effect.ClassIndex == size_t(Class - Combat.EffectClasses.begin()) && !Effect.bFinished && Effect.Position.X == Spot.X && Effect.Position.Y == Spot.Y;
                     });
-                if (!bTaken && IsNearView(Spot, Player.State.Position, Combat.ViewWidth))
+                if (!bTaken && IsNearView(Spot, ViewerOf(Spot), Combat.ViewWidth))
                 {
                     SpawnEffect(Combat, Name, Spot, bHit ? float(Shot.Altitude) : 0.f);
                 }
@@ -6882,7 +6971,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             if (Shot.Altitude < 1)
             {
                 Shot.Altitude = 0;
-                return Detonate(nullptr, false, false);
+                return Detonate(nullptr, nullptr, false);
             }
         }
 
@@ -6890,7 +6979,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         {
             if (Shot.DamageTimer <= StepMilliseconds)
             {
-                return Detonate(nullptr, false, false);
+                return Detonate(nullptr, nullptr, false);
             }
 
             Shot.DamageTimer -= StepMilliseconds;
@@ -6938,16 +7027,19 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         const std::optional<FTerrainHit> TerrainHit = QueryTerrainCollision(Terrain, { .Center = Shot.State.Center, .Radius = Ammo.Movement.Radius }, Moved);
         std::optional<FCollisionPoint> Contact = TerrainHit ? std::optional(TerrainHit->Point) : std::nullopt;
         FObjectBody* const Struck = FindStruckBody(Bodies, Moved, Shot.Owner, Contact);
-        bool bPlayerStruck = false;
-        if (Shot.Owner != Player.ObjectIndex)
+        // Another object's shot may strike a player; a player's own shot strikes no player.
+        const FPlayerTarget* StruckPlayer = nullptr;
+        for (const FPlayerTarget& Player : Shooter ? FPlayerTargets() : Players)
         {
             const std::optional<FCollisionPoint> PlayerContact = IntersectCircles(Moved, { .Center = Player.State.Center, .Radius = Player.Radius });
             if (PlayerContact && (!Contact || PrefersContact(*Contact, *PlayerContact, Candidate)))
             {
                 Contact = PlayerContact;
-                bPlayerStruck = true;
+                StruckPlayer = &Player;
             }
         }
+
+        const bool bPlayerStruck = StruckPlayer != nullptr;
 
         if (!Contact)
         {
@@ -6968,7 +7060,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             const bool bHardKnock = IsHardKnock(Shot.State, Ammo.Movement, Delta);
             if (bHardKnock)
             {
-                ThrowBounceSpark(Combat, Ammo.BounceEffects, Shot.State.Position, WorldFromCollision(*Contact), Player.State.Position);
+                ThrowBounceSpark(Combat, Ammo.BounceEffects, Shot.State.Position, WorldFromCollision(*Contact), ViewerOf(Shot.State.Position));
             }
 
             if (!Ammo.bIndestructible && bHardKnock)
@@ -6977,7 +7069,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
                 Shot.Energy = Shot.Energy <= Damage ? 0.f : Shot.Energy - Damage;
                 if (Shot.Energy <= 0.f)
                 {
-                    return Detonate(nullptr, false, false);
+                    return Detonate(nullptr, nullptr, false);
                 }
             }
 
@@ -6992,7 +7084,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         }
 
         Shot.State.Position = WorldFromCollision(*Contact);
-        return Detonate(bPlayerStruck ? nullptr : Struck, bPlayerStruck, !bPlayerStruck && Struck == nullptr);
+        return Detonate(bPlayerStruck ? nullptr : Struck, StruckPlayer, !bPlayerStruck && Struck == nullptr);
     });
 
     // The FX branch of ObjectUpdateWeapon (00444ca0): before half its animation an explosion waits out its delay, then the blast goes off once.
@@ -7018,7 +7110,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             if (bBlast)
             {
                 Effect.BlastTimer = -1;
-                AreaDamage(Combat, CollisionFromWorld(Effect.Position), CellOf(Effect.Position), Effect.Damage, Effect.Zone, Bodies, Player, false);
+                AreaDamage(Combat, CollisionFromWorld(Effect.Position), CellOf(Effect.Position), Effect.Damage, Effect.Zone, Bodies, Players, nullptr);
                 Effect.Damage = 0.f;
             }
         }
@@ -7046,14 +7138,19 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
         constexpr int ShakeRange = 0x20;
         Combat.Random.Range(-ShakeRange, ShakeRange);
         Combat.Random.Range(-ShakeRange, ShakeRange);
-        Player.Inventory.Surprises.ShakeX = 0;
-        Player.Inventory.Surprises.ShakeY = 0;
+        for (const FPlayerTarget& Player : Players)
+        {
+            Player.Inventory.Surprises.ShakeX = 0;
+            Player.Inventory.Surprises.ShakeY = 0;
+        }
     }
 
     // Session +0x2094 counts the hunters down as they die; the last one announces the empty level.
     int Hunters = int(std::ranges::count_if(Bodies, [&](const FObjectBody& Body) { return HuntsPlayer(Body) && !Level.Objects[Body.ObjectIndex].bRemoved; }));
     // The dropped objects join the level once the destroyed ones are gone, so no object reference outlives the list growing.
     std::vector<FDrop> Drops;
+    // ponytail: rewards and bonuses go to the first player until co-op gets its shared purse.
+    const FPlayerTarget* const Paid = Players.empty() ? nullptr : &Players.front();
     std::erase_if(Bodies, [&](FObjectBody& Body)
     {
         // Objects die in their next update once damage has taken their energy to zero.
@@ -7087,10 +7184,14 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             constexpr int RealKillerBonus = 100000;
             constexpr uint32_t Font = 6;
             // A deliberate fix: EngineUpdateObjects (004408ab) only prints the bonus and never pays it; the port pays it as the Fast Kill Bonus is paid.
-            Player.Inventory.Money += float(RealKillerBonus);
-            Player.Inventory.Earned += float(RealKillerBonus);
+            if (Paid)
+            {
+                Paid->Inventory.Money += float(RealKillerBonus);
+                Paid->Inventory.Earned += float(RealKillerBonus);
+            }
+
             Messages.Add({
-                .Text = Format("You are so professional %s !\nNo more enemy in this level !\n  Real Killer Bonus : +%d $", Player.Name, RealKillerBonus),
+                .Text = Format("You are so professional %s !\nNo more enemy in this level !\n  Real Killer Bonus : +%d $", Paid ? Paid->Name : std::string_view("Jack"), RealKillerBonus),
                 .X = float(LastKillX),
                 .Y = float(LastKillY),
                 .LifeMilliseconds = LastKillLifeMilliseconds,
@@ -7104,10 +7205,10 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             SpawnEffect(Combat, Explosion.BoomEffect, Body.State.Position, Body.Altitude, Explosion.Damage, Explosion.Zone);
         }
 
-        if (0.f < Body.Reward && PaysReward(Object.SubType))
+        if (0.f < Body.Reward && PaysReward(Object.SubType) && Paid)
         {
-            Player.Inventory.Money += Body.Reward;
-            Player.Inventory.Earned += Body.Reward;
+            Paid->Inventory.Money += Body.Reward;
+            Paid->Inventory.Earned += Body.Reward;
             // The reward rises from the wreck in font 2 and the object's name follows it in font 6.
             constexpr float RewardVelocity = -1.5f;
             constexpr float NameVelocity = -1.f;
@@ -7232,7 +7333,7 @@ std::expected<std::string, std::string> VerifyPatrols(FResourceArchive& Archive)
         FCombat Moves;
         for (uint32_t Time = 0; Time < DurationMilliseconds; Time += StepMilliseconds)
         {
-            StepActors(&Moves, Bodies, StepMilliseconds, *Terrain, *Level, nullptr);
+            StepActors(&Moves, Bodies, StepMilliseconds, *Terrain, *Level, {});
             for (size_t Index = 0; Index < Bodies.size(); ++Index)
             {
                 const std::optional<FPatrol>& Patrol = Bodies[Index].Actor ? Bodies[Index].Actor->Patrol : std::nullopt;
@@ -8060,18 +8161,20 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             .State = { .Center = { .X = 100.f, .Y = 100.f } },
             .Turret = FTurret{ .VisionDirections = DirectionCount / 2, .SensorRange = 1000.f, .ScanDelay = ScanDelay },
         } };
-        const FPlayerState Target{ .Center = SearchTargets[Index] };
+        const FPlayerState TargetState{ .Center = SearchTargets[Index] };
+        FPlayerInventory TargetInventory;
+        const FPlayerTarget Target{ .State = TargetState, .Inventory = TargetInventory };
         const FTerrainCollision Terrain;
         // The turret's own level object.
         FLevel Level;
         Level.Objects.resize(1);
-        StepTurrets(Check, StepMilliseconds, Terrain, Level, Bodies, Target);
+        StepTurrets(Check, StepMilliseconds, Terrain, Level, Bodies, FPlayerTargets(&Target, 1));
         if (!Bodies.front().Turret->bSearching || Bodies.front().Turret->bLocked || Bodies.front().Turret->ScanTimer != ScanDelay)
         {
             return std::unexpected("Turret did not enter its pending route search");
         }
 
-        StepTurrets(Check, StepMilliseconds, Terrain, Level, Bodies, Target);
+        StepTurrets(Check, StepMilliseconds, Terrain, Level, Bodies, FPlayerTargets(&Target, 1));
         if (Bodies.front().Turret->bSearching || Bodies.front().Turret->bLocked != (Index == 0) || Bodies.front().Turret->ScanTimer != ScanDelay * 2)
         {
             return std::unexpected("Turret route acceptance or retry timer mismatch");
@@ -8122,7 +8225,8 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             StepPlayerWeapon(*Combat, true, Player, Level->Objects[PlayerIndex], PlayerIndex, SpriteSize, Inventory, Messages);
             LevelShots += Combat->Projectiles.size() - Before;
             const size_t TurretBefore = Combat->Projectiles.size();
-            StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Player);
+            const FPlayerTarget Target{ .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
+            StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, FPlayerTargets(&Target, 1));
             TurretShots += Combat->Projectiles.size() - TurretBefore;
             const size_t EffectsBefore = Combat->Effects.size();
             StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
@@ -8209,7 +8313,8 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             {
                 Combat->Clock += StepMilliseconds;
                 const size_t TurretBefore = Combat->Projectiles.size();
-                StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Player);
+                const FPlayerTarget Target{ .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
+                StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, FPlayerTargets(&Target, 1));
                 DuelShots += Combat->Projectiles.size() - TurretBefore;
                 StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
             }
@@ -8254,7 +8359,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
                 Combat->Clock += StepMilliseconds;
                 const size_t Before = Combat->Projectiles.size();
                 const FPlayerTarget Target{ .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex };
-                StepActors(&*Combat, Bodies, StepMilliseconds, *Terrain, *Level, &Target);
+                StepActors(&*Combat, Bodies, StepMilliseconds, *Terrain, *Level, FPlayerTargets(&Target, 1));
                 CopShots += Combat->Projectiles.size() - Before;
                 StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, { .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = PlayerIndex }, Messages);
             }
