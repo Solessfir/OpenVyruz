@@ -15,7 +15,7 @@ The flash's draws come from the shared generator. Before a level they do not mat
 
 ## Layout
 
-`MenuCreate` (`004209b0`) makes a menu over a rectangle with an item step: the main and game menus use 270, 90 to 640, 480 with items 45 pixels apart. Item N prints at `Left + N * StepX`, `Top + N * StepY` (the font's baseline), and the mouse is over it strictly between that baseline and the previous one, left of the rectangle's right edge. An item without text is a gap. The title prints at 10, 120 in menu font `+0x74`. The help text of the selected item prints in font 4 with word wrap inside 400, 360 to 635, 475, its cursor `LineHeight - LineGap` below the clip's top.
+`MenuCreate` (`004209b0`) makes a menu over a rectangle with an item step: the main and game menus use 270, 90 to 640, 480 with items 45 pixels apart. Six rows fill the frame drawn on the backdrop; a port menu with more, as the main menu with Cooperative and the co-op lobby and search, closes them up so the last ends where the sixth would (`MenuStepFor`), seven rows 37 apart. Item N prints at `Left + N * StepX`, `Top + N * StepY` (the font's baseline), and the mouse is over it strictly between that baseline and the previous one, left of the rectangle's right edge. An item without text is a gap. The title prints at 10, 120 in menu font `+0x74`. The help text of the selected item prints in font 4 with word wrap inside 400, 360 to 635, 475, its cursor `LineHeight - LineGap` below the clip's top.
 
 `RunMenu` (`00421050`) runs a menu: the cursor starts on menu `+0x4c`'s item (or where the menu's last run left it), each step runs the update pass of `MenuStep` (`00421780`), and each frame one draw pass.
 

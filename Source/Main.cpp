@@ -1825,6 +1825,13 @@ constexpr int32_t MenuLeft = 270;
 constexpr int32_t MenuTop = 90;
 constexpr int32_t MenuStepY = 45;
 
+// The original's menus hold six rows at most, 45 apart, inside the frame drawn on their backdrop; one of the port's with more closes its rows up to end where the sixth would.
+constexpr int32_t MenuStepFor(const size_t Rows)
+{
+    constexpr size_t FrameRows = 6;
+    return Rows <= FrameRows ? MenuStepY : MenuStepY * int32_t(FrameRows - 1) / int32_t(Rows - 1);
+}
+
 // MenuAsk at 004228a0: a question with two answers, 30 pixels right of the menu and from 120 down, its title in font 2. True for the first answer.
 // MenuExplode at 00421460 sets off explosions over the menu after "Yes, bye."; the port leaves them out and quits at once.
 // ponytail: the bip sounds wait for audio.
@@ -3751,13 +3758,13 @@ std::unique_ptr<FCoopLink> RunCoopLobby(GLFWwindow* const Window, FRenderer& Ren
     constexpr size_t LoadItem = 1;
     constexpr size_t FirstMemberItem = 2;
     constexpr size_t MemberItems = Net::MaxPeers + 1;
-    constexpr size_t BackItem = FirstMemberItem + MemberItems + 1;
+    constexpr size_t BackItem = FirstMemberItem + MemberItems;
     FMenu Menu{
         .Left = MenuLeft,
         .Top = MenuTop,
         .Right = int32_t(ScreenWidth),
         .Bottom = int32_t(ScreenHeight),
-        .StepY = MenuStepY,
+        .StepY = MenuStepFor(BackItem + 1),
         .Title = "Cooperative",
         .Items = std::vector<FMenuItem>(BackItem + 1),
         .DefaultItem = BackItem,
@@ -3821,7 +3828,7 @@ std::unique_ptr<FCoopLink> RunCoopJoin(GLFWwindow* const Window, FRenderer& Rend
         .Top = MenuTop,
         .Right = int32_t(ScreenWidth),
         .Bottom = int32_t(ScreenHeight),
-        .StepY = MenuStepY,
+        .StepY = MenuStepFor(BackItem + 1),
         .Title = "Cooperative",
         .Items = std::vector<FMenuItem>(BackItem + 1),
         .DefaultItem = BackItem,
@@ -3986,7 +3993,7 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         .Top = MenuTop,
         .Right = int32_t(ScreenWidth),
         .Bottom = int32_t(ScreenHeight),
-        .StepY = MenuStepY,
+        .StepY = MenuStepFor(ExitItem + 1),
         .Items = {
             Session ? FMenuItem{ .Text = "Restart Level", .Help = SessionHelp(*Session) } : FMenuItem{},
             { .Text = "Start New Game" },
