@@ -37,7 +37,7 @@ PgPoll's key codes index the key name table at `0x517a94`: 1 Escape, 14 Backspac
 | Load Game | `%d saved session%s available.` or `No saved session.` | `SessionLoad` (`0042ba00`) mode 0, the saved sessions |
 | Options | `Video, Audio, Control, User settings, Language.` | `MenuOptions` |
 | Extras | `Scores, Credits, Intro, Slide Show, Demo.` | `MenuExtras` |
-| Exit (default) | | "Exit Now ?" (Yes, bye. / No !, default Yes), with explosions over the menu (`MenuExplode` (`00421460`)) before leaving |
+| Exit (default) | | "Exit Now ?" (Yes, bye. / No !; the original's default is Yes, the port's No), with explosions over the menu (`MenuExplode` (`00421460`)) before leaving |
 
 The cursor starts on Restart Level when there is a default session and on Start New Game otherwise. The difficulty names are Easy, Normal, Hard and Insane (`DifficultyName` (`00403310`)); the default is Normal.
 
@@ -104,7 +104,7 @@ Before each step's update, unless Escape is down (which ends the demo), `DemoRep
 
 ## Game menu
 
-Resume Game (the default), Options, Retry Level (only with a default session; otherwise a gap ends the list) and End Game. Retry Level asks "Retry level ?" as above and restarts from the default session; End Game asks "End this Game ?" (Yes / No, whose default is Yes) and returns to the main menu without the game-over image. A dead player's Escape ends the game at once with the game-over image.
+Resume Game (the default), Options, Retry Level (only with a default session; otherwise a gap ends the list) and End Game. Retry Level asks "Retry level ?" as above and restarts from the default session; End Game asks "End this Game ?" (Yes / No; the original's default is Yes, the port's No, so Escape goes back to the game menu) and returns to the main menu without the game-over image. A dead player's Escape ends the game at once with the game-over image.
 
 ## Sessions
 

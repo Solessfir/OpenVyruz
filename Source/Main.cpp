@@ -3676,8 +3676,9 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         }
         else if (*Item == ExitItem)
         {
-            constexpr size_t YesBye = 0;
-            const std::optional<bool> Exit = Confirm(Window, Renderer, Art, Sheets, Random, "Exit Now ?", "Yes, bye.", "No !", YesBye);
+            // The original's default is "Yes, bye.", so Escape twice quit; the port's Escape goes back to the menu.
+            constexpr size_t No = 1;
+            const std::optional<bool> Exit = Confirm(Window, Renderer, Art, Sheets, Random, "Exit Now ?", "Yes, bye.", "No !", No);
             if (!Exit || *Exit)
             {
                 return EMenuChoice::Quit;
@@ -3814,9 +3815,9 @@ std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Render
         }
         else if (*Item == EndItem)
         {
-            // The first answer is also the default, so Escape twice ends the game.
-            constexpr size_t Yes = 0;
-            const std::optional<bool> End = Confirm(Window, Renderer, Art, Sheets, Random, "End this Game ?", "Yes", "No", Yes);
+            // The original's default is Yes, so Escape twice ended the game; the port's Escape goes back to the menu, as in the other questions.
+            constexpr size_t No = 1;
+            const std::optional<bool> End = Confirm(Window, Renderer, Art, Sheets, Random, "End this Game ?", "Yes", "No", No);
             if (!End || *End)
             {
                 return End ? ELevelEnd::Menu : ELevelEnd::Quit;
