@@ -9,6 +9,7 @@ struct PushConstants
     float4 Diffuse;
     float4 Specular;
     float4 Rotation; // cos, sin, pivot x, pivot y: DrawAnimationFrame turns the frame about the object's position
+    float4 Soft;     // x non-zero: the port's own premultiplied image, filtered smoothly and blended by its alpha
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> Push;
@@ -50,6 +51,17 @@ float2 PixelArtUv(float2 Uv)
 [shader("fragment")]
 float4 fragmentMain(VertexOutput Input) : SV_Target
 {
+    if (Push.Soft.x > 0.0)
+    {
+        const float4 Image = SpriteTexture.Sample(Input.Uv);
+        if (Image.a <= 0.0)
+        {
+            discard;
+        }
+
+        return float4(Image.rgb / Image.a * Push.Diffuse.rgb, Image.a * Push.Diffuse.a);
+    }
+
     const float2 Uv = PixelArtUv(Input.Uv);
     if (Push.OutlineTexel.x > 0.0)
     {

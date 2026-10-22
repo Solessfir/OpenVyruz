@@ -15,6 +15,10 @@ Every player is a level object of the player's class with its own ship, inventor
 - **Money, keys and codes** are the team's, held by the first player's inventory (`FPlayerTarget::Team`, `PurseOf`): pickups, rewards, bonuses, a lift's fare and the map all draw on the one purse, and a key or code any player picks up opens its doors for everyone.
 - **Packs** of energy, shield or ammo are every player's own: a pack stays in the level until each player has taken it, hidden only for those who have, so each player sees its own copy, and any money in it goes to the purse once. Money alone, keys, codes and surprises go to whoever takes them first.
 
+## Rings
+
+As in Sacred, every ship in a co-op level stands on a flattened ring drawn on the ground before the walls and bodies: its outer band is the shield left in red and its inner band the energy in green, as the panel's bars show them, filled clockwise from the top over a see-through dark track with a dark rim, and a downed ship's ring is all dark red. The bands are made once, three times finer than the view, and drawn with the renderer's `SoftAlpha` blend, which filters the port's own images smoothly instead of as pixel art. A lone player has none.
+
 ## Down and back
 
 At zero energy a player is down instead of exploding: its ship coasts to a stop and pulses red, takes no command, fires nothing, collects nothing and is ignored by the enemies. A standing teammate within 100 pixels for two seconds brings it back at 30% energy. Unrevived after 30 seconds, it comes back by itself at half energy where the team last saved, or where the level started. With every player down at once the team is lost: each ship dies as a lone player's does and the game ends.

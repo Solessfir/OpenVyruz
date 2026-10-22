@@ -41,6 +41,7 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -440,6 +441,63 @@ struct FObjectSprites
     std::vector<FObjectSprite> Sprites;
     std::unordered_map<std::string, size_t> SheetIndices;
 };
+
+// The port's co-op ring bands, Sacred's style, in the view's pixels: a flattened ring (half as tall as wide) between two radii, with a dark rim,
+// a see-through dark track and a white fill, which the drawing tints. Each band comes as RingSteps + 1 frames, filled from none to all clockwise from the top,
+// made RingScale times finer than the view so the scaled-up view keeps them smooth; premultiplied for SoftAlpha.
+struct FRingBand
+{
+    float Inner = 0.f;
+    float Outer = 0.f;
+};
+constexpr FRingBand EnergyRingBand{ .Inner = 27.f, .Outer = 29.5f };
+constexpr FRingBand ShieldRingBand{ .Inner = 31.f, .Outer = 34.f };
+constexpr uint32_t RingSteps = 32;
+constexpr float RingScale = 3.f;
+constexpr float RingFlatten = 0.5f;
+constexpr float RingMargin = 2.f;
+constexpr uint32_t RingFrameWidth = uint32_t(2.f * (ShieldRingBand.Outer + RingMargin) * RingScale);
+constexpr uint32_t RingFrameHeight = uint32_t(2.f * (ShieldRingBand.Outer * RingFlatten + RingMargin) * RingScale);
+
+std::vector<std::vector<uint32_t>> MakeRingFrames(const FRingBand Band)
+{
+    constexpr float RimWidth = 0.5f;
+    constexpr float FillAlpha = 0.85f;
+    constexpr float TrackAlpha = 0.2f;
+    constexpr float RimAlpha = 0.35f;
+    constexpr float FullTurn = 2.f * std::numbers::pi_v<float>;
+    constexpr float ChannelMax = 255.f;
+    // One texel of the frame, in the view's pixels: how wide every edge is smoothed.
+    constexpr float Smooth = 1.f / RingScale;
+    const auto Inside = [](const float Radius, const float Low, const float High)
+    { return std::clamp((Radius - Low) / Smooth + 0.5f, 0.f, 1.f) * std::clamp((High - Radius) / Smooth + 0.5f, 0.f, 1.f); };
+    std::vector<std::vector<uint32_t>> Frames;
+    for (uint32_t Step = 0; Step <= RingSteps; ++Step)
+    {
+        const float Share = float(Step) / float(RingSteps);
+        std::vector<uint32_t>& Pixels = Frames.emplace_back(size_t{ RingFrameWidth } * RingFrameHeight);
+        for (uint32_t Y = 0; Y < RingFrameHeight; ++Y)
+        {
+            for (uint32_t X = 0; X < RingFrameWidth; ++X)
+            {
+                const float Across = (float(X) + 0.5f - float(RingFrameWidth) * 0.5f) / RingScale;
+                const float Down = (float(Y) + 0.5f - float(RingFrameHeight) * 0.5f) / RingScale / RingFlatten;
+                const float Radius = std::hypot(Across, Down);
+                const float Whole = Inside(Radius, Band.Inner, Band.Outer);
+                const float Track = Inside(Radius, Band.Inner + RimWidth, Band.Outer - RimWidth);
+                // How far round from the top, clockwise on the screen, and how much of the texel lies before the fill's end.
+                const float Turn = std::fmod(std::atan2(Across, -Down) / FullTurn + 1.f, 1.f);
+                const float Filled = Share <= 0.f ? 0.f : std::clamp((Share - Turn) * FullTurn * Radius / Smooth + 0.5f, 0.f, 1.f);
+                const float Fill = Track * Filled * FillAlpha;
+                const float Alpha = Fill + Track * (1.f - Filled) * TrackAlpha + (Whole - Track) * RimAlpha;
+                const uint32_t White = uint32_t(std::lround(Fill * ChannelMax));
+                Pixels[size_t{ Y } * RingFrameWidth + X] = White | White << 8 | White << 16 | uint32_t(std::lround(std::clamp(Alpha, 0.f, 1.f) * ChannelMax)) << 24;
+            }
+        }
+    }
+
+    return Frames;
+}
 
 // Loads a GAF's sheet once and returns its index.
 std::optional<size_t> FindOrLoadSheet(FObjectSprites& Sprites, FResourceArchive& Archive, FRenderer& Renderer, const std::string& Path)
@@ -4596,6 +4654,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     const FSpriteSheet SurpriseSheet = Panel ? Renderer.CreateSpriteSheet(Panel->GetBitmaps(EHudSheet::Surprise)) : FSpriteSheet{};
     // The port's explosion light, bright in the middle and gone at its edge, and its low-shield glow, which rises toward the view's corners.
     const FSpriteSheet LightSheet = Renderer.CreateGradientSheet([](const float Distance) { return std::max(0.f, 1.f - Distance) * std::max(0.f, 1.f - Distance); });
+    // The co-op rings' bands, made at the first co-op frame.
+    std::optional<FSpriteSheet> RingSheet;
     const FSpriteSheet EdgeSheet = Renderer.CreateGradientSheet(
         [](const float Distance)
         {
@@ -8130,6 +8190,47 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 const float Radius = LightRadius * (Class.Stretch > 0.f ? Class.Stretch : 1.f);
                 Renderer.DrawSprite(LightSheet, 0, Effect.Position.X - float(OriginX) - Radius, Effect.Position.Y - float(OriginY) - Radius * GroundFlatten, false, false,
                     ESpriteBlend::Screen, 2.f * Radius / SheetSize, 2.f * Radius * GroundFlatten / SheetSize, UINT32_MAX, ModulateColor(LightColor, GreyLevel(Left * Left * LightPeak)));
+            }
+        }
+
+        // The port's co-op rings, after Sacred's: a flattened ring on the ground under every ship, its outer band the shield left and its inner band the energy
+        // in the panel's red and green, filled clockwise from the top; a downed ship's ring is all dark red. Walls and bodies drawn after it cover it.
+        if (IsCoop())
+        {
+            if (!RingSheet)
+            {
+                std::vector<std::vector<uint32_t>> Frames = MakeRingFrames(EnergyRingBand);
+                std::ranges::move(MakeRingFrames(ShieldRingBand), std::back_inserter(Frames));
+                RingSheet = Renderer.CreateImageSheet(RingFrameWidth, RingFrameHeight, Frames);
+            }
+
+            constexpr uint32_t EnergyColor = 0x58c858;
+            constexpr uint32_t ShieldColor = 0xd84a38;
+            constexpr uint32_t DownColor = 0x902010;
+            constexpr float DrawScale = 1.f / RingScale;
+            // Seen through, so the ring stays a hint on the ground rather than a target.
+            constexpr float RingAlpha = 0.7f;
+            const auto Band = [&](const FCollisionPoint Center, const size_t FirstFrame, const float Share, const uint32_t Color)
+            {
+                const size_t Step = size_t(std::lround(std::clamp(Share, 0.f, 1.f) * float(RingSteps)));
+                const float X = Center.X - float(OriginX) - float(RingFrameWidth) * DrawScale * 0.5f;
+                const float Y = Center.Y - float(OriginY) - float(RingFrameHeight) * DrawScale * 0.5f;
+                Renderer.DrawSprite(*RingSheet, FirstFrame + Step, X, Y, false, false, ESpriteBlend::SoftAlpha, DrawScale, DrawScale, UINT32_MAX, Color, 0, RingAlpha);
+            };
+            for (const FLevelPlayer& Each : Players)
+            {
+                if (!Each.State || Each.DeathTimer || (Each.State->bInvisible && &Each != &Local))
+                {
+                    continue;
+                }
+
+                // A networked ship's ring glides with its drawing.
+                const auto Glide = Glides.find(Each.Index);
+                const FCollisionPoint Center = Glide != Glides.end() ? GlideAt(Glide->second, ClockMilliseconds()) : Each.State->Position;
+                const FPlayerInventory& Owned = Each.Inventory;
+                constexpr size_t ShieldFrames = RingSteps + 1;
+                Band(Center, 0, Each.DownTimer ? 1.f : Owned.EnergyMax > 0.f ? Owned.Energy / Owned.EnergyMax : 0.f, Each.DownTimer ? DownColor : EnergyColor);
+                Band(Center, ShieldFrames, Each.DownTimer ? 1.f : Owned.ShieldMax > 0.f ? Owned.Shield / Owned.ShieldMax : 0.f, Each.DownTimer ? DownColor : ShieldColor);
             }
         }
 

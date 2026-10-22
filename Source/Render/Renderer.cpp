@@ -61,6 +61,8 @@ struct FSpritePush
     float Specular[4] = {};
     // cos, sin, pivot x, pivot y.
     float Rotation[4] = { 1.f, 0.f, 0.f, 0.f };
+    // Non-zero first: SoftAlpha's filtered, premultiplied texture.
+    float Soft[4] = {};
 };
 
 // Unpacks a D3DCOLOR's red, green and blue bytes; the fourth channel carries the sprite's alpha.
@@ -489,7 +491,7 @@ void FRenderer::CreatePipeline()
     {
         // Original hardware blend states at 00496280: mode 6 adds light, mode 8 darkens with inverse source RGB, modes 2 and 4 blend by alpha.
         const bool bAdditive = Index == static_cast<size_t>(ESpriteBlend::Additive);
-        const bool bAlpha = Index == static_cast<size_t>(ESpriteBlend::Alpha);
+        const bool bAlpha = Index == static_cast<size_t>(ESpriteBlend::Alpha) || Index == static_cast<size_t>(ESpriteBlend::SoftAlpha);
         const bool bScreen = Index == static_cast<size_t>(ESpriteBlend::Screen);
         const bool bDouble = Index == static_cast<size_t>(ESpriteBlend::Double);
         const bool bOpaque = Index == static_cast<size_t>(ESpriteBlend::Opaque);
@@ -1024,6 +1026,42 @@ FSpriteSheet FRenderer::CreateGradientSheet(const std::function<float(float)>& B
     return Sheet;
 }
 
+FSpriteSheet FRenderer::CreateImageSheet(const uint32_t Width, const uint32_t Height, const std::span<const std::vector<uint32_t>> Frames)
+{
+    // A grid of frames, each with a clear border so filtering never reaches a neighbour.
+    constexpr uint32_t MaxSheetWidth = 4096;
+    const uint32_t CellWidth = Width + SheetPadding;
+    const uint32_t CellHeight = Height + SheetPadding;
+    const uint32_t Columns = std::clamp(MaxSheetWidth / std::max(1u, CellWidth), 1u, std::max(1u, uint32_t(Frames.size())));
+    const uint32_t Rows = (uint32_t(Frames.size()) + Columns - 1) / Columns;
+    const uint32_t SheetWidth = Columns * CellWidth;
+    const uint32_t SheetHeight = std::max(1u, Rows) * CellHeight;
+    std::vector<uint32_t> Rgba(size_t{ SheetWidth } * SheetHeight, 0);
+    FSpriteSheet Sheet;
+    for (size_t Index = 0; Index < Frames.size(); ++Index)
+    {
+        const uint32_t Left = uint32_t(Index) % Columns * CellWidth + SheetBorder;
+        const uint32_t Top = uint32_t(Index) / Columns * CellHeight + SheetBorder;
+        const std::vector<uint32_t>& Pixels = Frames[Index];
+        for (uint32_t Y = 0; Y < Height && Pixels.size() >= size_t{ Width } * Height; ++Y)
+        {
+            std::copy_n(Pixels.begin() + std::ptrdiff_t(size_t{ Y } * Width), Width, Rgba.begin() + std::ptrdiff_t(size_t{ Top + Y } * SheetWidth + Left));
+        }
+
+        Sheet.Frames.push_back({
+            .U0 = float(Left) / float(SheetWidth),
+            .V0 = float(Top) / float(SheetHeight),
+            .U1 = float(Left + Width) / float(SheetWidth),
+            .V1 = float(Top + Height) / float(SheetHeight),
+            .Width = Width,
+            .Height = Height,
+        });
+    }
+
+    Sheet.Texture = CreateTexture(SheetWidth, SheetHeight, Rgba);
+    return Sheet;
+}
+
 FSpriteSheet FRenderer::CreateVideoSheet(const uint32_t Width, const uint32_t Height)
 {
     FSpriteSheet Sheet;
@@ -1215,6 +1253,7 @@ void FRenderer::DrawSprite(const FSpriteSheet& Sheet, const size_t FrameIndexInS
         Push.Rotation[2] = PivotX;
         Push.Rotation[3] = PivotY;
     }
+    Push.Soft[0] = Blend == ESpriteBlend::SoftAlpha ? 1.f : 0.f;
     const bool bOutline = StencilMode == EStencilMode::Outline;
     if (bOutline)
     {

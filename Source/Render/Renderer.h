@@ -49,6 +49,8 @@ enum class ESpriteBlend : uint8_t
     Screen,
     // Adds the destination to itself by the source: destination + destination * source, as ScoreHighlightRow blends a row onto itself.
     Double,
+    // Blends by the texture's own alpha, smoothly filtered, times the caller's: for the port's own drawn images rather than the original's pixel art.
+    SoftAlpha,
     Count,
 };
 
@@ -77,6 +79,8 @@ public:
     void ReleaseSpriteSheets();
     // A 256x256 grey frame, Brightness (0 to 1) of the distance from its middle, 1 at the edge's middle; for the port's lights and screen edges.
     FSpriteSheet CreateGradientSheet(const std::function<float(float)>& Brightness);
+    // A sheet of Width by Height frames from premultiplied RGBA pixels (R, G, B and A bytes), for SoftAlpha.
+    FSpriteSheet CreateImageSheet(uint32_t Width, uint32_t Height, std::span<const std::vector<uint32_t>> Frames);
     // A sheet of one Width by Height frame whose pixels UpdateVideoSheet replaces, for video.
     FSpriteSheet CreateVideoSheet(uint32_t Width, uint32_t Height);
     // Rgba is R, G, B and A bytes for each of the sheet's pixels.
