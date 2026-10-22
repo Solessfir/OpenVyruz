@@ -292,6 +292,7 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
             const uint8_t Flags = Reader.Get<uint8_t>();
             Player.bDown = (Flags & 1) != 0;
             Player.bDead = (Flags & 2) != 0;
+            Player.Collected = Reader.Get<uint32_t>();
             Player.Ammo.resize(GetCount(Reader));
             for (float& Count : Player.Ammo)
             {
@@ -408,6 +409,7 @@ void FCoopLink::SendSnapshot(const FCoopSnapshot& Snapshot)
         Writer.Put(Player.Shield);
         Writer.Put(Player.ShieldMax);
         Writer.Put(uint8_t((Player.bDown ? 1 : 0) | (Player.bDead ? 2 : 0)));
+        Writer.Put(Player.Collected);
         Writer.Put(uint32_t(Player.Ammo.size()));
         for (const float Count : Player.Ammo)
         {

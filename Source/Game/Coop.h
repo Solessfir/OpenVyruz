@@ -12,7 +12,7 @@
 
 // The port's co-op over the network (Coop.md): the host runs the level and sends what it is; each client moves its own ship and sends that.
 // Slot 0 is the host's player, 1 to 3 the clients'.
-inline constexpr uint32_t CoopProtocolVersion = 1;
+inline constexpr uint32_t CoopProtocolVersion = 2;
 inline constexpr uint8_t HostSlot = 0;
 
 // A ship as its owner moves it, and whether it fires and with which weapon slot.
@@ -43,6 +43,8 @@ struct FCoopPlayer
     float ShieldMax = 0.f;
     bool bDown = false;
     bool bDead = false;
+    // How many pickups the player has collected in the level.
+    uint32_t Collected = 0;
     std::vector<float> Ammo;
 };
 

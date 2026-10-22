@@ -4289,6 +4289,8 @@ struct FLevelPlayer
     // The forward input of the last step, which a blocked motor answers with start-engine.wav, and the fire input, which the voices follow.
     bool bThrustInput = false;
     bool bFireInput = false;
+    // The host's count of what the player collected, which a client hears its own pickups by.
+    uint32_t Collected = 0;
 };
 
 // Command-line cheats, which the original does not have (its own are typed codes): each holds for the whole game and none touches a demo.
@@ -5739,6 +5741,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 .ShieldMax = Each.Inventory.ShieldMax,
                 .bDown = Each.DownTimer.has_value(),
                 .bDead = Each.DeathTimer.has_value(),
+                .Collected = Each.Collected,
             });
             for (const FAmmoStock& Stock : Each.Inventory.Ammo)
             {
@@ -5868,6 +5871,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             {
                 ApplyShip(*Each, Sent.Ship);
             }
+            else if (Sent.Collected > Local.Collected && GameAudio)
+            {
+                GameAudio->PlayPickup();
+            }
+
+            Each->Collected = Sent.Collected;
 
             FPlayerInventory& Owned = Each->Inventory;
             Owned.bHit = Owned.bHit || Sent.Energy + Sent.Shield < Owned.Energy + Owned.Shield;
@@ -7141,9 +7150,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 {
                     FMessages Unheard;
                     const bool bLocal = &Each == &Local;
-                    if (!bPuppet && Each.State && Each.Class && !Each.DeathTimer && !Each.DownTimer &&
-                        CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Unheard, Combat ? &*Combat : nullptr, Each.Index, ActivePlayers(),
-                            bLocal ? nullptr : &Local.Inventory) != 0 && bLocal)
+                    const size_t Collected = !bPuppet && Each.State && Each.Class && !Each.DeathTimer && !Each.DownTimer
+                        ? CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Unheard, Combat ? &*Combat : nullptr, Each.Index, ActivePlayers(),
+                              bLocal ? nullptr : &Local.Inventory)
+                        : 0;
+                    Each.Collected += uint32_t(Collected);
+                    if (Collected != 0 && bLocal)
                     {
                         if (GameAudio)
                         {
