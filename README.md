@@ -4,7 +4,7 @@
 
 Native reimplementation of *Vyruz: Destruction of the Untel Empire* (2001, Metropolis Software / C2V) for Windows 11 and Linux (Wayland/X11). It reads the original game data; no game files are included.
 
-It matches the original one to one, so the whole game is there and can be completed. On top of that come wide screens without stretching, a gamepad, modern audio (distance fade, muffling, zone reverb), a blurred map overlay, subtle outlines of the player and enemies behind terrain, and modding through `--extract` and `--compress`. The `classic` branch keeps the original's rules.
+It matches the original one to one, so the whole game is there and can be completed. On top of that come a co-op campaign for up to four players over the network (LAN search or an address, saved games shared, downed teammates to revive), wide screens without stretching, a gamepad, modern audio (distance fade, muffling, zone reverb), a blurred map overlay, subtle outlines of the player and enemies behind terrain, and modding through `--extract` and `--compress`. The `classic` branch keeps the original's rules.
 
 ## Quick start
 
@@ -47,6 +47,7 @@ The Arch package and the other options are in the docs below.
 - [Player's manual](Docs/Manual.md): controls, weapons, enemies, pickups and levels
 - [Building](Docs/Building.md): Windows, Linux, the Arch package and CI
 - [Running](Docs/Running.md): the game data, command line, display, controls, settings and saves
+- [Co-op](Docs/Coop.md): hosting and joining, and the rules for playing together
 - [Tools and checks](Docs/Tools.md): modding, the archive checks and development aids
 - [Development](Docs/Development.md): source layout and the original's module map
 - [Roadmap](Docs/Roadmap.md): what comes after version 1
@@ -65,7 +66,7 @@ How the original works, as the port reimplements it:
 - [Audio](Docs/Audio.md)
 - [Intro](Docs/Intro.md) and its Indeo Video 5 decoder
 - [Extract and compress](Docs/Extract.md)
-- [Co-op](Docs/Coop.md), the port's own, and the original's [multiplayer](Docs/Multiplayer.md) as far as it is mapped
+- The original's [multiplayer](Docs/Multiplayer.md) as far as it is mapped
 
 ## License
 
