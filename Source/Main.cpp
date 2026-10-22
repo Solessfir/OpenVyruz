@@ -4167,7 +4167,9 @@ void FadeMenuBackdrop(GLFWwindow* const Window, FRenderer& Renderer, const FMenu
 }
 
 // MenuGame at 004223e0, the menu Escape opens during a level: Resume Game, Options, Retry Level (shown while there is a default session, which a running level always has) and End Game.
-std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings)
+// A co-op client has no Retry Level: the host's level is everyone's.
+std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, const FMenuSheets& Sheets, FRandom& Random, FSettings& Settings,
+    const bool bCanRetry)
 {
     if (GameAudio)
     {
@@ -4190,7 +4192,7 @@ std::optional<ELevelEnd> RunGameMenu(GLFWwindow* const Window, FRenderer& Render
         .Items = {
             { .Text = "Resume Game" },
             { .Text = "Options", .Help = "Video, Audio, Control, User settings, Language." },
-            { .Text = "Retry Level" },
+            bCanRetry ? FMenuItem{ .Text = "Retry Level" } : FMenuItem{},
             { .Text = "End Game" },
         },
         .DefaultItem = ResumeItem,
@@ -7236,7 +7238,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
 
                 FRandom MenuRandom;
-                const std::optional<ELevelEnd> Chosen = RunGameMenu(Window, Renderer, *MenuArt, *MenuSheets, Combat ? Combat->Random : MenuRandom, Settings);
+                const std::optional<ELevelEnd> Chosen = RunGameMenu(Window, Renderer, *MenuArt, *MenuSheets, Combat ? Combat->Random : MenuRandom, Settings, !bPuppet);
                 const std::optional<ELevelEnd> End = bWorldEndedUnderMenu ? std::nullopt : Chosen;
                 // MenuGame fades its backdrop out however it closes, with fade.wav unless the game ends, and only a resumed game fades back in.
                 if (End != ELevelEnd::Quit)
@@ -9395,7 +9397,8 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
         // A co-op client goes where the host does: the level it changed to, or the next one it announces.
         if (Coop && !Coop->IsHost())
         {
-            if (Coop->IsLost())
+            // A lost host, the client's End Game or its game over leaves the network game for the main menu.
+            if (Coop->IsLost() || End->Kind == ELevelEnd::Menu)
             {
                 Coop.reset();
                 bNetworkAwake = false;

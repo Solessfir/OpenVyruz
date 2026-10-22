@@ -12,3 +12,18 @@ Version 1, the single-player campaign with the intro and cutscenes, is done. Pla
   - **Lifts:** a lift waits until every standing player is in it.
   - **Saves:** the host's session is the game; saving plots save it for the team, and joining players play on the host's progress.
   - **Friendly fire:** none.
+  - **To fix**, from a code review of the co-op work:
+    - A waiting co-op lift charges its fare to the team purse, and uses up a limited lift, on every step a rider stays in it.
+    - The hunters' co-op toughening is saved into sessions and applied again on load, so a retry or a co-op save makes them tougher each time.
+    - A client's ship is made afresh on every level: its energy, shield, ammo and weapons are not carried over as the host's are.
+    - The inventory and help screens, and the lobby's saved-game list, stop the network and freeze the other players, who can time out.
+    - A surprise a client picks up is lost: the host's copy of that player never runs its surprises.
+    - Snapshots over one packet are sent reliably (ENet fragments them without `ENET_PACKET_FLAG_UNRELIABLE_FRAGMENT`), so they queue up behind lost packets.
+    - A client respawned after staying down comes back where it fell: only the host's copy moves.
+    - A client takes Level and Snapshot messages before the host has welcomed it, as after a refused Hello with another protocol version, and then plays as the host's slot; a refused client is not told why.
+    - A snapshot of the previous level can arrive after the next level's start and remove objects there by index.
+    - Closing the network link blocks for about 3 seconds on Windows.
+    - The host's switch away from an empty weapon and the client's own slot can flip back and forth, which skips the weapon's delay.
+    - Positions, poses and directions from the network are not range-checked.
+    - Actors knock only the nearest ship, downed or not, and a turret locked onto a downed ship keeps firing at it.
+    - The host hears its own voice lines for the other players' kills, hits and pickups.
