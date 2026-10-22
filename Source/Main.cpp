@@ -7398,13 +7398,18 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         // The darkness and the extasy surprises play their own tunes (SurpriseStart at 0041c390) and give the previous one back when they end (SurpriseEnd).
         if (GameAudio && Player && PlayerClass)
         {
-            if (Inventory.Energy > 0.f && !NextLevel)
+            // The port silences the motor and the weapon in hand under the pause; both start again with the game.
+            if (bPaused)
+            {
+                GameAudio->StopLevelChannels();
+            }
+            else if (Inventory.Energy > 0.f && !NextLevel)
             {
                 GameAudio->UpdateMotor(*Player, PlayerClass->ThrustMax, Inventory.Surprises.bBlockedMotor, bThrustInput);
             }
 
             // ObjectsUpdateWeaponSounds (0043df70): object flag 2 is the trigger, which a jammed weapon, a blocked motor and invisibility clear.
-            if (Combat && Inventory.Arms.Slot >= 1 && Inventory.Arms.Slot <= Combat->PlayerWeapons.size())
+            if (Combat && !bPaused && Inventory.Arms.Slot >= 1 && Inventory.Arms.Slot <= Combat->PlayerWeapons.size())
             {
                 if (HeardWeaponSwitches && *HeardWeaponSwitches != Inventory.Arms.Switches)
                 {
