@@ -7659,10 +7659,17 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         // The player's layers from its shadow GAF (AnimInitializeGraphics at 00417b30, kind 0x18), one frame per pose and left out while it fades (ObjectDraw at 00431ae0): the reactor glow under the body and over it while the reactor timer runs, grey as bright as the speed is a share of Thrust.Max, unless Reactor FX is off, and the front light, off while the motor is blocked or with low details.
-        if (Player && PlayerFade >= FullFade)
+        // Every co-op player has them; only the local one fades, the others show while visible.
+        for (const FLevelPlayer& Each : Players)
         {
-            const auto Shadow = Objects->SheetIndices.find(PlayerObject->ShadowGafPath);
-            const auto Body = std::ranges::find_if(Sprites, [&](const FObjectSprite& Sprite) { return Sprite.ObjectIndex == PlayerIndex && !Sprite.bShadow; });
+            const std::optional<FPlayerState>& Ship = Each.State;
+            if (!Ship || !Each.Class || (&Each == &Local ? PlayerFade < FullFade : Ship->bInvisible))
+            {
+                continue;
+            }
+
+            const auto Shadow = Objects->SheetIndices.find(Each.Object->ShadowGafPath);
+            const auto Body = std::ranges::find_if(Sprites, [&](const FObjectSprite& Sprite) { return Sprite.ObjectIndex == Each.Index && !Sprite.bShadow; });
             if (Shadow != Objects->SheetIndices.end() && Body != Sprites.end())
             {
                 const std::vector<Gaf::FAnimation>& Animations = Objects->Animations[Shadow->second];
@@ -7671,8 +7678,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 {
                     FObjectSprite Sprite = Base;
                     Sprite.SheetIndex = Shadow->second;
-                    const bool bShown = Animation <= Animations.size() && size_t(Player->Pose) <= Animations[Animation - 1].Frames.size();
-                    Sprite.Frame = bShown ? Animations[Animation - 1].Frames[size_t(Player->Pose - 1)] : Gaf::FAnimationFrame{};
+                    const bool bShown = Animation <= Animations.size() && size_t(Ship->Pose) <= Animations[Animation - 1].Frames.size();
+                    Sprite.Frame = bShown ? Animations[Animation - 1].Frames[size_t(Ship->Pose - 1)] : Gaf::FAnimationFrame{};
                     Sprite.Blend = Blend == ESpriteBlend::Opaque ? FrameBlend(Sprite.Frame) : Blend;
                     Sprite.Diffuse = Diffuse;
                     // The light layers set their own colour (ColorReset in ObjectDraw), without the body's glow.
@@ -7688,14 +7695,15 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 constexpr uint32_t ChannelMask = 0xff;
                 const size_t BodyAt = size_t(Body - Sprites.begin());
                 std::vector<FObjectSprite> After;
-                const bool bGlow = Settings.Details.bReactorFx && Player->ReactorMilliseconds != 0 && Player->Speed > 0.f && PlayerClass->ThrustMax > 0.f;
-                const uint32_t Grey = bGlow ? uint32_t(int64_t(double(Player->Speed) * FullGrey / double(PlayerClass->ThrustMax))) & ChannelMask : 0;
+                const float ThrustMax = Each.Class->ThrustMax;
+                const bool bGlow = Settings.Details.bReactorFx && Ship->ReactorMilliseconds != 0 && Ship->Speed > 0.f && ThrustMax > 0.f;
+                const uint32_t Grey = bGlow ? uint32_t(int64_t(double(Ship->Speed) * FullGrey / double(ThrustMax))) & ChannelMask : 0;
                 if (bGlow)
                 {
                     After.push_back(Layer(ReactorGlowAnimation, ESpriteBlend::Additive, Grey * GreyChannels));
                 }
 
-                if (!Inventory.Surprises.bBlockedMotor && !Settings.Details.bLowDetails)
+                if (!Each.Inventory.Surprises.bBlockedMotor && !Settings.Details.bLowDetails)
                 {
                     After.push_back(Layer(FrontLightAnimation, ESpriteBlend::Opaque, Base.Diffuse));
                 }
