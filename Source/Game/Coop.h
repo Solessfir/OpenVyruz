@@ -158,6 +158,9 @@ public:
     // Host: the messages a client's player is to see, which that client shows. Client: the messages sent to it since the last call.
     void SendMessages(uint8_t Slot, std::span<const std::pair<FMessage, EMessagePlacement>> Messages);
     std::vector<std::pair<FMessage, EMessagePlacement>> TakeMessages();
+    // Host: the voice lines of a client's player, which that client says. Client: the lines sent to it since the last call.
+    void SendVoices(uint8_t Slot, std::span<const FVoiceLine> Voices);
+    std::vector<FVoiceLine> TakeVoices() { return std::exchange(PendingVoices, {}); }
 
     // Client: asks the host to pause or go on. Host: how many such asks came since the last call.
     void RequestPause();
@@ -194,6 +197,7 @@ private:
     std::optional<FCoopSnapshot> PendingSnapshot;
     std::vector<FCoopCreated> PendingCreated;
     std::vector<std::pair<FMessage, EMessagePlacement>> PendingMessages;
+    std::vector<FVoiceLine> PendingVoices;
     // Host: every object created in the current level, for whoever joins during it.
     std::vector<FCoopCreated> AllCreated;
     uint32_t PauseRequests = 0;

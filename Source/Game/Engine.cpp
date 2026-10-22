@@ -1495,14 +1495,14 @@ std::vector<FObjectBody> CreateObjectBodies(const FLevel& Level)
 
 namespace
 {
-// The player nearest a body, whatever it can see, or none without players.
+// The player nearest a body, whatever it can see, or none without players. A co-op team's downed or dead players come after the standing ones, whom the enemies go for.
 const FPlayerTarget* NearestPlayer(const FObjectBody& Body, const FPlayerTargets Players)
 {
     const auto Squared = [&](const FPlayerTarget& Player)
     {
         const float X = Player.State.Center.X - Body.State.Center.X;
         const float Y = Player.State.Center.Y - Body.State.Center.Y;
-        return X * X + Y * Y;
+        return std::pair(Player.State.bDying, X * X + Y * Y);
     };
     const auto Nearest = std::ranges::min_element(Players, {}, Squared);
     return Nearest != Players.end() ? &*Nearest : nullptr;
@@ -3053,7 +3053,9 @@ void AreaDamage(FCombat& Combat, const FCollisionPoint Center, const FWorldCell 
                         constexpr uint32_t CryDelay = 500;
                         constexpr uint32_t CryDuration = 2000;
                         constexpr uint32_t CryHold = 5000;
+                        std::vector<FVoiceLine>* const Routed = RouteVoices(Player.Voices);
                         QueueVoice(Cries[Pick], CryDelay, CryDuration, CryHold);
+                        RouteVoices(Routed);
                     }
                 }
             }
@@ -6441,10 +6443,10 @@ void StepTurrets(FCombat& Combat, const uint32_t StepMilliseconds, const FTerrai
                 Turret.ScanTimer -= Step;
             }
         }
-        else if (Turret.ScanTimer < 1)
+        else if (const bool bDowned = Players.size() > 1 && Player.bDying; Turret.ScanTimer < 1 || bDowned)
         {
-            // At every scan a moved target breaks the lock; the next step scans again.
-            if (Player.Position.X != Turret.LockedTarget.X || Player.Position.Y != Turret.LockedTarget.Y)
+            // At every scan a moved target breaks the lock, and in co-op a downed one at once; the next step scans again.
+            if (bDowned || Player.Position.X != Turret.LockedTarget.X || Player.Position.Y != Turret.LockedTarget.Y)
             {
                 Turret.bLocked = false;
             }
@@ -6985,7 +6987,9 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
             {
                 constexpr uint32_t KillVoiceDelay = 1000;
                 constexpr uint32_t KillVoiceDuration = 1500;
+                std::vector<FVoiceLine>* const Routed = RouteVoices(Shooter ? Shooter->Voices : nullptr);
                 QueueVoice(KillVoices[Pick], KillVoiceDelay, KillVoiceDuration, 0);
+                RouteVoices(Routed);
             }
 
             // AmmoImpact (0043d350) puts the Hit-fx where the shot struck; a shot that sank to the ground leaves a Water-Splash on open water (its cell's terrain marker 0x100, CellsHaveMarker (0042c130))

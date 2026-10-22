@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Game/Animation.h"
+#include "Game/Audio.h"
 #include "Game/Collision.h"
 #include "Game/Message.h"
 #include "Game/Path.h"
@@ -978,6 +979,8 @@ struct FPlayerTarget
     std::string_view Name = "Jack";
     // The port's co-op: the inventory holding the team's money, keys and codes, null for the player's own (the first player's, or a lone one's).
     FPlayerInventory* Team = nullptr;
+    // The port's co-op: where another player's voice lines go, for its own machine to say; null for this machine's player.
+    std::vector<FVoiceLine>* Voices = nullptr;
 };
 
 // The inventory a player's money, keys and codes go to.

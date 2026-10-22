@@ -12,7 +12,3 @@ Version 1, the single-player campaign with the intro and cutscenes, is done. Pla
   - **Lifts:** a lift waits until every standing player is in it.
   - **Saves:** the host's session is the game; saving plots save it for the team, and joining players play on the host's progress.
   - **Friendly fire:** none.
-  - **To fix**, from a code review of the co-op work:
-    - Positions, poses and directions from the network are not range-checked.
-    - Actors knock only the nearest ship, downed or not, and a turret locked onto a downed ship keeps firing at it.
-    - The host hears its own voice lines for the other players' kills, hits and pickups.

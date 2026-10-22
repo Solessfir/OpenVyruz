@@ -88,6 +88,16 @@ enum class EVoice : uint8_t
 // VoiceQueue (00413200): queues a line to start after Delay ms, holding the voice channel for Duration ms and the queue entry Hold ms longer.
 // A line already queued is not queued again, and without voices nothing is. Returns whether it was queued.
 bool QueueVoice(EVoice Voice, uint32_t Delay, uint32_t Duration, uint32_t Hold);
+// A line as QueueVoice takes it.
+struct FVoiceLine
+{
+    EVoice Voice = EVoice::Code;
+    uint32_t Delay = 0;
+    uint32_t Duration = 0;
+    uint32_t Hold = 0;
+};
+// The port's co-op: while Lines is set, QueueVoice adds to it instead, for another player's lines that its own machine says; none says them here. Returns the routing it replaced.
+std::vector<FVoiceLine>* RouteVoices(std::vector<FVoiceLine>* Lines);
 // VoiceQueueClear (00411170): drops every queued line.
 void ClearVoices();
 // The session's game clock (+0x1020), whose low bits pick among several lines; the level loop sets it each step.

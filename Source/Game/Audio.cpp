@@ -9,6 +9,7 @@
 #include <array>
 #include <cctype>
 #include <format>
+#include <utility>
 
 namespace
 {
@@ -26,6 +27,7 @@ constexpr uint32_t HighPriorityBoost = 0x40;
 // The sound that the voice functions reach, as the original's globals do.
 FAudio* VoiceAudio = nullptr;
 uint32_t VoiceClock = 0;
+std::vector<FVoiceLine>* RoutedVoices = nullptr;
 
 // The voice queue runs on PgClockNow, which stands still while the game is inactive.
 uint64_t NowMilliseconds()
@@ -43,7 +45,18 @@ constexpr std::array<std::string_view, size_t(EVoice::WantMore) + 1> VoiceNames 
 
 bool QueueVoice(const EVoice Voice, const uint32_t Delay, const uint32_t Duration, const uint32_t Hold)
 {
+    if (RoutedVoices)
+    {
+        RoutedVoices->push_back({ .Voice = Voice, .Delay = Delay, .Duration = Duration, .Hold = Hold });
+        return false;
+    }
+
     return VoiceAudio && VoiceAudio->AddVoice(Voice, Delay, Duration, Hold);
+}
+
+std::vector<FVoiceLine>* RouteVoices(std::vector<FVoiceLine>* const Lines)
+{
+    return std::exchange(RoutedVoices, Lines);
 }
 
 void ClearVoices()

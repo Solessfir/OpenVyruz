@@ -18,6 +18,7 @@ enum class EMessage : uint8_t
     Created,
     Messages,
     Pause,
+    Voices,
     // Keeps its number and form in every protocol version, since it answers a client of another one.
     Refused = 0x80,
 };
@@ -463,6 +464,24 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
 
         break;
     }
+    case EMessage::Voices:
+    {
+        std::vector<FVoiceLine> Voices(GetCount(Reader));
+        for (FVoiceLine& Line : Voices)
+        {
+            Line.Voice = EVoice(std::min<uint8_t>(Reader.Get<uint8_t>(), uint8_t(EVoice::WantMore)));
+            Line.Delay = Reader.Get<uint32_t>();
+            Line.Duration = Reader.Get<uint32_t>();
+            Line.Hold = Reader.Get<uint32_t>();
+        }
+
+        if (!bHost && bWelcomed && Reader.IsGood())
+        {
+            PendingVoices.insert(PendingVoices.end(), Voices.begin(), Voices.end());
+        }
+
+        break;
+    }
     }
 }
 
@@ -637,6 +656,28 @@ void FCoopLink::SendMessages(const uint8_t Slot, const std::span<const std::pair
         Writer.Put(Message.Color.Specular);
         Writer.Put(Message.BlinkPeriod);
         Writer.Put(uint8_t(Placement));
+    }
+
+    Endpoint.Send(Peer->first, Writer.Data(), Net::EChannel::Reliable);
+}
+
+void FCoopLink::SendVoices(const uint8_t Slot, const std::span<const FVoiceLine> Voices)
+{
+    const auto Peer = std::ranges::find(PeerSlots, Slot, &std::pair<uint32_t, uint8_t>::second);
+    if (Peer == PeerSlots.end() || Voices.empty())
+    {
+        return;
+    }
+
+    Net::FWriter Writer;
+    Writer.Put(EMessage::Voices);
+    Writer.Put(uint32_t(Voices.size()));
+    for (const FVoiceLine& Line : Voices)
+    {
+        Writer.Put(uint8_t(Line.Voice));
+        Writer.Put(Line.Delay);
+        Writer.Put(Line.Duration);
+        Writer.Put(Line.Hold);
     }
 
     Endpoint.Send(Peer->first, Writer.Data(), Net::EChannel::Reliable);

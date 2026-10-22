@@ -4407,6 +4407,8 @@ struct FLevelPlayer
     bool bFireInput = false;
     // The host's count of what the player collected, which a client hears its own pickups by.
     uint32_t Collected = 0;
+    // The voice lines of a player other than the local one, which the host sends on to that player's machine.
+    std::vector<FVoiceLine> Voices;
     // What a player other than the local one is told, which the host sends on to that player's machine.
     FMessages Messages;
 };
@@ -5131,6 +5133,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // EngineReadActionKeys (0043b5c0) and InputActionPressed (0041d4c0) read the actions through the device's bindings (InputActionDown at 0041d650).
     const auto ActionDown = [&](const EAction Action) { return IsActionDown(Window, Settings.Controls(), Action) || IsGamepadActionDown(Action); };
     bool bEscapeDown = ActionDown(EAction::Menu);
+    // Where the voice lines of a player's pickups, surprises, kills and hits go: none for the host's or a lone game's own player, whose lines are said here, else the player's list, which the host sends on.
+    // A client says its own player's lines as the host sends them, so its own run of the same events says nothing.
+    const auto VoicesOf = [&](FLevelPlayer& Each) { return &Each == &Local && !bPuppet ? nullptr : &Each.Voices; };
     // The port's co-op: the lift, by index, that has said it waits for the others; it says so again only after everyone has left it.
     std::optional<size_t> LiftWait;
     // Whether a player stands fully inside a lift's box, as ObjectUpdateLevelExit asks of the rider.
@@ -5780,6 +5785,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     const size_t CurrentIndex = Current == DebugLevels.end() ? DebugLevels.size() : size_t(Current - DebugLevels.begin());
     // ReadPlayerInput through InputActionPressed (0041d4c0), the live part: the keys, the mouse's sight and the port's pad. It runs once per step of a living player.
     // A ship as the network carries it, and the state a remote one takes from it.
+    // The network's numbers are taken only as the game keeps them itself: finite, on the map, with directions and poses in range, so a bad packet reaches past no table.
+    const auto Finite = [](const auto... Values) { return (std::isfinite(Values) && ...); };
+    const auto OnMap = [&](const FCollisionPoint Point)
+    {
+        return FCollisionPoint{ .X = std::clamp(Point.X, 0.f, float(Level->WorldExtentX)), .Y = std::clamp(Point.Y, 0.f, float(Level->WorldExtentY)) };
+    };
+    const auto InDirections = [](const int32_t Direction) { return std::clamp(Direction, 0, ObjectDirectionCount - 1); };
     const auto MakeShip = [&](const FLevelPlayer& Each)
     {
         FCoopShip Ship{ .Slot = Each.Slot, .bFire = Each.bFireInput, .bThrust = Each.bThrustInput, .WeaponSlot = uint8_t(Each.Inventory.Arms.Slot), .Respawns = Each.Respawns };
@@ -5832,21 +5844,22 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     };
     const auto ApplyShip = [&](FLevelPlayer& Each, const FCoopShip& Ship)
     {
-        if (!Each.State)
+        if (!Each.State || !Finite(Ship.Position.X, Ship.Position.Y, Ship.Velocity.X, Ship.Velocity.Y, Ship.Speed, Ship.SpeedMagnitude))
         {
             return;
         }
 
-        NoteGlide(Each.Index, Ship.Position);
+        const FCollisionPoint Position = OnMap(Ship.Position);
+        NoteGlide(Each.Index, Position);
 
         FPlayerState& State = *Each.State;
         State.PreviousPosition = State.Position;
-        State.Position = Ship.Position;
-        State.Center = CollisionFromWorld(Ship.Position);
+        State.Position = Position;
+        State.Center = CollisionFromWorld(Position);
         State.Velocity = Ship.Velocity;
         State.Speed = Ship.Speed;
         State.SpeedMagnitude = Ship.SpeedMagnitude;
-        State.Direction = Ship.Direction;
+        State.Direction = InDirections(Ship.Direction);
         State.Pose = std::clamp(Ship.Pose, 1, PlayerPoseCount);
         State.TargetPose = std::clamp(Ship.TargetPose, 1, PlayerPoseCount);
         State.ReactorMilliseconds = Ship.ReactorMilliseconds;
@@ -5981,12 +5994,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     {
         for (const FCoopCreated& Object : Created)
         {
-            if (HostObjects.contains(Object.Object))
+            if (HostObjects.contains(Object.Object) || !Finite(Object.Position.X, Object.Position.Y))
             {
                 continue;
             }
 
-            if (const std::optional<size_t> Index = CreateLevelObject(*Level, Object.ClassName, Object.Position.X, Object.Position.Y))
+            const FCollisionPoint Position = OnMap(Object.Position);
+            if (const std::optional<size_t> Index = CreateLevelObject(*Level, Object.ClassName, Position.X, Position.Y))
             {
                 HostObjects[Object.Object] = *Index;
                 if (std::optional<FObjectBody> Body = CreateObjectBody(*Level, *Index))
@@ -6020,10 +6034,17 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         for (const FCoopPlayer& Sent : Snapshot.Players)
         {
+            if (!Finite(Sent.Ship.Position.X, Sent.Ship.Position.Y, Sent.Energy, Sent.EnergyMax, Sent.Shield, Sent.ShieldMax) ||
+                !std::ranges::all_of(Sent.Ammo, [](const float Count) { return std::isfinite(Count); }))
+            {
+                continue;
+            }
+
+            const FCollisionPoint SentPosition = OnMap(Sent.Ship.Position);
             FLevelPlayer* Each = PlayerInSlot(Sent.Ship.Slot);
             if (!Each && Sent.Ship.Slot != Local.Slot && PlayerObject)
             {
-                Each = AddPlayer(Sent.Ship.Slot, Sent.Name, Sent.Ship.Position.X, Sent.Ship.Position.Y);
+                Each = AddPlayer(Sent.Ship.Slot, Sent.Name, SentPosition.X, SentPosition.Y);
                 if (Each)
                 {
                     Each->bRemote = true;
@@ -6048,8 +6069,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             // The host brought this machine's ship back where the team last saved.
             if (Each == &Local && Sent.Ship.Respawns != Local.Respawns)
             {
-                Local.State->Position = Local.State->PreviousPosition = Sent.Ship.Position;
-                Local.State->Center = CollisionFromWorld(Sent.Ship.Position);
+                Local.State->Position = Local.State->PreviousPosition = SentPosition;
+                Local.State->Center = CollisionFromWorld(SentPosition);
                 Local.State->Velocity = {};
                 Local.Respawns = Sent.Ship.Respawns;
             }
@@ -6062,7 +6083,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             {
                 if (Sent.Surprise > uint8_t(ESurprise::Random) && Sent.Surprise <= uint8_t(ESurprise::Nop))
                 {
+                    RouteVoices(VoicesOf(Local));
                     CollectSurprise(*Combat, Owned, ESurprise(Sent.Surprise), Messages);
+                    RouteVoices(nullptr);
                 }
 
                 Owned.Surprises.Collected = Sent.Surprises;
@@ -6104,25 +6127,28 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         {
             const std::optional<size_t> Index = LocalObject(Sent.Object);
             FObjectBody* const Body = Index && *Index < BodyOf.size() ? BodyOf[*Index] : nullptr;
-            if (!Body)
+            if (!Body || !Finite(Sent.Position.X, Sent.Position.Y, Sent.Energy, Sent.Shield))
             {
                 continue;
             }
 
-            NoteGlide(Body->ObjectIndex, Sent.Position);
+            // An actor has its poses per direction for each direction; no other body goes past the player's 48.
+            const FCollisionPoint Position = OnMap(Sent.Position);
+            const int32_t Poses = Body->Actor ? ObjectDirectionCount * Body->Actor->PosesPerDirection : PlayerPoseCount;
+            NoteGlide(Body->ObjectIndex, Position);
             Body->State.PreviousPosition = Body->State.Position;
-            Body->State.Position = Sent.Position;
-            Body->State.Center = CollisionFromWorld(Sent.Position);
-            Body->State.Direction = Sent.Direction;
-            Body->State.Pose = Sent.Pose;
+            Body->State.Position = Position;
+            Body->State.Center = CollisionFromWorld(Position);
+            Body->State.Direction = InDirections(Sent.Direction);
+            Body->State.Pose = std::clamp(Sent.Pose, Body->Actor ? 1 : 0, Poses);
             if (Body->Actor)
             {
-                Body->Actor->TopPose = Sent.TopPose;
+                Body->Actor->TopPose = std::clamp(Sent.TopPose, 1, Poses);
             }
 
             if (Body->Turret)
             {
-                Body->Turret->Direction = Sent.TurretDirection;
+                Body->Turret->Direction = InDirections(Sent.TurretDirection);
             }
 
             Body->Energy = Sent.Energy;
@@ -6434,6 +6460,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         if (&Each != &Local)
                         {
                             Coop->SendMessages(Each.Slot, Each.Messages.TakeForwarded());
+                            Coop->SendVoices(Each.Slot, Each.Voices);
                         }
 
                         // A ship sent before its owner learnt of its last respawn would put it back where it fell.
@@ -6462,6 +6489,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         Messages.Add(std::move(Message), Placement);
                     }
 
+                    for (const FVoiceLine& Line : Coop->TakeVoices())
+                    {
+                        QueueVoice(Line.Voice, Line.Delay, Line.Duration, Line.Hold);
+                    }
+
                     // Once the host has moved on, what it makes and sends is the next level's, and this level's ship would land there.
                     if (!NextLevel)
                     {
@@ -6478,6 +6510,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         }
                     }
                 }
+            }
+
+            // Another player's lines have gone to its machine, or have none to go to, as a client's copies of the others or the dummy.
+            for (FLevelPlayer& Each : Players)
+            {
+                Each.Voices.clear();
             }
 
             uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
@@ -6622,7 +6660,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         // The player's update starts with its surprises (FUN_0041d290). The host runs a remote player's too, for what they do to its numbers, weapons and foes; its own machine runs them for the ship's handling and look.
                         if (Combat)
                         {
+                            RouteVoices(VoicesOf(Each));
                             StepSurprises(*Combat, *Level, Bodies, State, Each.Index, *Each.Class, Owned, MessagesOf(Each), StepMilliseconds);
+                            RouteVoices(nullptr);
                         }
 
                         // A remote ship moves by what the network says.
@@ -6669,7 +6709,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                         if (const FObjectBody* const Struck = StepPlayer(State, Movement, Command, StepMilliseconds, *Terrain, *Level, Bodies))
                         {
+                            RouteVoices(bLocal ? nullptr : &Each.Voices);
                             ReportDoorContact(*Doors, *Struck, State, Local.Inventory, MessagesOf(Each));
+                            RouteVoices(nullptr);
                         }
 
                         if (Combat)
@@ -6702,6 +6744,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                                 .ObjectIndex = Each.Index,
                                 .Name = &Each == &Local ? std::string_view(Settings.PlayerName) : std::string_view(Each.Name),
                                 .Team = &Each == &Local ? nullptr : &Local.Inventory,
+                                .Voices = VoicesOf(Each),
                             });
                         }
                     }
@@ -7134,10 +7177,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     for (FLevelPlayer& Each : Players)
                     {
                         const bool bLocal = &Each == &Local;
+                        RouteVoices(VoicesOf(Each));
                         const size_t Collected = !bPuppet && Each.State && Each.Class && !Each.DeathTimer && !Each.DownTimer
                             ? CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Each.Messages, Combat ? &*Combat : nullptr, Each.Index, ActivePlayers(),
                                   bLocal ? nullptr : &Local.Inventory)
                             : 0;
+                        RouteVoices(nullptr);
                         Each.Collected += uint32_t(Collected);
                         if (Collected != 0 && bLocal)
                         {
