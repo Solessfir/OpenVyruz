@@ -1284,10 +1284,18 @@ void StepFullscreenKey(GLFWwindow* const Window)
 
 // A network game never stands still for a window out of focus, since the other players go on.
 bool bNetworkAwake = false;
+// A network game's world, which goes on while a menu is up over its level; it tells when the level has ended under the menu, which then closes every menu.
+std::function<bool()> WorldUnderMenu;
+bool bWorldEndedUnderMenu = false;
 
 void PollEvents(GLFWwindow* const Window)
 {
     glfwPollEvents();
+    if (WorldUnderMenu && !bWorldEndedUnderMenu)
+    {
+        bWorldEndedUnderMenu = WorldUnderMenu();
+    }
+
     StepFullscreenKey(Window);
     StepMouseWheel();
     StepGamepad(ClockMilliseconds());
@@ -1647,7 +1655,7 @@ std::optional<size_t> RunMenu(GLFWwindow* const Window, FRenderer& Renderer, con
     FFrameClock Clock(FramePeriod);
     FInputPress AnyInput(Window);
     int64_t IdleLeft = Menu.IdleMilliseconds;
-    while (!glfwWindowShouldClose(Window))
+    while (!glfwWindowShouldClose(Window) && !bWorldEndedUnderMenu)
     {
         PollEvents(Window);
         const bool bAnyInput = AnyInput.Poll();
@@ -6202,6 +6210,825 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         return Intent;
     };
 
+    // The frame's steps, which a recording's frame end and the frame's step counts come out of for the draw pass.
+    bool bRecordedSteps = false;
+    std::optional<uint32_t> RecordedDrawStep;
+    size_t FrameSteps = 0;
+    size_t FrameFullUpdates = 0;
+    // A menu is up over a network game's level, which goes on while the local ship waits.
+    bool bInMenu = false;
+    // The network and the world's steps for the time gone by, which a network game also runs while a menu is up over the level.
+    const auto AdvanceWorld = [&]() -> std::optional<FLevelEnd>
+    {
+            // The network: the host takes in who joined and left and every client's ship; a client follows the host's level and world and sends its own ship.
+            if (Coop)
+            {
+                Coop->Poll();
+                constexpr uint32_t ShipPeriodMilliseconds = 16;
+                if (Coop->IsHost())
+                {
+                    for (const uint8_t Slot : Coop->TakeJoined())
+                    {
+                        const auto Member = std::ranges::find(Coop->GetMembers(), Slot, &FCoopMember::Slot);
+                        if (!PlayerInSlot(Slot) && Player && Member != Coop->GetMembers().end())
+                        {
+                            constexpr float JoinGap = 64.f;
+                            if (FLevelPlayer* const Added = AddPlayer(Slot, Member->Name, Player->Position.X + JoinGap, Player->Position.Y))
+                            {
+                                Added->bRemote = true;
+                            }
+                        }
+                    }
+
+                    for (const uint8_t Slot : Coop->TakeLeft())
+                    {
+                        if (FLevelPlayer* const Gone = PlayerInSlot(Slot))
+                        {
+                            Gone->State.reset();
+                            Gone->Object->bRemoved = true;
+                        }
+                    }
+
+                    RescaleHunters();
+                    bPaused = Coop->TakePauseRequests() % 2 != 0 ? !bPaused : bPaused;
+                    for (FLevelPlayer& Each : Players)
+                    {
+                        if (&Each != &Local)
+                        {
+                            Coop->SendMessages(Each.Slot, Each.Messages.TakeForwarded());
+                        }
+
+                        if (const std::optional<FCoopShip> Ship = Each.bRemote ? Coop->TakeShip(Each.Slot) : std::nullopt)
+                        {
+                            ApplyShip(Each, *Ship);
+                        }
+                    }
+                }
+                else
+                {
+                    if (Coop->IsLost())
+                    {
+                        return FLevelEnd{ .Kind = ELevelEnd::Menu };
+                    }
+
+                    if (std::optional<std::string> Next = Coop->TakeLevel(); Next && !NextLevel)
+                    {
+                        NextLevel = std::move(*Next);
+                    }
+
+                    TakeCreated(Coop->TakeCreated());
+                    // The host placed its screen messages in a 640-pixel view; this one may be wider.
+                    for (auto& [Message, Placement] : Coop->TakeMessages())
+                    {
+                        Message.X += Message.bWorld ? 0.f : float((Messages.ViewWidth - int32_t(ScreenWidth)) / 2);
+                        Messages.Add(std::move(Message), Placement);
+                    }
+
+                    if (const std::optional<FCoopSnapshot> Snapshot = Coop->TakeSnapshot())
+                    {
+                        TakeSnapshot(*Snapshot);
+                    }
+
+                    if (ClockMilliseconds() - ShipAt >= ShipPeriodMilliseconds)
+                    {
+                        ShipAt = ClockMilliseconds();
+                        Coop->SendShip(MakeShip(Local));
+                    }
+                }
+            }
+
+            uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
+            // A network game's world goes on under the page, since the others play on; the reader's ship only waits.
+            if (bPaused || (!PageText.empty() && !Coop) || (MenuFadeStep < MenuFadeSteps && !Coop) || LiftFadeStep)
+            {
+                RemainingMilliseconds = 0;
+            }
+
+            if (DemoStep < DemoSteps.size())
+            {
+                DemoBudget += RemainingMilliseconds;
+                RemainingMilliseconds = 0;
+            }
+
+            // The draw pass advances by the frame's last step (session +0x101c). Playing a recording, that is the last step of each recorded frame that ends this frame, so the draw pass keeps the recording machine's pace; none ending, nothing advances.
+            bRecordedSteps = DemoStep < DemoSteps.size();
+            RecordedDrawStep.reset();
+            const auto NextStep = [&]() -> std::optional<uint32_t>
+            {
+                if (DemoStep < DemoSteps.size())
+                {
+                    if (DemoBudget < DemoSteps[DemoStep])
+                    {
+                        return std::nullopt;
+                    }
+
+                    DemoBudget -= DemoSteps[DemoStep];
+                    if (DemoFrameEnds[DemoStep])
+                    {
+                        RecordedDrawStep = DemoSteps[DemoStep];
+                    }
+
+                    return DemoSteps[DemoStep++];
+                }
+
+                return RemainingMilliseconds != 0 ? std::optional(NextGameStep(RemainingMilliseconds, FramePeriod, Demo != nullptr)) : std::nullopt;
+            };
+            // VoiceQueueUpdate (004132e0) runs at the start of the full EngineUpdateObjects, so a frame of Time Warp's player-only steps leaves the queue alone.
+            FrameSteps = 0;
+            FrameFullUpdates = 0;
+            while (const std::optional<uint32_t> NextStepMilliseconds = NextStep())
+            {
+                const uint32_t StepMilliseconds = *NextStepMilliseconds;
+                // DemoReplayStep (004291d0) takes the next record's input once the game clock reaches its time, staying on the last record; then EngineReplayActionKeys (0043bb00) replays its actions, of which 0x8000 (action-menu) ends the demo.
+                uint32_t DemoInput = 0;
+                if (Demo && Combat && Player)
+                {
+                    if (Combat->Clock >= (*Demo)[DemoCursor].Time)
+                    {
+                        DemoInput = (*Demo)[DemoCursor].Input;
+                        DemoCursor = std::min(DemoCursor + 1, Demo->size() - 1);
+                    }
+
+                    constexpr uint32_t NextWeaponBit = 0x100;
+                    constexpr uint32_t MapBit = 0x400;
+                    constexpr uint32_t CyclePanelsBit = 0x4000;
+                    constexpr uint32_t MenuBit = 0x8000;
+                    constexpr uint32_t FirstWeaponBit = 0x10000;
+                    if ((DemoInput & CyclePanelsBit) != 0 && Panel)
+                    {
+                        Panel->CyclePanels(false);
+                    }
+
+                    if ((DemoInput & MapBit) != 0)
+                    {
+                        ToggleMap();
+                    }
+
+                    if ((DemoInput & NextWeaponBit) != 0)
+                    {
+                        SelectPlayerWeapon(*Combat, NextPlayerWeaponSlot(*Combat, Inventory), Inventory, Messages);
+                    }
+
+                    for (size_t Slot = 1; Slot < WeaponKeyCount; ++Slot)
+                    {
+                        if ((DemoInput & (FirstWeaponBit << (Slot - 1))) != 0)
+                        {
+                            // PlayerSelectWeaponAction (0043bad0) switches only to another slot.
+                            if (Inventory.Arms.Slot != Slot)
+                            {
+                                SelectPlayerWeapon(*Combat, Slot, Inventory, Messages);
+                            }
+
+                            break;
+                        }
+                    }
+
+                    if ((DemoInput & MenuBit) != 0)
+                    {
+                        return FLevelEnd{ .Kind = ELevelEnd::Menu };
+                    }
+                }
+
+                const auto Pressed = [Window](const int Key) { return glfwGetKey(Window, Key) == GLFW_PRESS; };
+                if (Player)
+                {
+                    // EngineUpdateObjects clears the lock before its objects update, dead player or not; nothing locks onto a dead player again.
+                    for (FLevelPlayer& Each : Players)
+                    {
+                        Each.Inventory.Arms.bLocked = false;
+                    }
+
+                    // The messages of a player other than the local one have no screen to show on.
+                    FMessages Unseen;
+                    const auto MessagesOf = [&](const FLevelPlayer& Each) -> FMessages& { return &Each == &Local ? Messages : Unseen; };
+                    // The dead player's object skips its updates until the timer ends the game (game update result 0).
+                    if (DeathTimer && *DeathTimer - int32_t(StepMilliseconds) <= 0)
+                    {
+                        *DeathTimer -= int32_t(StepMilliseconds);
+                        break;
+                    }
+
+                    for (FLevelPlayer& Each : Players)
+                    {
+                        if (!Each.State || !Each.Class)
+                        {
+                            continue;
+                        }
+
+                        FPlayerState& State = *Each.State;
+                        FPlayerInventory& Owned = Each.Inventory;
+                        const bool bLocal = &Each == &Local;
+                        if (Each.DeathTimer)
+                        {
+                            *Each.DeathTimer -= int32_t(StepMilliseconds);
+                            StepDeathDrift(Each.DeathDrift, State, *Level, StepMilliseconds);
+                            continue;
+                        }
+
+                        // A remote ship moves by what the network says.
+                        if (Each.bRemote)
+                        {
+                            continue;
+                        }
+
+                        // A downed ship coasts to a stop and can still be pushed, but takes no command and no surprise.
+                        if (Each.DownTimer)
+                        {
+                            StepPlayer(State, *Each.Class, {}, StepMilliseconds, *Terrain, *Level, Bodies);
+                            continue;
+                        }
+
+                        // The player's update starts with its surprises (FUN_0041d290).
+                        if (Combat)
+                        {
+                            StepSurprises(*Combat, *Level, Bodies, State, *Each.Class, Owned, MessagesOf(Each), StepMilliseconds);
+                        }
+
+                        StepCodeTimeouts(Owned, *Level, MessagesOf(Each), StepMilliseconds);
+
+                        // Only the local player has keys, a mouse and a pad here; until the others' input comes from elsewhere, they follow it.
+                        const FPlayerIntent Intent = !bLocal ? FollowIntent(State) : PageText.empty() && !bInMenu ? ReadPlayerIntent() : FPlayerIntent{};
+                        Each.bThrustInput = IsThrustIntent(Intent, Owned.Surprises, bFinaleStarted);
+                        FPlayerCommand Command = PlayerCommandFromIntent(Intent, Owned.Surprises, bFinaleStarted);
+                        // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its velocity in collision units, and drives with the replayed input.
+                        if (bLocal && Demo && DemoCursor >= 1)
+                        {
+                            const FDemoRecord& Placed = (*Demo)[DemoCursor - 1];
+                            if (State.Position.X != Placed.X || State.Position.Y != Placed.Y)
+                            {
+                                State.Position = { .X = Placed.X, .Y = Placed.Y };
+                                State.Center = CollisionFromWorld(State.Position);
+                                const FCollisionPoint Before = CollisionFromWorld(State.PreviousPosition);
+                                State.Velocity = { .X = State.Center.X - Before.X, .Y = State.Center.Y - Before.Y };
+                            }
+
+                            if (Placed.Direction >= 0 && Placed.Direction < ObjectDirectionCount)
+                            {
+                                State.Direction = Placed.Direction;
+                                State.Pose = State.TargetPose = Placed.Direction * (PlayerPoseCount / ObjectDirectionCount) + 1;
+                            }
+
+                            Command = PlayerCommandFromInput(DemoInput);
+                            Each.bThrustInput = (DemoInput & PlayerInputForward) != 0;
+                        }
+
+                        FMovementClass Movement = *Each.Class;
+                        Movement.TurnTimeout = int(float(Movement.TurnTimeout) / Intent.TurnRate);
+                        if (Intent.Throttle)
+                        {
+                            Movement.SpeedMax *= *Intent.Throttle;
+                            Command.Strafe *= *Intent.Throttle;
+                        }
+
+                        if (const FObjectBody* const Struck = StepPlayer(State, Movement, Command, StepMilliseconds, *Terrain, *Level, Bodies))
+                        {
+                            ReportDoorContact(*Doors, *Struck, State, Local.Inventory, MessagesOf(Each));
+                        }
+
+                        if (Combat)
+                        {
+                            ThrowPlayerBounceSpark(*Combat, State, Owned.Surprises.Active);
+                        }
+
+                        // EngineUpdateObjects puts the sound listener where the player stands (SoundSetListener at 0045edb0).
+                        if (bLocal)
+                        {
+                            SetSoundListener(State.Position.X, State.Position.Y, Each.Object->Altitude);
+                            if (Combat)
+                            {
+                                SetVoiceClock(Combat->Clock);
+                                StepPlayerVoices(Combat->Clock, Each.bFireInput);
+                            }
+                        }
+                    }
+
+                    // Every player meets the step's bodies, actors, doors, generators, turrets and shots, each as its own target.
+                    std::vector<FPlayerTarget> Targets;
+                    for (FLevelPlayer& Each : Players)
+                    {
+                        if (Each.State && Each.Class)
+                        {
+                            Targets.push_back({
+                                .State = *Each.State,
+                                .Radius = Each.Class->Radius,
+                                .Inventory = Each.Inventory,
+                                .ObjectIndex = Each.Index,
+                                .Name = &Each == &Local ? std::string_view(Settings.PlayerName) : std::string_view(Each.Name),
+                                .Team = &Each == &Local ? nullptr : &Local.Inventory,
+                            });
+                        }
+                    }
+
+                    // EngineRunLevel runs the full EngineUpdateObjects only when Time Warp's counter (session +0x21f0) has run out, then sets it to the divisor (+0x21f4);
+                    // the steps between update the player alone, so the rest of the level moves at a quarter of its speed. The local player's Time Warp sets the pace.
+                    FSurpriseState& Warp = Inventory.Surprises;
+                    const bool bFullUpdate = Warp.WarpCounter-- == 0;
+                    ++FrameSteps;
+                    FrameFullUpdates += bFullUpdate ? 1 : 0;
+                    if (bFullUpdate)
+                    {
+                        Warp.WarpCounter = Warp.WarpDivisor;
+                        const std::vector<FCollisionPoint> Pushes = StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level, Targets);
+                        // The pushes come in the targets' order, which is the players' with a ship.
+                        size_t Target = 0;
+                        for (FLevelPlayer& Each : Players)
+                        {
+                            if (!Each.State || !Each.Class)
+                            {
+                                continue;
+                            }
+
+                            FPlayerState& State = *Each.State;
+                            const FCollisionPoint Push = Pushes[Target++];
+                            State.Velocity.X = float(double(Push.X) + double(State.Velocity.X));
+                            State.Velocity.Y = float(double(Push.Y) + double(State.Velocity.Y));
+                            State.bPushed = State.bPushed || Push.X != 0.f || Push.Y != 0.f;
+                        }
+                    }
+
+                    // The bodies' shields rise with the local player's while it lives.
+                    for (FLevelPlayer& Each : Players)
+                    {
+                        if (Each.State && !Each.DeathTimer && !Each.DownTimer)
+                        {
+                            StepShields(bFullUpdate && &Each == &Local ? std::span<FObjectBody>(Bodies) : std::span<FObjectBody>(), *Level, Each.Inventory);
+                        }
+                    }
+
+                    if (bFullUpdate && !bFinaleStarted)
+                    {
+                        StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, Targets);
+                    }
+
+                    const auto TakeLift = [&](const FDoor& Lift)
+                    {
+                        // A starred 3do-file (only "*End of Tower 3*" in the campaign) ends the game instead of loading a level.
+                        NextLevel = Lift.NextLevel.starts_with('*') ? Lift.NextLevel : NextLevelPath(LevelPath, Lift);
+                        // ObjectUpdateLevelExit drops the queued lines and says Well Done.
+                        constexpr uint32_t WellDoneHold = 10000;
+                        ClearVoices();
+                        if (QueueVoice(EVoice::WellDone, 0, VoiceDuration, WellDoneHold) && GameAudio)
+                        {
+                            GameAudio->UpdateVoices();
+                        }
+                    };
+                    // A lift everyone has left again no longer waits, so the team may take another.
+                    const auto Standing = [](const FLevelPlayer& Each) { return Each.State && !Each.DownTimer && !Each.DeathTimer; };
+                    if (LiftWait && std::ranges::none_of(Players, [&](const FLevelPlayer& Each) { return LiftHolds((*Doors)[*LiftWait], Each); }))
+                    {
+                        LiftWait.reset();
+                    }
+
+                    if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, Targets, StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer && !LiftWait && !bPuppet)
+                    {
+                        // In co-op the lift waits until every standing player is in it, so nobody is taken along from elsewhere.
+                        if (IsCoop())
+                        {
+                            constexpr uint32_t LiftColor = 0xffc040;
+                            LiftWait = size_t(Lift - Doors->data());
+                            const auto Rider = std::ranges::find_if(Players, [&](const FLevelPlayer& Each)
+                                { return LiftHolds(*Lift, Each); });
+                            const FLevelPlayer& Subject = Rider == Players.end() ? Local : *Rider;
+                            SayToPlayers(Subject, Format("The lift waits for the others."), Format("%s is in the lift !\nJoin them to go on.", NameOf(Subject)), LiftColor);
+                        }
+                        else
+                        {
+                            TakeLift(*Lift);
+                        }
+                    }
+
+                    // A downed or dead player is not waited for.
+                    if (LiftWait && !NextLevel && !DeathTimer)
+                    {
+                        const FDoor& Lift = (*Doors)[*LiftWait];
+                        if (std::ranges::all_of(Players, [&](const FLevelPlayer& Each) { return !Standing(Each) || LiftHolds(Lift, Each); }))
+                        {
+                            TakeLift(Lift);
+                            LiftWait.reset();
+                        }
+                    }
+                    if (Combat)
+                    {
+                        // Each player's numbers before the step's shots and blasts, which the finale keeps and the local player's hit flash and log compare against.
+                        struct FBefore
+                        {
+                            float Money = 0.f;
+                            float Energy = 0.f;
+                            float Shield = 0.f;
+                        };
+                        std::vector<FBefore> Before;
+                        for (const FLevelPlayer& Each : Players)
+                        {
+                            Before.push_back({ .Money = Each.Inventory.Money });
+                        }
+
+                        Combat->Clock += StepMilliseconds;
+                        for (size_t Index = 0; Index < Players.size(); ++Index)
+                        {
+                            Before[Index].Energy = Players[Index].Inventory.Energy;
+                            Before[Index].Shield = Players[Index].Inventory.Shield;
+                        }
+
+                        if (bFullUpdate && !bFinaleStarted)
+                        {
+                            StepGenerators(*Combat, *Level, Bodies, Targets, StepMilliseconds);
+                        }
+
+                        constexpr uint32_t FireBit = 0x2;
+                        for (FLevelPlayer& Each : Players)
+                        {
+                            if (!Each.State)
+                            {
+                                continue;
+                            }
+
+                            const bool bLiveFire = Each.DownTimer ? false : Each.bRemote ? Each.bNetFire : &Each != &Local || !PageText.empty() || bInMenu ? false : Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
+                            Each.bFireInput = bLiveFire;
+                            const bool bFire = !Each.Inventory.Surprises.bBlockedMotor && !bFinaleStarted && bLiveFire;
+                            if (!Each.DeathTimer && !Each.DownTimer)
+                            {
+                                StepPlayerWeapon(*Combat, bFire, *Each.State, *Each.Object, Each.Index, Each.SpriteSize, Each.Inventory, MessagesOf(Each));
+                            }
+                        }
+
+                        if (bFullUpdate)
+                        {
+                            if (!bFinaleStarted)
+                            {
+                                StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Targets);
+                            }
+
+                            StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Targets, Messages);
+                        }
+
+                        for (FLevelPlayer& Each : Players)
+                        {
+                            if (!Each.State)
+                            {
+                                continue;
+                            }
+
+                            FPlayerState& State = *Each.State;
+                            FPlayerInventory& Owned = Each.Inventory;
+                            State.Velocity = { .X = State.Velocity.X + Owned.Shove.X, .Y = State.Velocity.Y + Owned.Shove.Y };
+                            Owned.Shove = {};
+                            // EngineRunLevel each step: once the fast-kill window closes with the player alive, two or more kills in it pay ((kills - 2) * 5 + 10) * 1000, say so for 8 seconds in red v-bonus font 5, fading, and cheer by the game clock.
+                            if (Owned.Arms.FastKillTimer > int32_t(StepMilliseconds))
+                            {
+                                Owned.Arms.FastKillTimer -= int32_t(StepMilliseconds);
+                            }
+                            else if (Owned.Energy > 0.f)
+                            {
+                                Owned.Arms.FastKillTimer = 0;
+                                if (Owned.Arms.FastKillCount > 1)
+                                {
+                                    constexpr int32_t BonusX = 100;
+                                    constexpr int32_t BonusRise = 0x66;
+                                    constexpr uint32_t BonusLifeMilliseconds = 8000;
+                                    constexpr uint32_t BonusFont = 5;
+                                    constexpr uint32_t BonusColor = 0xff2010;
+                                    constexpr int32_t BonusBlinkMilliseconds = 10;
+                                    const int32_t Bonus = ((Owned.Arms.FastKillCount - 2) * 5 + 10) * 1000;
+                                    Local.Inventory.Money += float(Bonus);
+                                    Local.Inventory.Earned += float(Bonus);
+                                    if (&Each == &Local)
+                                    {
+                                        Messages.Add({
+                                            .Text = Format("Well done %s !!!\nFast Kill Bonus +%d $", Settings.PlayerName, Bonus),
+                                            .X = float(BonusX),
+                                            .Y = float(int32_t(ScreenHeight) / 2 - BonusRise),
+                                            .LifeMilliseconds = BonusLifeMilliseconds,
+                                            .bTypewriter = true,
+                                            .Gaf = EMessageGaf::Bonus,
+                                            .Font = BonusFont,
+                                            .Color = { .Diffuse = BonusColor },
+                                            .BlinkPeriod = BonusBlinkMilliseconds,
+                                            .bFade = true,
+                                        }, EMessagePlacement::Always);
+                                        constexpr std::array FastKillVoices = { EVoice::WellDone, EVoice::Yeepee, EVoice::ComeOn, EVoice::Ariba, EVoice::Laugh, EVoice::TheBest, EVoice::WantMore,
+                                            EVoice::Hey };
+                                        constexpr uint32_t CheerDelay = 500;
+                                        constexpr uint32_t CheerDuration = 1000;
+                                        constexpr uint32_t CheerHold = 5000;
+                                        QueueVoice(FastKillVoices[Combat->Clock % FastKillVoices.size()], CheerDelay, CheerDuration, CheerHold);
+                                    }
+                                }
+
+                                Owned.Arms.FastKillCount = 0;
+                            }
+                        }
+
+                        // FUN_0043db70 starts the finale: the motor channel stops and Yeepee replaces the queued lines. With Gamma FX each flash plays electric.wav.
+                        if (Combat->bFinale && !bFinaleStarted)
+                        {
+                            bFinaleStarted = true;
+                            FinaleTimer = FinaleMilliseconds;
+                            FinaleFlashTimer = FinaleFlashMilliseconds;
+                            bFinaleFlash = true;
+                            constexpr uint32_t YeepeeHold = 10000;
+                            ClearVoices();
+                            if (QueueVoice(EVoice::Yeepee, 0, VoiceDuration, YeepeeHold) && GameAudio)
+                            {
+                                GameAudio->UpdateVoices();
+                            }
+
+                            if (GameAudio)
+                            {
+                                GameAudio->StopMotor();
+                                if (Settings.Details.bGammaFx)
+                                {
+                                    GameAudio->PlayFinaleFlash();
+                                }
+                            }
+                        }
+                        else if (FinaleTimer > 0 && Settings.Details.bGammaFx && FinaleTimer >= FinaleFadeMilliseconds)
+                        {
+                            FinaleFlashTimer -= int32_t(StepMilliseconds);
+                            if (FinaleFlashTimer < 1)
+                            {
+                                FinaleFlashTimer = FinaleFlashMilliseconds;
+                                bFinaleFlash = true;
+                                if (GameAudio)
+                                {
+                                    GameAudio->PlayFinaleFlash();
+                                }
+                            }
+                        }
+
+                        if (FinaleTimer > 0)
+                        {
+                            FinaleTimer -= int32_t(StepMilliseconds);
+                            if (FinaleTimer <= 0 && !NextLevel)
+                            {
+                                bShowNetworkFailure = true;
+                                NextLevel = "*";
+                            }
+                        }
+
+                        for (size_t Index = 0; Index < Players.size(); ++Index)
+                        {
+                            FLevelPlayer& Each = Players[Index];
+                            FPlayerInventory& Owned = Each.Inventory;
+                            const bool bLocal = &Each == &Local;
+                            if (!Each.State)
+                            {
+                                continue;
+                            }
+
+                            if (bLocal && (Owned.Money != Before[Index].Money || Owned.Energy != Before[Index].Energy || Owned.Shield != Before[Index].Shield))
+                            {
+                                std::printf("Energy %.0f, shield %.0f, money %.0f\n", Owned.Energy, Owned.Shield, Owned.Money);
+                                std::fflush(stdout);
+                            }
+
+                            // Shots and blasts still in flight during the finale leave the players unharmed.
+                            if (bFinaleStarted)
+                            {
+                                Owned.Energy = std::max(Owned.Energy, Before[Index].Energy);
+                                Owned.Shield = std::max(Owned.Shield, Before[Index].Shield);
+                            }
+
+                            // Measured before the cheats refill the player, so god mode still shows its hits. A quarter of the shield or more is the full flash.
+                            if (const float Lost = (Before[Index].Energy - Owned.Energy) + (Before[Index].Shield - Owned.Shield); bLocal && Lost > 0.f)
+                            {
+                                constexpr float FullFlashShare = 0.25f;
+                                constexpr float MinHitFlash = 0.35f;
+                                const float FullFlashLoss = std::max(1.f, Owned.ShieldMax * FullFlashShare);
+                                HitFlash = std::max(HitFlash, std::clamp(Lost / FullFlashLoss, MinHitFlash, 1.f));
+                            }
+
+                            if (bLocal && !Demo)
+                            {
+                                ApplyCheats(Cheats, Owned);
+                            }
+
+                            // Spent energy kills the player like any object: its explosions go off and the object stays hidden. In co-op the player is down instead.
+                            if (!Each.DeathTimer && !Each.DownTimer && Owned.Energy <= 0.f && IsCoop() && !bPuppet)
+                            {
+                                constexpr int32_t DownMilliseconds = 30000;
+                                constexpr uint32_t DownColor = 0xff4020;
+                                Each.DownTimer = DownMilliseconds;
+                                Each.ReviveTime = 0;
+                                Each.State->bDying = true;
+                                Owned.Energy = 0.f;
+                                SayToPlayers(Each, Format("You are down !\nStay close to a teammate to get back up."), Format("%s is down !\nGet close to bring them back.", NameOf(Each)), DownColor);
+                            }
+
+                            if (!Each.DeathTimer && !Each.DownTimer && Owned.Energy <= 0.f && (!bPuppet || Each.bNetDead))
+                            {
+                                ExplodePlayer(*Combat, Each.State->Position, Each.Object->Altitude, Each.Index);
+                                Each.Object->bRemoved = true;
+                                Each.DeathTimer = DeathMilliseconds;
+                                Each.State->bDying = true;
+                                if (bLocal && GameAudio)
+                                {
+                                    GameAudio->PlayDeath();
+                                    GameAudio->StopMotor();
+                                }
+
+                                // With Gamma FX the screen turns red until the game ends.
+                                constexpr int32_t DeathRed = 0x50;
+                                if (bLocal && Settings.Details.bGammaFx)
+                                {
+                                    Owned.Surprises.Gamma = { DeathRed, 0, 0 };
+                                }
+                            }
+                        }
+
+                        // A downed player comes back after a teammate has stayed close for two seconds, or by itself where the team last saved once its time is up.
+                        // With every player down at once the team is lost: each downed ship dies as a lone player's does, and the local one's death ends the game.
+                        constexpr float ReviveRange = 100.f;
+                        constexpr int32_t ReviveMilliseconds = 2000;
+                        constexpr float ReviveEnergyShare = 0.3f;
+                        constexpr float RespawnEnergyShare = 0.5f;
+                        constexpr uint32_t BackColor = 0x80ff20;
+                        const bool bTeamLost = !bPuppet && IsCoop() && std::ranges::none_of(Players, Standing) && std::ranges::any_of(Players, [](const FLevelPlayer& Each) { return Each.DownTimer.has_value(); });
+                        for (FLevelPlayer& Each : Players)
+                        {
+                            if (bPuppet || !Each.DownTimer || !Each.State)
+                            {
+                                continue;
+                            }
+
+                            FPlayerState& State = *Each.State;
+                            FPlayerInventory& Owned = Each.Inventory;
+                            const bool bLocal = &Each == &Local;
+                            if (bTeamLost)
+                            {
+                                Each.DownTimer.reset();
+                                ExplodePlayer(*Combat, State.Position, Each.Object->Altitude, Each.Index);
+                                Each.Object->bRemoved = true;
+                                Each.DeathTimer = DeathMilliseconds;
+                                if (bLocal && GameAudio)
+                                {
+                                    GameAudio->PlayDeath();
+                                    GameAudio->StopMotor();
+                                }
+
+                                constexpr int32_t DeathRed = 0x50;
+                                if (bLocal && Settings.Details.bGammaFx)
+                                {
+                                    Owned.Surprises.Gamma = { DeathRed, 0, 0 };
+                                }
+
+                                continue;
+                            }
+
+                            const bool bHelped = std::ranges::any_of(Players, [&](const FLevelPlayer& Other)
+                            {
+                                return &Other != &Each && Standing(Other) && std::hypot(Other.State->Position.X - State.Position.X, Other.State->Position.Y - State.Position.Y) <= ReviveRange;
+                            });
+                            Each.ReviveTime = bHelped ? Each.ReviveTime + int32_t(StepMilliseconds) : 0;
+                            *Each.DownTimer -= int32_t(StepMilliseconds);
+                            const bool bRevived = Each.ReviveTime >= ReviveMilliseconds;
+                            if (!bRevived && *Each.DownTimer > 0)
+                            {
+                                continue;
+                            }
+
+                            if (!bRevived)
+                            {
+                                State.Position = State.PreviousPosition = TeamRespawn;
+                                State.Center = CollisionFromWorld(TeamRespawn);
+                                State.Velocity = {};
+                            }
+
+                            Each.DownTimer.reset();
+                            Each.ReviveTime = 0;
+                            State.bDying = false;
+                            Owned.Energy = Owned.EnergyMax * (bRevived ? ReviveEnergyShare : RespawnEnergyShare);
+                            SayToPlayers(Each, Format("Back in the fight !"), Format("%s is back !", NameOf(Each)), BackColor);
+                        }
+                    }
+                    // Objects the step created, such as dropped items, join the pickups and the drawn objects.
+                    if (Combat)
+                    {
+                        for (const size_t Created : Combat->CreatedObjects)
+                        {
+                            if (std::optional<FPickup> Pickup = CreatePickup(*Level, Created))
+                            {
+                                Pickups.push_back(std::move(*Pickup));
+                            }
+
+                            if (std::expected<void, std::string> Added = AddObjectSprites(*Objects, Archive, Renderer, *Level, Created); !Added)
+                            {
+                                std::fprintf(stderr, "%s\n", Added.error().c_str());
+                            }
+                        }
+
+                        ActorAnimations.resize(Level->Objects.size());
+                        for (const size_t Created : Combat->CreatedObjects)
+                        {
+                            const auto Body = std::ranges::find(Bodies, Created, &FObjectBody::ObjectIndex);
+                            ActorAnimations[Created] = Body == Bodies.end() ? std::nullopt : CreateActorAnimation(*Body, *Level, *Objects);
+                        }
+
+                        // Dropped items, created mines and births play their looping animation like the placed objects.
+                        for (const FObjectSprite& Sprite : Objects->Sprites)
+                        {
+                            if (std::ranges::contains(Combat->CreatedObjects, Sprite.ObjectIndex))
+                            {
+                                if (std::optional<FPlacedAnimation> Placed = PlacedAnimationFor(Sprite, *Objects, *Level, ActorAnimations))
+                                {
+                                    PlacedAnimations.push_back(std::move(*Placed));
+                                }
+                            }
+                        }
+
+                        // Hunters born during the level toughen as the placed ones did.
+                        if (HunterScale != 1.f)
+                        {
+                            for (FObjectBody& Body : Bodies)
+                            {
+                                if (std::ranges::contains(Combat->CreatedObjects, Body.ObjectIndex))
+                                {
+                                    ScaleHunters(std::span(&Body, 1), HunterScale);
+                                }
+                            }
+                        }
+
+                        Combat->CreatedObjects.clear();
+                    }
+
+                    for (FLevelPlayer& Each : Players)
+                    {
+                        const bool bLocal = &Each == &Local;
+                        const size_t Collected = !bPuppet && Each.State && Each.Class && !Each.DeathTimer && !Each.DownTimer
+                            ? CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Each.Messages, Combat ? &*Combat : nullptr, Each.Index, ActivePlayers(),
+                                  bLocal ? nullptr : &Local.Inventory)
+                            : 0;
+                        Each.Collected += uint32_t(Collected);
+                        if (Collected != 0 && bLocal)
+                        {
+                            if (GameAudio)
+                            {
+                                GameAudio->PlayPickup();
+                            }
+
+                            std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
+                            std::fflush(stdout);
+                        }
+                    }
+
+                    const float CashBeforePlot = Inventory.Money;
+                    if (!bPuppet && StepSavingPlots(Saving, SavingPlots, *Level, *Player, PlayerClass->Radius, Inventory, Messages, ClockMilliseconds(), Settings.PlayerName))
+                    {
+                        if (GameAudio && Inventory.Money != CashBeforePlot)
+                        {
+                            GameAudio->PlayMoney();
+                        }
+
+                        SyncObjects();
+                        PendingSave = CurrentSession();
+                        TeamRespawn = Player->Position;
+                        Renderer.RequestCapture(ThumbnailWidth, ThumbnailHeight);
+                    }
+
+                    // The update pass of MessagesUpdate (004315f0) follows the game update.
+                    Messages.Update(int32_t(StepMilliseconds), 0, 0, nullptr);
+
+                    // The update pass after each step uses the view the previous frame scrolled to.
+                    const FViewCells View = ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), int(GameViewWidth), *Level);
+                    if (Combat)
+                    {
+                        StepObjectBobs(*Combat, *Level, Bodies, StepMilliseconds, View);
+                    }
+
+                    AnimateActors(ActorAnimations, Bodies, *Level, *Objects, View, int32_t(StepMilliseconds));
+                    SyncGeneratorLights(PlacedAnimations, *Objects, Bodies);
+                    StepPlacedAnimations(PlacedAnimations, *Objects, *Level, View, int32_t(StepMilliseconds), false);
+                    if (Combat && !Settings.Details.bLowDetails)
+                    {
+                        StepDecorAnimations(Combat->DecorAnimations, *Objects, View, Combat->Clock, int32_t(StepMilliseconds));
+                    }
+
+                    // The panel's update pass follows the objects' (PanelUpdate at 00435000 with its draw flag clear).
+                    if (Panel)
+                    {
+                        Panel->Step(PanelValues(), int32_t(StepMilliseconds), Combat ? Combat->MiscRandom : NoMiscRandom);
+                        PayForMap();
+                    }
+                    LastStepMilliseconds = StepMilliseconds;
+                }
+                else
+                {
+                    const double ScrollStep = StepMilliseconds * ScrollSpeed / MillisecondsPerSecond;
+                    CameraX += (Pressed(GLFW_KEY_RIGHT) - Pressed(GLFW_KEY_LEFT)) * ScrollStep;
+                    CameraY += (Pressed(GLFW_KEY_DOWN) - Pressed(GLFW_KEY_UP)) * ScrollStep;
+                }
+            }
+
+            // The host sends its world some twenty times a second.
+            constexpr uint32_t SnapshotPeriodMilliseconds = 50;
+            if (Coop && Coop->IsHost() && ClockMilliseconds() - SnapshotAt >= SnapshotPeriodMilliseconds)
+            {
+                SnapshotAt = ClockMilliseconds();
+                SendWorld();
+            }
+
+        return std::nullopt;
+    };
+
     while (!glfwWindowShouldClose(Window))
     {
         PollEvents(Window);
@@ -6290,12 +7117,33 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     GameAudio->UpdateVoices();
                 }
 
+                // A network game goes on under the menu, which closes when the level ends there: the host lost, a lift taken or the game over.
+                std::optional<FLevelEnd> EndUnderMenu;
+                if (Coop)
+                {
+                    bInMenu = true;
+                    WorldUnderMenu = [&]
+                    {
+                        EndUnderMenu = AdvanceWorld();
+                        return EndUnderMenu || NextLevel || (DeathTimer && *DeathTimer <= 0);
+                    };
+                }
+
                 FRandom MenuRandom;
-                const std::optional<ELevelEnd> End = RunGameMenu(Window, Renderer, *MenuArt, *MenuSheets, Combat ? Combat->Random : MenuRandom, Settings);
+                const std::optional<ELevelEnd> Chosen = RunGameMenu(Window, Renderer, *MenuArt, *MenuSheets, Combat ? Combat->Random : MenuRandom, Settings);
+                const std::optional<ELevelEnd> End = bWorldEndedUnderMenu ? std::nullopt : Chosen;
                 // MenuGame fades its backdrop out however it closes, with fade.wav unless the game ends, and only a resumed game fades back in.
                 if (End != ELevelEnd::Quit)
                 {
                     FadeMenuBackdrop(Window, Renderer, *MenuArt, *MenuSheets, Settings.Details.bGammaFx, !End);
+                }
+
+                WorldUnderMenu = nullptr;
+                bWorldEndedUnderMenu = false;
+                bInMenu = false;
+                if (EndUnderMenu)
+                {
+                    return *EndUnderMenu;
                 }
 
                 if (End)
@@ -6447,810 +7295,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             WeaponKeysDown = WeaponKeysNow;
         }
 
-        // The network: the host takes in who joined and left and every client's ship; a client follows the host's level and world and sends its own ship.
-        if (Coop)
+        if (std::optional<FLevelEnd> End = AdvanceWorld())
         {
-            Coop->Poll();
-            constexpr uint32_t ShipPeriodMilliseconds = 16;
-            if (Coop->IsHost())
-            {
-                for (const uint8_t Slot : Coop->TakeJoined())
-                {
-                    const auto Member = std::ranges::find(Coop->GetMembers(), Slot, &FCoopMember::Slot);
-                    if (!PlayerInSlot(Slot) && Player && Member != Coop->GetMembers().end())
-                    {
-                        constexpr float JoinGap = 64.f;
-                        if (FLevelPlayer* const Added = AddPlayer(Slot, Member->Name, Player->Position.X + JoinGap, Player->Position.Y))
-                        {
-                            Added->bRemote = true;
-                        }
-                    }
-                }
-
-                for (const uint8_t Slot : Coop->TakeLeft())
-                {
-                    if (FLevelPlayer* const Gone = PlayerInSlot(Slot))
-                    {
-                        Gone->State.reset();
-                        Gone->Object->bRemoved = true;
-                    }
-                }
-
-                RescaleHunters();
-                bPaused = Coop->TakePauseRequests() % 2 != 0 ? !bPaused : bPaused;
-                for (FLevelPlayer& Each : Players)
-                {
-                    if (&Each != &Local)
-                    {
-                        Coop->SendMessages(Each.Slot, Each.Messages.TakeForwarded());
-                    }
-
-                    if (const std::optional<FCoopShip> Ship = Each.bRemote ? Coop->TakeShip(Each.Slot) : std::nullopt)
-                    {
-                        ApplyShip(Each, *Ship);
-                    }
-                }
-            }
-            else
-            {
-                if (Coop->IsLost())
-                {
-                    return FLevelEnd{ .Kind = ELevelEnd::Menu };
-                }
-
-                if (std::optional<std::string> Next = Coop->TakeLevel(); Next && !NextLevel)
-                {
-                    NextLevel = std::move(*Next);
-                }
-
-                TakeCreated(Coop->TakeCreated());
-                // The host placed its screen messages in a 640-pixel view; this one may be wider.
-                for (auto& [Message, Placement] : Coop->TakeMessages())
-                {
-                    Message.X += Message.bWorld ? 0.f : float((Messages.ViewWidth - int32_t(ScreenWidth)) / 2);
-                    Messages.Add(std::move(Message), Placement);
-                }
-
-                if (const std::optional<FCoopSnapshot> Snapshot = Coop->TakeSnapshot())
-                {
-                    TakeSnapshot(*Snapshot);
-                }
-
-                if (ClockMilliseconds() - ShipAt >= ShipPeriodMilliseconds)
-                {
-                    ShipAt = ClockMilliseconds();
-                    Coop->SendShip(MakeShip(Local));
-                }
-            }
-        }
-
-        uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
-        // A network game's world goes on under the page, since the others play on; the reader's ship only waits.
-        if (bPaused || (!PageText.empty() && !Coop) || MenuFadeStep < MenuFadeSteps || LiftFadeStep)
-        {
-            RemainingMilliseconds = 0;
-        }
-
-        if (DemoStep < DemoSteps.size())
-        {
-            DemoBudget += RemainingMilliseconds;
-            RemainingMilliseconds = 0;
-        }
-
-        // The draw pass advances by the frame's last step (session +0x101c). Playing a recording, that is the last step of each recorded frame that ends this frame, so the draw pass keeps the recording machine's pace; none ending, nothing advances.
-        const bool bRecordedSteps = DemoStep < DemoSteps.size();
-        std::optional<uint32_t> RecordedDrawStep;
-        const auto NextStep = [&]() -> std::optional<uint32_t>
-        {
-            if (DemoStep < DemoSteps.size())
-            {
-                if (DemoBudget < DemoSteps[DemoStep])
-                {
-                    return std::nullopt;
-                }
-
-                DemoBudget -= DemoSteps[DemoStep];
-                if (DemoFrameEnds[DemoStep])
-                {
-                    RecordedDrawStep = DemoSteps[DemoStep];
-                }
-
-                return DemoSteps[DemoStep++];
-            }
-
-            return RemainingMilliseconds != 0 ? std::optional(NextGameStep(RemainingMilliseconds, FramePeriod, Demo != nullptr)) : std::nullopt;
-        };
-        // VoiceQueueUpdate (004132e0) runs at the start of the full EngineUpdateObjects, so a frame of Time Warp's player-only steps leaves the queue alone.
-        size_t FrameSteps = 0;
-        size_t FrameFullUpdates = 0;
-        while (const std::optional<uint32_t> NextStepMilliseconds = NextStep())
-        {
-            const uint32_t StepMilliseconds = *NextStepMilliseconds;
-            // DemoReplayStep (004291d0) takes the next record's input once the game clock reaches its time, staying on the last record; then EngineReplayActionKeys (0043bb00) replays its actions, of which 0x8000 (action-menu) ends the demo.
-            uint32_t DemoInput = 0;
-            if (Demo && Combat && Player)
-            {
-                if (Combat->Clock >= (*Demo)[DemoCursor].Time)
-                {
-                    DemoInput = (*Demo)[DemoCursor].Input;
-                    DemoCursor = std::min(DemoCursor + 1, Demo->size() - 1);
-                }
-
-                constexpr uint32_t NextWeaponBit = 0x100;
-                constexpr uint32_t MapBit = 0x400;
-                constexpr uint32_t CyclePanelsBit = 0x4000;
-                constexpr uint32_t MenuBit = 0x8000;
-                constexpr uint32_t FirstWeaponBit = 0x10000;
-                if ((DemoInput & CyclePanelsBit) != 0 && Panel)
-                {
-                    Panel->CyclePanels(false);
-                }
-
-                if ((DemoInput & MapBit) != 0)
-                {
-                    ToggleMap();
-                }
-
-                if ((DemoInput & NextWeaponBit) != 0)
-                {
-                    SelectPlayerWeapon(*Combat, NextPlayerWeaponSlot(*Combat, Inventory), Inventory, Messages);
-                }
-
-                for (size_t Slot = 1; Slot < WeaponKeyCount; ++Slot)
-                {
-                    if ((DemoInput & (FirstWeaponBit << (Slot - 1))) != 0)
-                    {
-                        // PlayerSelectWeaponAction (0043bad0) switches only to another slot.
-                        if (Inventory.Arms.Slot != Slot)
-                        {
-                            SelectPlayerWeapon(*Combat, Slot, Inventory, Messages);
-                        }
-
-                        break;
-                    }
-                }
-
-                if ((DemoInput & MenuBit) != 0)
-                {
-                    return FLevelEnd{ .Kind = ELevelEnd::Menu };
-                }
-            }
-
-            const auto Pressed = [Window](const int Key) { return glfwGetKey(Window, Key) == GLFW_PRESS; };
-            if (Player)
-            {
-                // EngineUpdateObjects clears the lock before its objects update, dead player or not; nothing locks onto a dead player again.
-                for (FLevelPlayer& Each : Players)
-                {
-                    Each.Inventory.Arms.bLocked = false;
-                }
-
-                // The messages of a player other than the local one have no screen to show on.
-                FMessages Unseen;
-                const auto MessagesOf = [&](const FLevelPlayer& Each) -> FMessages& { return &Each == &Local ? Messages : Unseen; };
-                // The dead player's object skips its updates until the timer ends the game (game update result 0).
-                if (DeathTimer && *DeathTimer - int32_t(StepMilliseconds) <= 0)
-                {
-                    *DeathTimer -= int32_t(StepMilliseconds);
-                    break;
-                }
-
-                for (FLevelPlayer& Each : Players)
-                {
-                    if (!Each.State || !Each.Class)
-                    {
-                        continue;
-                    }
-
-                    FPlayerState& State = *Each.State;
-                    FPlayerInventory& Owned = Each.Inventory;
-                    const bool bLocal = &Each == &Local;
-                    if (Each.DeathTimer)
-                    {
-                        *Each.DeathTimer -= int32_t(StepMilliseconds);
-                        StepDeathDrift(Each.DeathDrift, State, *Level, StepMilliseconds);
-                        continue;
-                    }
-
-                    // A remote ship moves by what the network says.
-                    if (Each.bRemote)
-                    {
-                        continue;
-                    }
-
-                    // A downed ship coasts to a stop and can still be pushed, but takes no command and no surprise.
-                    if (Each.DownTimer)
-                    {
-                        StepPlayer(State, *Each.Class, {}, StepMilliseconds, *Terrain, *Level, Bodies);
-                        continue;
-                    }
-
-                    // The player's update starts with its surprises (FUN_0041d290).
-                    if (Combat)
-                    {
-                        StepSurprises(*Combat, *Level, Bodies, State, *Each.Class, Owned, MessagesOf(Each), StepMilliseconds);
-                    }
-
-                    StepCodeTimeouts(Owned, *Level, MessagesOf(Each), StepMilliseconds);
-
-                    // Only the local player has keys, a mouse and a pad here; until the others' input comes from elsewhere, they follow it.
-                    const FPlayerIntent Intent = !bLocal ? FollowIntent(State) : PageText.empty() ? ReadPlayerIntent() : FPlayerIntent{};
-                    Each.bThrustInput = IsThrustIntent(Intent, Owned.Surprises, bFinaleStarted);
-                    FPlayerCommand Command = PlayerCommandFromIntent(Intent, Owned.Surprises, bFinaleStarted);
-                    // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its velocity in collision units, and drives with the replayed input.
-                    if (bLocal && Demo && DemoCursor >= 1)
-                    {
-                        const FDemoRecord& Placed = (*Demo)[DemoCursor - 1];
-                        if (State.Position.X != Placed.X || State.Position.Y != Placed.Y)
-                        {
-                            State.Position = { .X = Placed.X, .Y = Placed.Y };
-                            State.Center = CollisionFromWorld(State.Position);
-                            const FCollisionPoint Before = CollisionFromWorld(State.PreviousPosition);
-                            State.Velocity = { .X = State.Center.X - Before.X, .Y = State.Center.Y - Before.Y };
-                        }
-
-                        if (Placed.Direction >= 0 && Placed.Direction < ObjectDirectionCount)
-                        {
-                            State.Direction = Placed.Direction;
-                            State.Pose = State.TargetPose = Placed.Direction * (PlayerPoseCount / ObjectDirectionCount) + 1;
-                        }
-
-                        Command = PlayerCommandFromInput(DemoInput);
-                        Each.bThrustInput = (DemoInput & PlayerInputForward) != 0;
-                    }
-
-                    FMovementClass Movement = *Each.Class;
-                    Movement.TurnTimeout = int(float(Movement.TurnTimeout) / Intent.TurnRate);
-                    if (Intent.Throttle)
-                    {
-                        Movement.SpeedMax *= *Intent.Throttle;
-                        Command.Strafe *= *Intent.Throttle;
-                    }
-
-                    if (const FObjectBody* const Struck = StepPlayer(State, Movement, Command, StepMilliseconds, *Terrain, *Level, Bodies))
-                    {
-                        ReportDoorContact(*Doors, *Struck, State, Local.Inventory, MessagesOf(Each));
-                    }
-
-                    if (Combat)
-                    {
-                        ThrowPlayerBounceSpark(*Combat, State, Owned.Surprises.Active);
-                    }
-
-                    // EngineUpdateObjects puts the sound listener where the player stands (SoundSetListener at 0045edb0).
-                    if (bLocal)
-                    {
-                        SetSoundListener(State.Position.X, State.Position.Y, Each.Object->Altitude);
-                        if (Combat)
-                        {
-                            SetVoiceClock(Combat->Clock);
-                            StepPlayerVoices(Combat->Clock, Each.bFireInput);
-                        }
-                    }
-                }
-
-                // Every player meets the step's bodies, actors, doors, generators, turrets and shots, each as its own target.
-                std::vector<FPlayerTarget> Targets;
-                for (FLevelPlayer& Each : Players)
-                {
-                    if (Each.State && Each.Class)
-                    {
-                        Targets.push_back({
-                            .State = *Each.State,
-                            .Radius = Each.Class->Radius,
-                            .Inventory = Each.Inventory,
-                            .ObjectIndex = Each.Index,
-                            .Name = &Each == &Local ? std::string_view(Settings.PlayerName) : std::string_view(Each.Name),
-                            .Team = &Each == &Local ? nullptr : &Local.Inventory,
-                        });
-                    }
-                }
-
-                // EngineRunLevel runs the full EngineUpdateObjects only when Time Warp's counter (session +0x21f0) has run out, then sets it to the divisor (+0x21f4);
-                // the steps between update the player alone, so the rest of the level moves at a quarter of its speed. The local player's Time Warp sets the pace.
-                FSurpriseState& Warp = Inventory.Surprises;
-                const bool bFullUpdate = Warp.WarpCounter-- == 0;
-                ++FrameSteps;
-                FrameFullUpdates += bFullUpdate ? 1 : 0;
-                if (bFullUpdate)
-                {
-                    Warp.WarpCounter = Warp.WarpDivisor;
-                    const std::vector<FCollisionPoint> Pushes = StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level, Targets);
-                    // The pushes come in the targets' order, which is the players' with a ship.
-                    size_t Target = 0;
-                    for (FLevelPlayer& Each : Players)
-                    {
-                        if (!Each.State || !Each.Class)
-                        {
-                            continue;
-                        }
-
-                        FPlayerState& State = *Each.State;
-                        const FCollisionPoint Push = Pushes[Target++];
-                        State.Velocity.X = float(double(Push.X) + double(State.Velocity.X));
-                        State.Velocity.Y = float(double(Push.Y) + double(State.Velocity.Y));
-                        State.bPushed = State.bPushed || Push.X != 0.f || Push.Y != 0.f;
-                    }
-                }
-
-                // The bodies' shields rise with the local player's while it lives.
-                for (FLevelPlayer& Each : Players)
-                {
-                    if (Each.State && !Each.DeathTimer && !Each.DownTimer)
-                    {
-                        StepShields(bFullUpdate && &Each == &Local ? std::span<FObjectBody>(Bodies) : std::span<FObjectBody>(), *Level, Each.Inventory);
-                    }
-                }
-
-                if (bFullUpdate && !bFinaleStarted)
-                {
-                    StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, Targets);
-                }
-
-                const auto TakeLift = [&](const FDoor& Lift)
-                {
-                    // A starred 3do-file (only "*End of Tower 3*" in the campaign) ends the game instead of loading a level.
-                    NextLevel = Lift.NextLevel.starts_with('*') ? Lift.NextLevel : NextLevelPath(LevelPath, Lift);
-                    // ObjectUpdateLevelExit drops the queued lines and says Well Done.
-                    constexpr uint32_t WellDoneHold = 10000;
-                    ClearVoices();
-                    if (QueueVoice(EVoice::WellDone, 0, VoiceDuration, WellDoneHold) && GameAudio)
-                    {
-                        GameAudio->UpdateVoices();
-                    }
-                };
-                // A lift everyone has left again no longer waits, so the team may take another.
-                const auto Standing = [](const FLevelPlayer& Each) { return Each.State && !Each.DownTimer && !Each.DeathTimer; };
-                if (LiftWait && std::ranges::none_of(Players, [&](const FLevelPlayer& Each) { return LiftHolds((*Doors)[*LiftWait], Each); }))
-                {
-                    LiftWait.reset();
-                }
-
-                if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, Targets, StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer && !LiftWait && !bPuppet)
-                {
-                    // In co-op the lift waits until every standing player is in it, so nobody is taken along from elsewhere.
-                    if (IsCoop())
-                    {
-                        constexpr uint32_t LiftColor = 0xffc040;
-                        LiftWait = size_t(Lift - Doors->data());
-                        const auto Rider = std::ranges::find_if(Players, [&](const FLevelPlayer& Each)
-                            { return LiftHolds(*Lift, Each); });
-                        const FLevelPlayer& Subject = Rider == Players.end() ? Local : *Rider;
-                        SayToPlayers(Subject, Format("The lift waits for the others."), Format("%s is in the lift !\nJoin them to go on.", NameOf(Subject)), LiftColor);
-                    }
-                    else
-                    {
-                        TakeLift(*Lift);
-                    }
-                }
-
-                // A downed or dead player is not waited for.
-                if (LiftWait && !NextLevel && !DeathTimer)
-                {
-                    const FDoor& Lift = (*Doors)[*LiftWait];
-                    if (std::ranges::all_of(Players, [&](const FLevelPlayer& Each) { return !Standing(Each) || LiftHolds(Lift, Each); }))
-                    {
-                        TakeLift(Lift);
-                        LiftWait.reset();
-                    }
-                }
-                if (Combat)
-                {
-                    // Each player's numbers before the step's shots and blasts, which the finale keeps and the local player's hit flash and log compare against.
-                    struct FBefore
-                    {
-                        float Money = 0.f;
-                        float Energy = 0.f;
-                        float Shield = 0.f;
-                    };
-                    std::vector<FBefore> Before;
-                    for (const FLevelPlayer& Each : Players)
-                    {
-                        Before.push_back({ .Money = Each.Inventory.Money });
-                    }
-
-                    Combat->Clock += StepMilliseconds;
-                    for (size_t Index = 0; Index < Players.size(); ++Index)
-                    {
-                        Before[Index].Energy = Players[Index].Inventory.Energy;
-                        Before[Index].Shield = Players[Index].Inventory.Shield;
-                    }
-
-                    if (bFullUpdate && !bFinaleStarted)
-                    {
-                        StepGenerators(*Combat, *Level, Bodies, Targets, StepMilliseconds);
-                    }
-
-                    constexpr uint32_t FireBit = 0x2;
-                    for (FLevelPlayer& Each : Players)
-                    {
-                        if (!Each.State)
-                        {
-                            continue;
-                        }
-
-                        const bool bLiveFire = Each.DownTimer ? false : Each.bRemote ? Each.bNetFire : &Each != &Local || !PageText.empty() ? false : Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
-                        Each.bFireInput = bLiveFire;
-                        const bool bFire = !Each.Inventory.Surprises.bBlockedMotor && !bFinaleStarted && bLiveFire;
-                        if (!Each.DeathTimer && !Each.DownTimer)
-                        {
-                            StepPlayerWeapon(*Combat, bFire, *Each.State, *Each.Object, Each.Index, Each.SpriteSize, Each.Inventory, MessagesOf(Each));
-                        }
-                    }
-
-                    if (bFullUpdate)
-                    {
-                        if (!bFinaleStarted)
-                        {
-                            StepTurrets(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Targets);
-                        }
-
-                        StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Targets, Messages);
-                    }
-
-                    for (FLevelPlayer& Each : Players)
-                    {
-                        if (!Each.State)
-                        {
-                            continue;
-                        }
-
-                        FPlayerState& State = *Each.State;
-                        FPlayerInventory& Owned = Each.Inventory;
-                        State.Velocity = { .X = State.Velocity.X + Owned.Shove.X, .Y = State.Velocity.Y + Owned.Shove.Y };
-                        Owned.Shove = {};
-                        // EngineRunLevel each step: once the fast-kill window closes with the player alive, two or more kills in it pay ((kills - 2) * 5 + 10) * 1000, say so for 8 seconds in red v-bonus font 5, fading, and cheer by the game clock.
-                        if (Owned.Arms.FastKillTimer > int32_t(StepMilliseconds))
-                        {
-                            Owned.Arms.FastKillTimer -= int32_t(StepMilliseconds);
-                        }
-                        else if (Owned.Energy > 0.f)
-                        {
-                            Owned.Arms.FastKillTimer = 0;
-                            if (Owned.Arms.FastKillCount > 1)
-                            {
-                                constexpr int32_t BonusX = 100;
-                                constexpr int32_t BonusRise = 0x66;
-                                constexpr uint32_t BonusLifeMilliseconds = 8000;
-                                constexpr uint32_t BonusFont = 5;
-                                constexpr uint32_t BonusColor = 0xff2010;
-                                constexpr int32_t BonusBlinkMilliseconds = 10;
-                                const int32_t Bonus = ((Owned.Arms.FastKillCount - 2) * 5 + 10) * 1000;
-                                Local.Inventory.Money += float(Bonus);
-                                Local.Inventory.Earned += float(Bonus);
-                                if (&Each == &Local)
-                                {
-                                    Messages.Add({
-                                        .Text = Format("Well done %s !!!\nFast Kill Bonus +%d $", Settings.PlayerName, Bonus),
-                                        .X = float(BonusX),
-                                        .Y = float(int32_t(ScreenHeight) / 2 - BonusRise),
-                                        .LifeMilliseconds = BonusLifeMilliseconds,
-                                        .bTypewriter = true,
-                                        .Gaf = EMessageGaf::Bonus,
-                                        .Font = BonusFont,
-                                        .Color = { .Diffuse = BonusColor },
-                                        .BlinkPeriod = BonusBlinkMilliseconds,
-                                        .bFade = true,
-                                    }, EMessagePlacement::Always);
-                                    constexpr std::array FastKillVoices = { EVoice::WellDone, EVoice::Yeepee, EVoice::ComeOn, EVoice::Ariba, EVoice::Laugh, EVoice::TheBest, EVoice::WantMore,
-                                        EVoice::Hey };
-                                    constexpr uint32_t CheerDelay = 500;
-                                    constexpr uint32_t CheerDuration = 1000;
-                                    constexpr uint32_t CheerHold = 5000;
-                                    QueueVoice(FastKillVoices[Combat->Clock % FastKillVoices.size()], CheerDelay, CheerDuration, CheerHold);
-                                }
-                            }
-
-                            Owned.Arms.FastKillCount = 0;
-                        }
-                    }
-
-                    // FUN_0043db70 starts the finale: the motor channel stops and Yeepee replaces the queued lines. With Gamma FX each flash plays electric.wav.
-                    if (Combat->bFinale && !bFinaleStarted)
-                    {
-                        bFinaleStarted = true;
-                        FinaleTimer = FinaleMilliseconds;
-                        FinaleFlashTimer = FinaleFlashMilliseconds;
-                        bFinaleFlash = true;
-                        constexpr uint32_t YeepeeHold = 10000;
-                        ClearVoices();
-                        if (QueueVoice(EVoice::Yeepee, 0, VoiceDuration, YeepeeHold) && GameAudio)
-                        {
-                            GameAudio->UpdateVoices();
-                        }
-
-                        if (GameAudio)
-                        {
-                            GameAudio->StopMotor();
-                            if (Settings.Details.bGammaFx)
-                            {
-                                GameAudio->PlayFinaleFlash();
-                            }
-                        }
-                    }
-                    else if (FinaleTimer > 0 && Settings.Details.bGammaFx && FinaleTimer >= FinaleFadeMilliseconds)
-                    {
-                        FinaleFlashTimer -= int32_t(StepMilliseconds);
-                        if (FinaleFlashTimer < 1)
-                        {
-                            FinaleFlashTimer = FinaleFlashMilliseconds;
-                            bFinaleFlash = true;
-                            if (GameAudio)
-                            {
-                                GameAudio->PlayFinaleFlash();
-                            }
-                        }
-                    }
-
-                    if (FinaleTimer > 0)
-                    {
-                        FinaleTimer -= int32_t(StepMilliseconds);
-                        if (FinaleTimer <= 0 && !NextLevel)
-                        {
-                            bShowNetworkFailure = true;
-                            NextLevel = "*";
-                        }
-                    }
-
-                    for (size_t Index = 0; Index < Players.size(); ++Index)
-                    {
-                        FLevelPlayer& Each = Players[Index];
-                        FPlayerInventory& Owned = Each.Inventory;
-                        const bool bLocal = &Each == &Local;
-                        if (!Each.State)
-                        {
-                            continue;
-                        }
-
-                        if (bLocal && (Owned.Money != Before[Index].Money || Owned.Energy != Before[Index].Energy || Owned.Shield != Before[Index].Shield))
-                        {
-                            std::printf("Energy %.0f, shield %.0f, money %.0f\n", Owned.Energy, Owned.Shield, Owned.Money);
-                            std::fflush(stdout);
-                        }
-
-                        // Shots and blasts still in flight during the finale leave the players unharmed.
-                        if (bFinaleStarted)
-                        {
-                            Owned.Energy = std::max(Owned.Energy, Before[Index].Energy);
-                            Owned.Shield = std::max(Owned.Shield, Before[Index].Shield);
-                        }
-
-                        // Measured before the cheats refill the player, so god mode still shows its hits. A quarter of the shield or more is the full flash.
-                        if (const float Lost = (Before[Index].Energy - Owned.Energy) + (Before[Index].Shield - Owned.Shield); bLocal && Lost > 0.f)
-                        {
-                            constexpr float FullFlashShare = 0.25f;
-                            constexpr float MinHitFlash = 0.35f;
-                            const float FullFlashLoss = std::max(1.f, Owned.ShieldMax * FullFlashShare);
-                            HitFlash = std::max(HitFlash, std::clamp(Lost / FullFlashLoss, MinHitFlash, 1.f));
-                        }
-
-                        if (bLocal && !Demo)
-                        {
-                            ApplyCheats(Cheats, Owned);
-                        }
-
-                        // Spent energy kills the player like any object: its explosions go off and the object stays hidden. In co-op the player is down instead.
-                        if (!Each.DeathTimer && !Each.DownTimer && Owned.Energy <= 0.f && IsCoop() && !bPuppet)
-                        {
-                            constexpr int32_t DownMilliseconds = 30000;
-                            constexpr uint32_t DownColor = 0xff4020;
-                            Each.DownTimer = DownMilliseconds;
-                            Each.ReviveTime = 0;
-                            Each.State->bDying = true;
-                            Owned.Energy = 0.f;
-                            SayToPlayers(Each, Format("You are down !\nStay close to a teammate to get back up."), Format("%s is down !\nGet close to bring them back.", NameOf(Each)), DownColor);
-                        }
-
-                        if (!Each.DeathTimer && !Each.DownTimer && Owned.Energy <= 0.f && (!bPuppet || Each.bNetDead))
-                        {
-                            ExplodePlayer(*Combat, Each.State->Position, Each.Object->Altitude, Each.Index);
-                            Each.Object->bRemoved = true;
-                            Each.DeathTimer = DeathMilliseconds;
-                            Each.State->bDying = true;
-                            if (bLocal && GameAudio)
-                            {
-                                GameAudio->PlayDeath();
-                                GameAudio->StopMotor();
-                            }
-
-                            // With Gamma FX the screen turns red until the game ends.
-                            constexpr int32_t DeathRed = 0x50;
-                            if (bLocal && Settings.Details.bGammaFx)
-                            {
-                                Owned.Surprises.Gamma = { DeathRed, 0, 0 };
-                            }
-                        }
-                    }
-
-                    // A downed player comes back after a teammate has stayed close for two seconds, or by itself where the team last saved once its time is up.
-                    // With every player down at once the team is lost: each downed ship dies as a lone player's does, and the local one's death ends the game.
-                    constexpr float ReviveRange = 100.f;
-                    constexpr int32_t ReviveMilliseconds = 2000;
-                    constexpr float ReviveEnergyShare = 0.3f;
-                    constexpr float RespawnEnergyShare = 0.5f;
-                    constexpr uint32_t BackColor = 0x80ff20;
-                    const bool bTeamLost = !bPuppet && IsCoop() && std::ranges::none_of(Players, Standing) && std::ranges::any_of(Players, [](const FLevelPlayer& Each) { return Each.DownTimer.has_value(); });
-                    for (FLevelPlayer& Each : Players)
-                    {
-                        if (bPuppet || !Each.DownTimer || !Each.State)
-                        {
-                            continue;
-                        }
-
-                        FPlayerState& State = *Each.State;
-                        FPlayerInventory& Owned = Each.Inventory;
-                        const bool bLocal = &Each == &Local;
-                        if (bTeamLost)
-                        {
-                            Each.DownTimer.reset();
-                            ExplodePlayer(*Combat, State.Position, Each.Object->Altitude, Each.Index);
-                            Each.Object->bRemoved = true;
-                            Each.DeathTimer = DeathMilliseconds;
-                            if (bLocal && GameAudio)
-                            {
-                                GameAudio->PlayDeath();
-                                GameAudio->StopMotor();
-                            }
-
-                            constexpr int32_t DeathRed = 0x50;
-                            if (bLocal && Settings.Details.bGammaFx)
-                            {
-                                Owned.Surprises.Gamma = { DeathRed, 0, 0 };
-                            }
-
-                            continue;
-                        }
-
-                        const bool bHelped = std::ranges::any_of(Players, [&](const FLevelPlayer& Other)
-                        {
-                            return &Other != &Each && Standing(Other) && std::hypot(Other.State->Position.X - State.Position.X, Other.State->Position.Y - State.Position.Y) <= ReviveRange;
-                        });
-                        Each.ReviveTime = bHelped ? Each.ReviveTime + int32_t(StepMilliseconds) : 0;
-                        *Each.DownTimer -= int32_t(StepMilliseconds);
-                        const bool bRevived = Each.ReviveTime >= ReviveMilliseconds;
-                        if (!bRevived && *Each.DownTimer > 0)
-                        {
-                            continue;
-                        }
-
-                        if (!bRevived)
-                        {
-                            State.Position = State.PreviousPosition = TeamRespawn;
-                            State.Center = CollisionFromWorld(TeamRespawn);
-                            State.Velocity = {};
-                        }
-
-                        Each.DownTimer.reset();
-                        Each.ReviveTime = 0;
-                        State.bDying = false;
-                        Owned.Energy = Owned.EnergyMax * (bRevived ? ReviveEnergyShare : RespawnEnergyShare);
-                        SayToPlayers(Each, Format("Back in the fight !"), Format("%s is back !", NameOf(Each)), BackColor);
-                    }
-                }
-                // Objects the step created, such as dropped items, join the pickups and the drawn objects.
-                if (Combat)
-                {
-                    for (const size_t Created : Combat->CreatedObjects)
-                    {
-                        if (std::optional<FPickup> Pickup = CreatePickup(*Level, Created))
-                        {
-                            Pickups.push_back(std::move(*Pickup));
-                        }
-
-                        if (std::expected<void, std::string> Added = AddObjectSprites(*Objects, Archive, Renderer, *Level, Created); !Added)
-                        {
-                            std::fprintf(stderr, "%s\n", Added.error().c_str());
-                        }
-                    }
-
-                    ActorAnimations.resize(Level->Objects.size());
-                    for (const size_t Created : Combat->CreatedObjects)
-                    {
-                        const auto Body = std::ranges::find(Bodies, Created, &FObjectBody::ObjectIndex);
-                        ActorAnimations[Created] = Body == Bodies.end() ? std::nullopt : CreateActorAnimation(*Body, *Level, *Objects);
-                    }
-
-                    // Dropped items, created mines and births play their looping animation like the placed objects.
-                    for (const FObjectSprite& Sprite : Objects->Sprites)
-                    {
-                        if (std::ranges::contains(Combat->CreatedObjects, Sprite.ObjectIndex))
-                        {
-                            if (std::optional<FPlacedAnimation> Placed = PlacedAnimationFor(Sprite, *Objects, *Level, ActorAnimations))
-                            {
-                                PlacedAnimations.push_back(std::move(*Placed));
-                            }
-                        }
-                    }
-
-                    // Hunters born during the level toughen as the placed ones did.
-                    if (HunterScale != 1.f)
-                    {
-                        for (FObjectBody& Body : Bodies)
-                        {
-                            if (std::ranges::contains(Combat->CreatedObjects, Body.ObjectIndex))
-                            {
-                                ScaleHunters(std::span(&Body, 1), HunterScale);
-                            }
-                        }
-                    }
-
-                    Combat->CreatedObjects.clear();
-                }
-
-                for (FLevelPlayer& Each : Players)
-                {
-                    const bool bLocal = &Each == &Local;
-                    const size_t Collected = !bPuppet && Each.State && Each.Class && !Each.DeathTimer && !Each.DownTimer
-                        ? CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Each.Messages, Combat ? &*Combat : nullptr, Each.Index, ActivePlayers(),
-                              bLocal ? nullptr : &Local.Inventory)
-                        : 0;
-                    Each.Collected += uint32_t(Collected);
-                    if (Collected != 0 && bLocal)
-                    {
-                        if (GameAudio)
-                        {
-                            GameAudio->PlayPickup();
-                        }
-
-                        std::printf("Energy %.0f, shield %.0f, money %.0f\n", Inventory.Energy, Inventory.Shield, Inventory.Money);
-                        std::fflush(stdout);
-                    }
-                }
-
-                const float CashBeforePlot = Inventory.Money;
-                if (!bPuppet && StepSavingPlots(Saving, SavingPlots, *Level, *Player, PlayerClass->Radius, Inventory, Messages, ClockMilliseconds(), Settings.PlayerName))
-                {
-                    if (GameAudio && Inventory.Money != CashBeforePlot)
-                    {
-                        GameAudio->PlayMoney();
-                    }
-
-                    SyncObjects();
-                    PendingSave = CurrentSession();
-                    TeamRespawn = Player->Position;
-                    Renderer.RequestCapture(ThumbnailWidth, ThumbnailHeight);
-                }
-
-                // The update pass of MessagesUpdate (004315f0) follows the game update.
-                Messages.Update(int32_t(StepMilliseconds), 0, 0, nullptr);
-
-                // The update pass after each step uses the view the previous frame scrolled to.
-                const FViewCells View = ViewCellsAround(int(std::floor(CameraX)), int(std::floor(CameraY)), int(GameViewWidth), *Level);
-                if (Combat)
-                {
-                    StepObjectBobs(*Combat, *Level, Bodies, StepMilliseconds, View);
-                }
-
-                AnimateActors(ActorAnimations, Bodies, *Level, *Objects, View, int32_t(StepMilliseconds));
-                SyncGeneratorLights(PlacedAnimations, *Objects, Bodies);
-                StepPlacedAnimations(PlacedAnimations, *Objects, *Level, View, int32_t(StepMilliseconds), false);
-                if (Combat && !Settings.Details.bLowDetails)
-                {
-                    StepDecorAnimations(Combat->DecorAnimations, *Objects, View, Combat->Clock, int32_t(StepMilliseconds));
-                }
-
-                // The panel's update pass follows the objects' (PanelUpdate at 00435000 with its draw flag clear).
-                if (Panel)
-                {
-                    Panel->Step(PanelValues(), int32_t(StepMilliseconds), Combat ? Combat->MiscRandom : NoMiscRandom);
-                    PayForMap();
-                }
-                LastStepMilliseconds = StepMilliseconds;
-            }
-            else
-            {
-                const double ScrollStep = StepMilliseconds * ScrollSpeed / MillisecondsPerSecond;
-                CameraX += (Pressed(GLFW_KEY_RIGHT) - Pressed(GLFW_KEY_LEFT)) * ScrollStep;
-                CameraY += (Pressed(GLFW_KEY_DOWN) - Pressed(GLFW_KEY_UP)) * ScrollStep;
-            }
-        }
-
-        // The host sends its world some twenty times a second.
-        constexpr uint32_t SnapshotPeriodMilliseconds = 50;
-        if (Coop && Coop->IsHost() && ClockMilliseconds() - SnapshotAt >= SnapshotPeriodMilliseconds)
-        {
-            SnapshotAt = ClockMilliseconds();
-            SendWorld();
+            return *End;
         }
 
         // Game over (EngineGameOver at 00445a40): the game-over image, then the menu.
