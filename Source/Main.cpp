@@ -3684,11 +3684,14 @@ enum class EMenuChoice : uint8_t
 };
 
 // The port's Co-op menu: hosting a game with its lobby, or joining one the LAN offers or an address names. The link of the game to play, or none for Back.
-std::unique_ptr<FCoopLink> RunCoopLobby(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random, const FSettings& Settings)
+// Loaded is the saved game Load Game chose, which everyone then plays on from.
+std::unique_ptr<FCoopLink> RunCoopLobby(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random, const FSettings& Settings,
+    std::optional<FSession>& Loaded)
 {
     std::unique_ptr<FCoopLink> Link = FCoopLink::Host(Net::DefaultPort, Settings.PlayerName);
     constexpr size_t StartItem = 0;
-    constexpr size_t FirstMemberItem = 1;
+    constexpr size_t LoadItem = 1;
+    constexpr size_t FirstMemberItem = 2;
     constexpr size_t MemberItems = Net::MaxPeers + 1;
     constexpr size_t BackItem = FirstMemberItem + MemberItems + 1;
     FMenu Menu{
@@ -3702,6 +3705,7 @@ std::unique_ptr<FCoopLink> RunCoopLobby(GLFWwindow* const Window, FRenderer& Ren
         .DefaultItem = BackItem,
     };
     Menu.Items[StartItem] = Link ? FMenuItem{ .Text = "Start Game", .Help = "Everyone in plays from the first level." } : FMenuItem{ .Text = "Back", .Help = "Cannot host on this port." };
+    Menu.Items[LoadItem] = Link ? FMenuItem{ .Text = "Load Game", .Help = "Everyone in plays on from a saved game." } : FMenuItem{};
     Menu.Items[BackItem] = { .Text = "Back" };
     const auto Refresh = [&]
     {
@@ -3730,6 +3734,16 @@ std::unique_ptr<FCoopLink> RunCoopLobby(GLFWwindow* const Window, FRenderer& Ren
         if (*Item == StartItem)
         {
             return Link;
+        }
+
+        if (*Item == LoadItem)
+        {
+            const std::vector<FSession> Saved = ReadSavedSessions(Settings.Folder);
+            if (const std::optional<size_t> Index = RunSessionMenu(Window, Renderer, Art, Sheets, Random, Saved))
+            {
+                Loaded = Saved[*Index];
+                return Link;
+            }
         }
     }
 }
@@ -3832,7 +3846,8 @@ std::unique_ptr<FCoopLink> RunCoopJoin(GLFWwindow* const Window, FRenderer& Rend
     }
 }
 
-std::unique_ptr<FCoopLink> RunCoopMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random, const FSettings& Settings)
+std::unique_ptr<FCoopLink> RunCoopMenu(GLFWwindow* const Window, FRenderer& Renderer, const FMenuArt& Art, FMenuSheets& Sheets, FRandom& Random, const FSettings& Settings,
+    std::optional<FSession>& Loaded)
 {
     enum EItem : size_t
     {
@@ -3867,7 +3882,7 @@ std::unique_ptr<FCoopLink> RunCoopMenu(GLFWwindow* const Window, FRenderer& Rend
 
         // The lobby and the search keep running out of focus, as the game will.
         bNetworkAwake = true;
-        if (std::unique_ptr<FCoopLink> Link = *Item == HostItem ? RunCoopLobby(Window, Renderer, Art, Sheets, Random, Settings) : RunCoopJoin(Window, Renderer, Art, Sheets, Random, Settings))
+        if (std::unique_ptr<FCoopLink> Link = *Item == HostItem ? RunCoopLobby(Window, Renderer, Art, Sheets, Random, Settings, Loaded) : RunCoopJoin(Window, Renderer, Art, Sheets, Random, Settings))
         {
             return Link;
         }
@@ -3983,9 +3998,11 @@ EMenuChoice RunMainMenu(GLFWwindow* const Window, FRenderer& Renderer, FResource
         }
         else if (*Item == CoopItem)
         {
-            if (std::unique_ptr<FCoopLink> Link = RunCoopMenu(Window, Renderer, Art, Sheets, Random, Settings))
+            std::optional<FSession> Loaded;
+            if (std::unique_ptr<FCoopLink> Link = RunCoopMenu(Window, Renderer, Art, Sheets, Random, Settings, Loaded))
             {
                 Coop = std::move(Link);
+                Chosen = Loaded.value_or(FSession{});
                 return EMenuChoice::Coop;
             }
         }
@@ -9156,16 +9173,16 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
                 break;
             }
 
-            // The Co-op menu's game: a host starts a new game; a client goes on to wait for the host's level.
+            // The Co-op menu's game: a host starts a new game or a saved one; a client goes on to wait for the host's level.
             if (Choice == EMenuChoice::Coop)
             {
                 Coop = std::move(MenuCoop);
                 bNetworkAwake = true;
                 bMenu = false;
                 Carried.reset();
-                Restore.reset();
-                Path = LevelPath;
-                bNewGame = Coop->IsHost();
+                Restore = Chosen.Folder.empty() ? std::nullopt : std::optional(std::move(Chosen));
+                Path = Restore ? Restore->LevelPath : LevelPath;
+                bNewGame = Coop->IsHost() && !Restore;
                 if (!Coop->IsHost())
                 {
                     continue;
@@ -9205,9 +9222,23 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
             GameAudio->CenterPans();
         }
 
+        // A level started from a saved game, a loaded one or a retry, takes the session along, which a client starts from as the host does.
         if (Coop && Coop->IsHost())
         {
-            Coop->AnnounceLevel(Path);
+            std::optional<std::string> Objects = Restore ? ReadSessionObjects(*Restore) : std::nullopt;
+            Coop->AnnounceLevel(Path, Objects ? std::optional(FCoopSession{ .LastText = FormatLastText(*Restore, {}), .Objects = std::move(*Objects) }) : std::nullopt);
+        }
+        else if (Coop)
+        {
+            Restore.reset();
+            const std::optional<FCoopSession>& Shared = Coop->GetLevelSession();
+            const std::optional<FSession> Parsed = Shared ? ParseLastText(Shared->LastText) : std::nullopt;
+            const std::filesystem::path Folder = UserDataDirectory() / "Coop";
+            if (Parsed && Parsed->LevelPath == Path && WriteSession(Folder, true, *Parsed, Shared->Objects))
+            {
+                Restore = ReadSession(DefaultSessionFolder(Folder));
+                Carried.reset();
+            }
         }
 
         SetPuppetWorld(Coop && !Coop->IsHost());

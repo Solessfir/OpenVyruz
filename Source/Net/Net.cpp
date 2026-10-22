@@ -14,8 +14,6 @@ namespace
 constexpr size_t ChannelCount = 2;
 // How long Close waits for the goodbyes to go out.
 constexpr uint32_t CloseMilliseconds = 200;
-// Text and lists in a message are bounded, so a bad length cannot make a reader allocate without end.
-constexpr uint32_t MaxStringBytes = 1024;
 
 int ENetUsers = 0;
 
@@ -380,17 +378,17 @@ void FDiscovery::Poll(const uint32_t NowMilliseconds)
     }
 }
 
-void FWriter::PutString(const std::string_view Text)
+void FWriter::PutString(const std::string_view Text, const uint32_t MaxBytes)
 {
-    const uint32_t Size = uint32_t(std::min<size_t>(Text.size(), MaxStringBytes));
+    const uint32_t Size = uint32_t(std::min<size_t>(Text.size(), MaxBytes));
     Put(Size);
     Bytes.insert(Bytes.end(), Text.begin(), Text.begin() + Size);
 }
 
-std::string FReader::GetString()
+std::string FReader::GetString(const uint32_t MaxBytes)
 {
     const uint32_t Size = Get<uint32_t>();
-    if (Size > MaxStringBytes || At + Size > Bytes.size())
+    if (Size > MaxBytes || At + Size > Bytes.size())
     {
         bFailed = true;
         return {};

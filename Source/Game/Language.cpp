@@ -376,6 +376,7 @@ constexpr FTranslation PortTranslations[] = {
     { "Cannot reach the host.", "Нет связи с хостом." },
     { "Cooperative", "Совместная игра" },
     { "Everyone in plays from the first level.", "Все участники начнут с первого уровня." },
+    { "Everyone in plays on from a saved game.", "Все участники продолжат с сохраненной игры." },
     { "Find a game on the network, or type its address.", "Найти игру в сети или ввести её адрес." },
     { "Game of %s", "Игра %s" },
     { "Host Game", "Создать игру" },

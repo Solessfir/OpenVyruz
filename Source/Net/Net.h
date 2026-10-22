@@ -63,6 +63,10 @@ private:
     std::unique_ptr<FState> State;
 };
 
+// Text in a message is bounded, so a bad length cannot make a reader allocate without end: a name or a line by default, a whole file where one is sent.
+inline constexpr uint32_t MaxStringBytes = 1024;
+inline constexpr uint32_t MaxFileBytes = 8u << 20;
+
 // A message body in little-endian order, as both builds of the port read it.
 class FWriter
 {
@@ -75,7 +79,7 @@ public:
         Bytes.insert(Bytes.end(), Raw, Raw + sizeof(T));
     }
 
-    void PutString(std::string_view Text);
+    void PutString(std::string_view Text, uint32_t MaxBytes = MaxStringBytes);
     const std::vector<uint8_t>& Data() const { return Bytes; }
 
 private:
@@ -104,7 +108,7 @@ public:
         return Value;
     }
 
-    std::string GetString();
+    std::string GetString(uint32_t MaxBytes = MaxStringBytes);
     bool IsGood() const { return !bFailed; }
     bool AtEnd() const { return At == Bytes.size(); }
 

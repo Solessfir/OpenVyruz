@@ -61,6 +61,18 @@ FCoopShip ReadShip(Net::FReader& Reader)
     return Ship;
 }
 
+void PutLevel(Net::FWriter& Writer, const std::string& Path, const std::optional<FCoopSession>& Session)
+{
+    Writer.Put(EMessage::Level);
+    Writer.PutString(Path);
+    Writer.Put(uint8_t(Session ? 1 : 0));
+    if (Session)
+    {
+        Writer.PutString(Session->LastText, Net::MaxFileBytes);
+        Writer.PutString(Session->Objects, Net::MaxFileBytes);
+    }
+}
+
 uint32_t GetCount(Net::FReader& Reader)
 {
     const uint32_t Count = Reader.Get<uint32_t>();
@@ -213,8 +225,7 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
         if (!CurrentLevel.empty())
         {
             Net::FWriter Level;
-            Level.Put(EMessage::Level);
-            Level.PutString(CurrentLevel);
+            PutLevel(Level, CurrentLevel, LevelSession);
             Endpoint.Send(Peer, Level.Data(), Net::EChannel::Reliable);
             SendCreatedTo(Peer, AllCreated);
         }
@@ -245,8 +256,17 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
     case EMessage::Level:
     {
         std::string Path = Reader.GetString();
+        std::optional<FCoopSession> Session;
+        if (Reader.Get<uint8_t>() != 0)
+        {
+            Session.emplace();
+            Session->LastText = Reader.GetString(Net::MaxFileBytes);
+            Session->Objects = Reader.GetString(Net::MaxFileBytes);
+        }
+
         if (!bHost && Reader.IsGood())
         {
+            LevelSession = std::move(Session);
             PendingLevel = std::move(Path);
             PendingCreated.clear();
             PendingSnapshot.reset();
@@ -393,13 +413,13 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
     }
 }
 
-void FCoopLink::AnnounceLevel(const std::string_view LevelPath)
+void FCoopLink::AnnounceLevel(const std::string_view LevelPath, std::optional<FCoopSession> Session)
 {
     CurrentLevel = std::string(LevelPath);
+    LevelSession = std::move(Session);
     AllCreated.clear();
     Net::FWriter Writer;
-    Writer.Put(EMessage::Level);
-    Writer.PutString(CurrentLevel);
+    PutLevel(Writer, CurrentLevel, LevelSession);
     Endpoint.SendToAll(Writer.Data(), Net::EChannel::Reliable);
 }
 
