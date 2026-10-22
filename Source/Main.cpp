@@ -1307,12 +1307,26 @@ void PollEvents(GLFWwindow* const Window)
         return !glfwWindowShouldClose(Window)
             && (glfwGetWindowAttrib(Window, GLFW_ICONIFIED) != 0 || (bFocusedOnce && glfwGetWindowAttrib(Window, GLFW_FOCUSED) == 0));
     };
+    // A network game goes on out of focus, but silent, as an inactive game is.
+    static bool bNetworkMuted = false;
     if (bNetworkAwake && IsInactive())
     {
         bCursorToCapture = true;
+        if (GameAudio && !bNetworkMuted)
+        {
+            GameAudio->SetPaused(true);
+        }
+
+        bNetworkMuted = true;
         return;
     }
 
+    if (bNetworkMuted && GameAudio)
+    {
+        GameAudio->SetPaused(false);
+    }
+
+    bNetworkMuted = false;
     if (!IsInactive())
     {
         if (bCursorToCapture)
