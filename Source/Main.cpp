@@ -7133,6 +7133,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     GameAudio->UpdateVoices();
                 }
 
+                // The menu's own loop leaves the motor and the weapon in hand alone, which would go on as they were; they start again with the level.
+                if (GameAudio)
+                {
+                    GameAudio->StopLevelChannels();
+                }
+
                 // A network game goes on under the menu, which closes when the level ends there: the host lost, a lift taken or the game over.
                 std::optional<FLevelEnd> EndUnderMenu;
                 if (Coop)
