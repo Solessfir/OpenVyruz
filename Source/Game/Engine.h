@@ -190,6 +190,8 @@ struct FSurpriseState
 {
     // Newest first, as ConsumeItem prepends them.
     std::vector<FCarriedSurprise> Carried;
+    // The port's co-op: how many surprises the player has collected, by which a client learns of the host's copy of its ship getting one.
+    uint32_t Collected = 0;
     // Object +0xd4: only one surprise acts at a time.
     ESurprise Active = ESurprise::None;
     bool bReversed = false;
@@ -847,8 +849,8 @@ struct FEffect
 struct FOrbiter
 {
     FEffect Effect;
-    // The host's object index; none for the player.
-    std::optional<size_t> Host;
+    // The object it circles: a body, or for a surprise's the player whose surprise it is.
+    size_t Host = 0;
     float Phase = 0.f;
     int32_t OnTimer = 0;
     int32_t OffTimer = 0;
@@ -1102,6 +1104,8 @@ void ClearLastShots(FPlayerInventory& Inventory);
 std::optional<FPickup> CreatePickup(const FLevel& Level, size_t ObjectIndex);
 // FUN_0041cf40 with the item it comes from: the surprise in effect ends and the new one is carried, announced and waits half a second.
 void CarrySurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Type, const FLevelObject& Item, FMessages& Messages);
+// FUN_0041cf40 for a newly collected surprise, without the item.
+void CollectSurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Type, FMessages& Messages);
 FPlayerInventory CreateInventory(const FLevelObject& Player);
 // Collects every pickup the player's circle touches; returns how many were taken and marks them removed in the level.
 // With several players, a pack of energy, shield or ammo is every player's own and stays until each has taken it, its money going to the first; Team takes the money, keys and codes.
@@ -1148,8 +1152,9 @@ bool StepSavingPlots(FSavingState& State, std::span<const FSavingPlot> Plots, co
 
 // FUN_00439510 for the player after its surprises: a complete code with a timeout counts down on its first part, warns, and at the end goes back into the level (or is destroyed without Reactivate-after).
 void StepCodeTimeouts(FPlayerInventory& Inventory, FLevel& Level, FMessages& Messages, uint32_t StepMilliseconds);
-void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
-    FMessages& Messages, uint32_t StepMilliseconds);
+// PlayerObject is the player's object index, which the surprise's orbiters circle.
+void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, size_t PlayerObject, FMovementClass& Class,
+    FPlayerInventory& Inventory, FMessages& Messages, uint32_t StepMilliseconds);
 // One game step of the player's part of EngineUpdateObjects (004406e0).
 // The player as an obstacle for an actor's move, and the knock damage it took.
 struct FPlayerKnock
@@ -1199,8 +1204,9 @@ void StepObjectBobs(FCombat& Combat, FLevel& Level, std::span<FObjectBody> Bodie
 // SpriteSize is the smaller side of the player's current frame, which picks the random muzzle distance.
 // The world offset Distance along a direction, by the table WeaponFire and ObjectDraw use (0050d440).
 FCollisionPoint WorldFacingOffset(int Direction, float Distance);
+// The port's co-op: without bSwitchWhenEmpty, as for the host's copy of a remote player whose own machine picks the weapon, an empty weapon holds its fire instead of moving to the next.
 void StepPlayerWeapon(FCombat& Combat, bool bFire, FPlayerState& Player, const FLevelObject& PlayerObject, size_t PlayerIndex, float SpriteSize,
-    FPlayerInventory& Inventory, FMessages& Messages);
+    FPlayerInventory& Inventory, FMessages& Messages, bool bSwitchWhenEmpty = true);
 // The seeker scan, top rotation and fire decision of every turret (SeekerUpdate at 0042c5a0), then its weapon update.
 void StepTurrets(FCombat& Combat, uint32_t StepMilliseconds, const FTerrainCollision& Terrain, const FLevel& Level, std::vector<FObjectBody>& Bodies,
     FPlayerTargets Players);

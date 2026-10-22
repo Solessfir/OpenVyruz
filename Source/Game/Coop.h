@@ -14,7 +14,7 @@
 
 // The port's co-op over the network (Coop.md): the host runs the level and sends what it is; each client moves its own ship and sends that.
 // Slot 0 is the host's player, 1 to 3 the clients'.
-inline constexpr uint32_t CoopProtocolVersion = 5;
+inline constexpr uint32_t CoopProtocolVersion = 1;
 inline constexpr uint8_t HostSlot = 0;
 
 // A ship as its owner moves it, and whether it fires and with which weapon slot.
@@ -31,7 +31,11 @@ struct FCoopShip
     uint32_t ReactorMilliseconds = 0;
     bool bFire = false;
     bool bThrust = false;
+    // The Invisible surprise, which every machine draws.
+    bool bInvisible = false;
     uint8_t WeaponSlot = 1;
+    // The ship's respawns: the host's count in a snapshot, the one its owner has taken in a ship it sends.
+    uint32_t Respawns = 0;
 };
 
 // A player in the host's snapshot: its ship, its numbers and whether it is down or dead.
@@ -47,6 +51,9 @@ struct FCoopPlayer
     bool bDead = false;
     // How many pickups the player has collected in the level.
     uint32_t Collected = 0;
+    // How many surprises the player has collected, and the newest it carries, none being 0: its own machine runs it too.
+    uint32_t Surprises = 0;
+    uint8_t Surprise = 0;
     std::vector<float> Ammo;
 };
 
@@ -124,6 +131,8 @@ public:
     // Whether a client has its slot from the host; a host always has.
     bool IsJoined() const { return bHost || bWelcomed; }
     bool IsLost() const { return bLost; }
+    // Client: why the host would not have it, if it said.
+    const std::string& GetRefusal() const { return Refusal; }
     const std::vector<FCoopMember>& GetMembers() const { return Members; }
 
     // Takes in everything that arrived.
@@ -170,9 +179,13 @@ private:
     bool bHost = false;
     bool bWelcomed = false;
     bool bLost = false;
+    std::string Refusal;
     uint8_t LocalSlot = HostSlot;
     std::string LocalName;
     std::string CurrentLevel;
+    // Host: the count of levels it announced. Client: the host's count for the level the game plays, and for the one it has yet to take; snapshots and ships of another level are left out.
+    uint32_t LevelSerial = 0;
+    uint32_t PendingSerial = 0;
     std::optional<FCoopSession> LevelSession;
     std::vector<FCoopMember> Members;
     std::vector<std::pair<uint32_t, uint8_t>> PeerSlots;

@@ -3915,7 +3915,7 @@ std::unique_ptr<FCoopLink> RunCoopJoin(GLFWwindow* const Window, FRenderer& Rend
             return Link;
         }
 
-        Problem = bCancelled ? std::string() : std::string("Cannot reach the host.");
+        Problem = bCancelled ? std::string() : !Link->GetRefusal().empty() ? Link->GetRefusal() : std::string("Cannot reach the host.");
     }
 }
 
@@ -4400,6 +4400,8 @@ struct FLevelPlayer
     // The port's co-op: a player out of energy is down for this long, unable to steer or fire and left alone by the enemies, unless a teammate stays close long enough to bring it back.
     std::optional<int32_t> DownTimer;
     int32_t ReviveTime = 0;
+    // The times the player came back where the team last saved: the host's count moves a client's ship there, and the client's own comes back with its ship.
+    uint32_t Respawns = 0;
     // The forward input of the last step, which a blocked motor answers with start-engine.wav, and the fire input, which the voices follow.
     bool bThrustInput = false;
     bool bFireInput = false;
@@ -5780,7 +5782,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // A ship as the network carries it, and the state a remote one takes from it.
     const auto MakeShip = [&](const FLevelPlayer& Each)
     {
-        FCoopShip Ship{ .Slot = Each.Slot, .bFire = Each.bFireInput, .bThrust = Each.bThrustInput, .WeaponSlot = uint8_t(Each.Inventory.Arms.Slot) };
+        FCoopShip Ship{ .Slot = Each.Slot, .bFire = Each.bFireInput, .bThrust = Each.bThrustInput, .WeaponSlot = uint8_t(Each.Inventory.Arms.Slot), .Respawns = Each.Respawns };
         if (Each.State)
         {
             const FPlayerState& State = *Each.State;
@@ -5792,6 +5794,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             Ship.Pose = State.Pose;
             Ship.TargetPose = State.TargetPose;
             Ship.ReactorMilliseconds = State.ReactorMilliseconds;
+            Ship.bInvisible = State.bInvisible;
         }
 
         return Ship;
@@ -5847,6 +5850,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         State.Pose = std::clamp(Ship.Pose, 1, PlayerPoseCount);
         State.TargetPose = std::clamp(Ship.TargetPose, 1, PlayerPoseCount);
         State.ReactorMilliseconds = Ship.ReactorMilliseconds;
+        // The host runs every player's surprises, so its own copy says whether a ship is invisible.
+        State.bInvisible = bPuppet ? Ship.bInvisible : State.bInvisible;
         Each.bNetFire = Ship.bFire;
         Each.bThrustInput = Ship.bThrust;
         if (Combat && Ship.WeaponSlot != Each.Inventory.Arms.Slot)
@@ -5902,6 +5907,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 .bDown = Each.DownTimer.has_value(),
                 .bDead = Each.DeathTimer.has_value(),
                 .Collected = Each.Collected,
+                .Surprises = Each.Inventory.Surprises.Collected,
+                .Surprise = Each.Inventory.Surprises.Carried.empty() ? uint8_t(0) : uint8_t(Each.Inventory.Surprises.Carried.front().Type),
             });
             for (const FAmmoStock& Stock : Each.Inventory.Ammo)
             {
@@ -6038,9 +6045,29 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 GameAudio->PlayPickup();
             }
 
+            // The host brought this machine's ship back where the team last saved.
+            if (Each == &Local && Sent.Ship.Respawns != Local.Respawns)
+            {
+                Local.State->Position = Local.State->PreviousPosition = Sent.Ship.Position;
+                Local.State->Center = CollisionFromWorld(Sent.Ship.Position);
+                Local.State->Velocity = {};
+                Local.Respawns = Sent.Ship.Respawns;
+            }
+
             Each->Collected = Sent.Collected;
 
             FPlayerInventory& Owned = Each->Inventory;
+            // The host's copy of this ship collected a surprise, which this machine runs as well for the ship's handling and look, with its blinking icon; its text replaces the host's.
+            if (Each == &Local && Sent.Surprises != Owned.Surprises.Collected && Combat)
+            {
+                if (Sent.Surprise > uint8_t(ESurprise::Random) && Sent.Surprise <= uint8_t(ESurprise::Nop))
+                {
+                    CollectSurprise(*Combat, Owned, ESurprise(Sent.Surprise), Messages);
+                }
+
+                Owned.Surprises.Collected = Sent.Surprises;
+            }
+
             Owned.bHit = Owned.bHit || Sent.Energy + Sent.Shield < Owned.Energy + Owned.Shield;
             Owned.Energy = Sent.Energy;
             Owned.EnergyMax = Sent.EnergyMax;
@@ -6409,7 +6436,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             Coop->SendMessages(Each.Slot, Each.Messages.TakeForwarded());
                         }
 
-                        if (const std::optional<FCoopShip> Ship = Each.bRemote ? Coop->TakeShip(Each.Slot) : std::nullopt)
+                        // A ship sent before its owner learnt of its last respawn would put it back where it fell.
+                        if (const std::optional<FCoopShip> Ship = Each.bRemote ? Coop->TakeShip(Each.Slot) : std::nullopt; Ship && Ship->Respawns == Each.Respawns)
                         {
                             ApplyShip(Each, *Ship);
                         }
@@ -6427,7 +6455,6 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         NextLevel = std::move(*Next);
                     }
 
-                    TakeCreated(Coop->TakeCreated());
                     // The host placed its screen messages in a 640-pixel view; this one may be wider.
                     for (auto& [Message, Placement] : Coop->TakeMessages())
                     {
@@ -6435,15 +6462,20 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         Messages.Add(std::move(Message), Placement);
                     }
 
-                    if (const std::optional<FCoopSnapshot> Snapshot = Coop->TakeSnapshot())
+                    // Once the host has moved on, what it makes and sends is the next level's, and this level's ship would land there.
+                    if (!NextLevel)
                     {
-                        TakeSnapshot(*Snapshot);
-                    }
+                        TakeCreated(Coop->TakeCreated());
+                        if (const std::optional<FCoopSnapshot> Snapshot = Coop->TakeSnapshot())
+                        {
+                            TakeSnapshot(*Snapshot);
+                        }
 
-                    if (ClockMilliseconds() - ShipAt >= ShipPeriodMilliseconds)
-                    {
-                        ShipAt = ClockMilliseconds();
-                        Coop->SendShip(MakeShip(Local));
+                        if (ClockMilliseconds() - ShipAt >= ShipPeriodMilliseconds)
+                        {
+                            ShipAt = ClockMilliseconds();
+                            Coop->SendShip(MakeShip(Local));
+                        }
                     }
                 }
             }
@@ -6576,23 +6608,27 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             continue;
                         }
 
+                        // A downed ship coasts to a stop and can still be pushed, but takes no command and no surprise.
+                        if (Each.DownTimer)
+                        {
+                            if (!Each.bRemote)
+                            {
+                                StepPlayer(State, *Each.Class, {}, StepMilliseconds, *Terrain, *Level, Bodies);
+                            }
+
+                            continue;
+                        }
+
+                        // The player's update starts with its surprises (FUN_0041d290). The host runs a remote player's too, for what they do to its numbers, weapons and foes; its own machine runs them for the ship's handling and look.
+                        if (Combat)
+                        {
+                            StepSurprises(*Combat, *Level, Bodies, State, Each.Index, *Each.Class, Owned, MessagesOf(Each), StepMilliseconds);
+                        }
+
                         // A remote ship moves by what the network says.
                         if (Each.bRemote)
                         {
                             continue;
-                        }
-
-                        // A downed ship coasts to a stop and can still be pushed, but takes no command and no surprise.
-                        if (Each.DownTimer)
-                        {
-                            StepPlayer(State, *Each.Class, {}, StepMilliseconds, *Terrain, *Level, Bodies);
-                            continue;
-                        }
-
-                        // The player's update starts with its surprises (FUN_0041d290).
-                        if (Combat)
-                        {
-                            StepSurprises(*Combat, *Level, Bodies, State, *Each.Class, Owned, MessagesOf(Each), StepMilliseconds);
                         }
 
                         StepCodeTimeouts(Owned, *Level, MessagesOf(Each), StepMilliseconds);
@@ -6671,8 +6707,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
 
                     // EngineRunLevel runs the full EngineUpdateObjects only when Time Warp's counter (session +0x21f0) has run out, then sets it to the divisor (+0x21f4);
-                    // the steps between update the player alone, so the rest of the level moves at a quarter of its speed. The local player's Time Warp sets the pace.
-                    FSurpriseState& Warp = Inventory.Surprises;
+                    // the steps between update the player alone, so the rest of the level moves at a quarter of its speed. The local player's Time Warp sets the pace, and on the host any player's.
+                    const auto Warped = bPuppet ? Players.end() : std::ranges::find_if(Players, [](const FLevelPlayer& Each) { return Each.State && Each.Inventory.Surprises.WarpDivisor != 0; });
+                    FSurpriseState& Warp = Warped != Players.end() ? Warped->Inventory.Surprises : Inventory.Surprises;
                     const bool bFullUpdate = Warp.WarpCounter-- == 0;
                     ++FrameSteps;
                     FrameFullUpdates += bFullUpdate ? 1 : 0;
@@ -6789,7 +6826,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             const bool bFire = !Each.Inventory.Surprises.bBlockedMotor && !bFinaleStarted && bLiveFire;
                             if (!Each.DeathTimer && !Each.DownTimer)
                             {
-                                StepPlayerWeapon(*Combat, bFire, *Each.State, *Each.Object, Each.Index, Each.SpriteSize, Each.Inventory, MessagesOf(Each));
+                                // A remote player's own machine moves on from an empty weapon and sends the slot, which the copy here would otherwise flip back and forth against, each switch clearing the weapon's delay.
+                                StepPlayerWeapon(*Combat, bFire, *Each.State, *Each.Object, Each.Index, Each.SpriteSize, Each.Inventory, MessagesOf(Each), !Each.bRemote);
                             }
                         }
 
@@ -7033,6 +7071,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                                 State.Position = State.PreviousPosition = TeamRespawn;
                                 State.Center = CollisionFromWorld(TeamRespawn);
                                 State.Velocity = {};
+                                ++Each.Respawns;
                             }
 
                             Each.DownTimer.reset();
@@ -7341,7 +7380,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
             const bool bNextPressed = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS && !bNextKeyDown;
             bNextKeyDown = glfwGetKey(Window, GLFW_KEY_N) == GLFW_PRESS;
-            if (bNextPressed && !DebugLevels.empty())
+            // A co-op client goes only where the host does.
+            if (bNextPressed && !DebugLevels.empty() && !bPuppet)
             {
                 const size_t Next = (CurrentIndex + 1) % DebugLevels.size();
                 std::printf("Debug: level %zu of %zu\n", Next + 1, DebugLevels.size());

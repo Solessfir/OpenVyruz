@@ -394,6 +394,8 @@ constexpr FTranslation PortTranslations[] = {
     { "%s is in the lift !\nJoin them to go on.", "%s в лифте !\nПрисоединяйтесь, чтобы ехать дальше." },
     { "%s is down !\nGet close to bring them back.", "%s подбит !\nПодлетите ближе, чтобы помочь." },
     { "Back in the fight !", "Снова в бою !" },
+    { "The game is full.", "В игре нет мест." },
+    { "The host plays another version.", "У хоста другая версия игры." },
     { "The lift waits for the others.", "Лифт ждет остальных." },
     { "You are down !\nStay close to a teammate to get back up.", "Вы подбиты !\nДержитесь рядом с напарником, чтобы подняться." },
 };

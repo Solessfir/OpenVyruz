@@ -2298,11 +2298,10 @@ void AddCentreMessage(FMessages& Messages, std::string Text, const uint32_t Diff
 
 
 // FUN_0041cf40 for a newly collected surprise: the surprise in effect ends, the new one waits half a second, and its text and blinking icon appear for as long as it lasts.
-namespace
-{
 void CollectSurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Type, FMessages& Messages)
 {
     FSurpriseState& State = Inventory.Surprises;
+    ++State.Collected;
     std::erase_if(State.Carried, [&](const FCarriedSurprise& Carried)
     {
         if (Carried.Type != State.Active)
@@ -2359,7 +2358,6 @@ void CollectSurprise(FCombat& Combat, FPlayerInventory& Inventory, ESurprise Typ
     }
 
     State.Carried.insert(State.Carried.begin(), Carried);
-}
 }
 
 void CarrySurprise(FCombat& Combat, FPlayerInventory& Inventory, const ESurprise Type, const FLevelObject& Item, FMessages& Messages)
@@ -3239,7 +3237,7 @@ void ThrowBounceSpark(FCombat& Combat, const std::array<std::string, 4>& Sides, 
 
 // FUN_0041c180: each class in turn, from the last named, makes Count FX objects at the host, Phase spread over a full turn from the last copy back,
 // at the class's altitude plus the host's.
-void AttachOrbiters(FCombat& Combat, const std::optional<size_t> Host, const FCollisionPoint HostPosition, const float HostAltitude, const std::span<const std::string_view> ClassNames)
+void AttachOrbiters(FCombat& Combat, const size_t Host, const FCollisionPoint HostPosition, const float HostAltitude, const std::span<const std::string_view> ClassNames)
 {
     constexpr float FullTurn = 6.2831855f;
     for (const std::string_view Name : std::views::reverse(ClassNames))
@@ -4242,8 +4240,8 @@ std::expected<void, std::string> ArmSeeker(FCombat& Combat, const FLevel& Level,
 namespace
 {
 // surprise::FUN_0041c390: what a surprise does when it starts, unless another is in effect.
-void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
-    const ESurprise Type)
+void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, const size_t PlayerObject, FMovementClass& Class,
+    FPlayerInventory& Inventory, const ESurprise Type)
 {
     FSurpriseState& State = Inventory.Surprises;
     if (State.Active != ESurprise::None)
@@ -4252,9 +4250,8 @@ void StartSurprise(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
     }
 
     // FUN_0041c340 attaches the orbiting FX of the tables at 0050d628, 0050d62c and 0050d638 to the player.
-    const std::optional<size_t> PlayerFound = FindPlayerObject(Level);
-    const float PlayerAltitude = PlayerFound ? Level.Objects[*PlayerFound].Altitude : 0.f;
-    const auto Attach = [&](const std::span<const std::string_view> Names) { AttachOrbiters(Combat, std::nullopt, Player.Position, PlayerAltitude, Names); };
+    const float PlayerAltitude = PlayerObject < Level.Objects.size() ? Level.Objects[PlayerObject].Altitude : 0.f;
+    const auto Attach = [&](const std::span<const std::string_view> Names) { AttachOrbiters(Combat, PlayerObject, Player.Position, PlayerAltitude, Names); };
     constexpr std::array<std::string_view, 1> BananaFx = { "no-inertia-control-fx-1" };
     constexpr std::array<std::string_view, 3> TouchAndDestroyFx = { "touch-and-destroy-fx-1", "touch-and-destroy-fx-2", "touch-and-destroy-fx-3" };
     constexpr std::array<std::string_view, 5> InvulnerabilityFx = {
@@ -4595,8 +4592,8 @@ void StepCodeTimeouts(FPlayerInventory& Inventory, FLevel& Level, FMessages& Mes
     });
 }
 
-void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, FMovementClass& Class, FPlayerInventory& Inventory,
-    FMessages& Messages, const uint32_t StepMilliseconds)
+void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody>& Bodies, FPlayerState& Player, const size_t PlayerObject, FMovementClass& Class,
+    FPlayerInventory& Inventory, FMessages& Messages, const uint32_t StepMilliseconds)
 {
     FSurpriseState& State = Inventory.Surprises;
     const int32_t Step = int32_t(StepMilliseconds);
@@ -4615,7 +4612,7 @@ void StepSurprises(FCombat& Combat, const FLevel& Level, std::vector<FObjectBody
             Carried->Timeout -= Step;
             if (!Carried->bStarted)
             {
-                StartSurprise(Combat, Level, Bodies, Player, Class, Inventory, Carried->Type);
+                StartSurprise(Combat, Level, Bodies, Player, PlayerObject, Class, Inventory, Carried->Type);
                 Carried->bStarted = true;
             }
 
@@ -5294,7 +5291,7 @@ void SelectPlayerWeapon(const FCombat& Combat, const size_t Slot, FPlayerInvento
 }
 
 void StepPlayerWeapon(FCombat& Combat, const bool bFire, FPlayerState& Player, const FLevelObject& PlayerObject, const size_t PlayerIndex,
-    const float SpriteSize, FPlayerInventory& Inventory, FMessages& Messages)
+    const float SpriteSize, FPlayerInventory& Inventory, FMessages& Messages, const bool bSwitchWhenEmpty)
 {
     // EngineUpdateObjects for the player, before its weapon: Triple Fire opens the spread while the trigger is held and closes it otherwise (FUN_00443b80),
     // and Circular Fire makes the next 24 shots turn the player one direction each. A volley under either takes one round.
@@ -5331,6 +5328,11 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, FPlayerState& Player, c
     // WeaponHasAmmo at 00444450: firing an empty weapon moves to the next one with ammo, and the shot goes out from that.
     if (const FAmmoStock* const Stock = SlotAmmo(Combat, Inventory.Arms.Slot, Inventory); bFire && Stock && Stock->Count == 0.f)
     {
+        if (!bSwitchWhenEmpty)
+        {
+            return;
+        }
+
         SelectPlayerWeapon(Combat, NextPlayerWeaponSlot(Combat, Inventory), Inventory, Messages);
         if (Inventory.Arms.Slot == 0 || Inventory.Arms.Slot > Inventory.Arms.SlotStates.size())
         {
@@ -5402,7 +5404,7 @@ void StepPlayerWeapon(FCombat& Combat, const bool bFire, FPlayerState& Player, c
         Player.Pose = Player.Pose + 2 > PlayerPoseCount ? 1 : Player.Pose + 2;
     }
     // WeaponFire calls WeaponHasAmmo again once a shot leaves the stock empty, so the next weapon is in hand at once.
-    if (Stock && RoundsBefore >= 1.f && Stock->Count < 1.f)
+    if (Stock && RoundsBefore >= 1.f && Stock->Count < 1.f && bSwitchWhenEmpty)
     {
         SelectPlayerWeapon(Combat, NextPlayerWeaponSlot(Combat, Inventory), Inventory, Messages);
     }
@@ -6660,23 +6662,22 @@ namespace
 // it goes once its host is gone or the check-event no longer holds (FUN_0041c0b0), or waits hidden for its next on time when its class has one.
 // A circular one stands Ray away from the host at clock * Angular-speed + Phase, through the collision-to-world scales, and bobs with the host's altitude.
 // ponytail: Only-when-visible (FX flag 4) is not traced; no reader of it was found.
-// ponytail: an orbiter without a host follows the first player, whose surprises start it; per-player orbiters come with per-player surprises.
-void StepOrbiters(FCombat& Combat, const FLevel& Level, const std::span<FObjectBody> Bodies, const FPlayerTarget& Player, const uint32_t StepMilliseconds)
+// A surprise's orbiter circles the player whose surprise it is, and goes with that player.
+void StepOrbiters(FCombat& Combat, const FLevel& Level, const std::span<FObjectBody> Bodies, const FPlayerTargets Players, const uint32_t StepMilliseconds)
 {
     const int32_t Step = int32_t(StepMilliseconds);
     std::erase_if(Combat.Orbiters, [&](FOrbiter& Orbiter)
     {
         const FEffectClass& Class = Combat.EffectClasses[Orbiter.Effect.ClassIndex];
-        FObjectBody* const HostBody = Orbiter.Host ? [&]() -> FObjectBody*
-        {
-            const auto Found = std::ranges::find(Bodies, *Orbiter.Host, &FObjectBody::ObjectIndex);
-            return Found != Bodies.end() && !Level.Objects[*Orbiter.Host].bRemoved ? &*Found : nullptr;
-        }()
-                                                   : nullptr;
-        if (Orbiter.Host && !HostBody)
+        const auto HostPlayer = std::ranges::find(Players, Orbiter.Host, &FPlayerTarget::ObjectIndex);
+        const auto Found = std::ranges::find(Bodies, Orbiter.Host, &FObjectBody::ObjectIndex);
+        FObjectBody* const HostBody = HostPlayer == Players.end() && Found != Bodies.end() && !Level.Objects[Orbiter.Host].bRemoved ? &*Found : nullptr;
+        if (HostPlayer == Players.end() && !HostBody)
         {
             return true;
         }
+
+        const FPlayerTarget& Player = HostBody ? Players.front() : *HostPlayer;
 
         const auto Switch = [&](const bool bOn)
         {
@@ -6778,7 +6779,7 @@ void StepProjectiles(FCombat& Combat, const uint32_t StepMilliseconds, const FTe
 {
     if (!Players.empty())
     {
-        StepOrbiters(Combat, Level, Bodies, Players.front(), StepMilliseconds);
+        StepOrbiters(Combat, Level, Bodies, Players, StepMilliseconds);
     }
 
     // An effect or spark only starts near some player's view; the viewer is that player, or the first.
@@ -7856,14 +7857,15 @@ std::expected<std::string, std::string> VerifyFireSurprises(FResourceArchive& Ar
     FMovementClass PlayerClass = *Class;
     Player.bTouchAndDestroy = false;
     const size_t OrbitersBefore = Combat->Orbiters.size();
-    StartSurprise(*Combat, *Level, Bodies, Player, PlayerClass, Inventory, ESurprise::TouchAndDestroy);
+    StartSurprise(*Combat, *Level, Bodies, Player, *PlayerIndex, PlayerClass, Inventory, ESurprise::TouchAndDestroy);
     const size_t Stars = Combat->Orbiters.size() - OrbitersBefore;
     const FPlayerTarget Target2{ .State = Player, .Radius = Class->Radius, .Inventory = Inventory, .ObjectIndex = *PlayerIndex };
     StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Target2, Messages);
-    const size_t StarsHeld = size_t(std::ranges::count_if(Combat->Orbiters, [](const FOrbiter& Orbiter) { return !Orbiter.Host; }));
+    const auto Circles = [&](const FOrbiter& Orbiter) { return Orbiter.Host == *PlayerIndex; };
+    const size_t StarsHeld = size_t(std::ranges::count_if(Combat->Orbiters, Circles));
     EndSurprise(Inventory.Surprises, ESurprise::TouchAndDestroy, Player, PlayerClass, Inventory);
     StepProjectiles(*Combat, StepMilliseconds, *Terrain, *Level, Bodies, Target2, Messages);
-    const size_t StarsLeft = size_t(std::ranges::count_if(Combat->Orbiters, [](const FOrbiter& Orbiter) { return !Orbiter.Host; }));
+    const size_t StarsLeft = size_t(std::ranges::count_if(Combat->Orbiters, Circles));
     if (Stars != 15 || StarsHeld != Stars || StarsLeft != 0)
     {
         return std::unexpected(std::format("Touch-and-destroy put {} stars round the player, kept {} and left {}", Stars, StarsHeld, StarsLeft));
@@ -8543,7 +8545,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
             CollectSurprise(Check, Surprised, ESurprise(Type), SurpriseMessages);
             for (uint32_t Time = 0; Time < StartMilliseconds; Time += SurpriseStep)
             {
-                StepSurprises(Check, Level, Bodies, Player, Class, Surprised, SurpriseMessages, SurpriseStep);
+                StepSurprises(Check, Level, Bodies, Player, 0, Class, Surprised, SurpriseMessages, SurpriseStep);
             }
 
             // Trap and Destroy-around last one millisecond and are over by now.
@@ -8560,7 +8562,7 @@ std::expected<std::string, std::string> VerifyCombat(FResourceArchive& Archive)
 
             for (int32_t Time = 0; Time < EndMilliseconds; Time += int32_t(SurpriseStep))
             {
-                StepSurprises(Check, Level, Bodies, Player, Class, Surprised, SurpriseMessages, SurpriseStep);
+                StepSurprises(Check, Level, Bodies, Player, 0, Class, Surprised, SurpriseMessages, SurpriseStep);
             }
 
             if (Surprised.Surprises.Active != ESurprise::None || !Surprised.Surprises.Carried.empty() || Player.bInvisible)

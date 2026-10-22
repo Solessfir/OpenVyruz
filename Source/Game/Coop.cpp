@@ -18,6 +18,15 @@ enum class EMessage : uint8_t
     Created,
     Messages,
     Pause,
+    // Keeps its number and form in every protocol version, since it answers a client of another one.
+    Refused = 0x80,
+};
+
+// Why the host would not have a client.
+enum class ERefusal : uint8_t
+{
+    OtherVersion = 1,
+    Full,
 };
 
 // Lists in a message are bounded, so a bad count cannot make a reader allocate without end.
@@ -36,8 +45,9 @@ void PutShip(Net::FWriter& Writer, const FCoopShip& Ship)
     Writer.Put(uint8_t(Ship.Pose));
     Writer.Put(uint8_t(Ship.TargetPose));
     Writer.Put(Ship.ReactorMilliseconds);
-    Writer.Put(uint8_t((Ship.bFire ? 1 : 0) | (Ship.bThrust ? 2 : 0)));
+    Writer.Put(uint8_t((Ship.bFire ? 1 : 0) | (Ship.bThrust ? 2 : 0) | (Ship.bInvisible ? 4 : 0)));
     Writer.Put(Ship.WeaponSlot);
+    Writer.Put(Ship.Respawns);
 }
 
 FCoopShip ReadShip(Net::FReader& Reader)
@@ -57,13 +67,16 @@ FCoopShip ReadShip(Net::FReader& Reader)
     const uint8_t Flags = Reader.Get<uint8_t>();
     Ship.bFire = (Flags & 1) != 0;
     Ship.bThrust = (Flags & 2) != 0;
+    Ship.bInvisible = (Flags & 4) != 0;
     Ship.WeaponSlot = Reader.Get<uint8_t>();
+    Ship.Respawns = Reader.Get<uint32_t>();
     return Ship;
 }
 
-void PutLevel(Net::FWriter& Writer, const std::string& Path, const std::optional<FCoopSession>& Session)
+void PutLevel(Net::FWriter& Writer, const uint32_t Serial, const std::string& Path, const std::optional<FCoopSession>& Session)
 {
     Writer.Put(EMessage::Level);
+    Writer.Put(Serial);
     Writer.PutString(Path);
     Writer.Put(uint8_t(Session ? 1 : 0));
     if (Session)
@@ -184,9 +197,28 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
     {
     case EMessage::Hello:
     {
+        // A client of another version, whose Hello may go on differently, or one past the last slot is told why it cannot join.
+        const auto Refuse = [&](const ERefusal Reason)
+        {
+            Net::FWriter Refusal;
+            Refusal.Put(EMessage::Refused);
+            Refusal.Put(Reason);
+            Endpoint.Send(Peer, Refusal.Data(), Net::EChannel::Reliable);
+        };
         const uint32_t Version = Reader.Get<uint32_t>();
+        if (!bHost || !Reader.IsGood() || SlotOf(Peer))
+        {
+            return;
+        }
+
+        if (Version != CoopProtocolVersion)
+        {
+            Refuse(ERefusal::OtherVersion);
+            return;
+        }
+
         const std::string Name = Reader.GetString();
-        if (!bHost || !Reader.IsGood() || Version != CoopProtocolVersion || SlotOf(Peer))
+        if (!Reader.IsGood())
         {
             return;
         }
@@ -199,6 +231,7 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
 
         if (Slot > Net::MaxPeers)
         {
+            Refuse(ERefusal::Full);
             return;
         }
 
@@ -225,7 +258,7 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
         if (!CurrentLevel.empty())
         {
             Net::FWriter Level;
-            PutLevel(Level, CurrentLevel, LevelSession);
+            PutLevel(Level, LevelSerial, CurrentLevel, LevelSession);
             Endpoint.Send(Peer, Level.Data(), Net::EChannel::Reliable);
             SendCreatedTo(Peer, AllCreated);
         }
@@ -234,9 +267,22 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
     }
     case EMessage::Welcome:
         LocalSlot = Reader.Get<uint8_t>();
-        bWelcomed = Reader.IsGood() && LocalSlot != HostSlot && LocalSlot <= Net::MaxPeers;
+        bWelcomed = !bHost && Reader.IsGood() && LocalSlot != HostSlot && LocalSlot <= Net::MaxPeers;
         std::printf("Co-op: joined as player %u\n", unsigned(LocalSlot));
         break;
+    case EMessage::Refused:
+    {
+        const ERefusal Reason = Reader.Get<ERefusal>();
+        if (!bHost && !bWelcomed)
+        {
+            Refusal = Reason == ERefusal::Full ? "The game is full." : "The host plays another version.";
+            bLost = true;
+            std::printf("Co-op: refused, %s\n", Refusal.c_str());
+            std::fflush(stdout);
+        }
+
+        break;
+    }
     case EMessage::Members:
     {
         std::vector<FCoopMember> List(GetCount(Reader));
@@ -246,7 +292,7 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
             Member.Name = Reader.GetString();
         }
 
-        if (!bHost && Reader.IsGood())
+        if (!bHost && bWelcomed && Reader.IsGood())
         {
             Members = std::move(List);
         }
@@ -255,6 +301,7 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
     }
     case EMessage::Level:
     {
+        const uint32_t Serial = Reader.Get<uint32_t>();
         std::string Path = Reader.GetString();
         std::optional<FCoopSession> Session;
         if (Reader.Get<uint8_t>() != 0)
@@ -264,10 +311,11 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
             Session->Objects = Reader.GetString(Net::MaxFileBytes);
         }
 
-        if (!bHost && Reader.IsGood())
+        if (!bHost && bWelcomed && Reader.IsGood())
         {
             LevelSession = std::move(Session);
             PendingLevel = std::move(Path);
+            PendingSerial = Serial;
             PendingCreated.clear();
             PendingSnapshot.reset();
             PendingMessages.clear();
@@ -277,10 +325,11 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
     }
     case EMessage::Ship:
     {
+        const uint32_t Serial = Reader.Get<uint32_t>();
         FCoopShip Ship = ReadShip(Reader);
         const std::optional<uint8_t> Slot = SlotOf(Peer);
-        // A client moves only its own ship.
-        if (bHost && Reader.IsGood() && Slot)
+        // A client moves only its own ship, and only in the level it plays now.
+        if (bHost && Reader.IsGood() && Slot && Serial == LevelSerial)
         {
             Ship.Slot = *Slot;
             Ships[*Slot] = Ship;
@@ -290,6 +339,7 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
     }
     case EMessage::Snapshot:
     {
+        const uint32_t Serial = Reader.Get<uint32_t>();
         FCoopSnapshot Snapshot;
         Snapshot.Clock = Reader.Get<uint32_t>();
         Snapshot.bPaused = Reader.Get<uint8_t>() != 0;
@@ -318,6 +368,8 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
             Player.bDown = (Flags & 1) != 0;
             Player.bDead = (Flags & 2) != 0;
             Player.Collected = Reader.Get<uint32_t>();
+            Player.Surprises = Reader.Get<uint32_t>();
+            Player.Surprise = Reader.Get<uint8_t>();
             Player.Ammo.resize(GetCount(Reader));
             for (float& Count : Player.Ammo)
             {
@@ -351,7 +403,8 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
             Slots = Reader.Get<uint8_t>();
         }
 
-        if (!bHost && Reader.IsGood())
+        // A snapshot comes unreliably and may overtake the level's change: only one of the level the game plays now applies.
+        if (!bHost && bWelcomed && Reader.IsGood() && Serial == LevelSerial && !PendingLevel)
         {
             PendingSnapshot = std::move(Snapshot);
         }
@@ -369,7 +422,7 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
             Object.Position.Y = Reader.Get<float>();
         }
 
-        if (!bHost && Reader.IsGood())
+        if (!bHost && bWelcomed && Reader.IsGood())
         {
             PendingCreated.insert(PendingCreated.end(), Created.begin(), Created.end());
         }
@@ -403,7 +456,7 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
             Placement = EMessagePlacement(std::min<uint8_t>(Reader.Get<uint8_t>(), uint8_t(EMessagePlacement::KeepExisting)));
         }
 
-        if (!bHost && Reader.IsGood())
+        if (!bHost && bWelcomed && Reader.IsGood())
         {
             PendingMessages.insert(PendingMessages.end(), std::make_move_iterator(Messages.begin()), std::make_move_iterator(Messages.end()));
         }
@@ -418,13 +471,15 @@ void FCoopLink::AnnounceLevel(const std::string_view LevelPath, std::optional<FC
     CurrentLevel = std::string(LevelPath);
     LevelSession = std::move(Session);
     AllCreated.clear();
+    ++LevelSerial;
     Net::FWriter Writer;
-    PutLevel(Writer, CurrentLevel, LevelSession);
+    PutLevel(Writer, LevelSerial, CurrentLevel, LevelSession);
     Endpoint.SendToAll(Writer.Data(), Net::EChannel::Reliable);
 }
 
 std::optional<std::string> FCoopLink::TakeLevel()
 {
+    LevelSerial = PendingLevel ? PendingSerial : LevelSerial;
     return std::exchange(PendingLevel, std::nullopt);
 }
 
@@ -432,6 +487,7 @@ void FCoopLink::SendShip(const FCoopShip& Ship)
 {
     Net::FWriter Writer;
     Writer.Put(EMessage::Ship);
+    Writer.Put(LevelSerial);
     PutShip(Writer, Ship);
     Endpoint.SendToAll(Writer.Data(), Net::EChannel::Unreliable);
 }
@@ -445,6 +501,7 @@ void FCoopLink::SendSnapshot(const FCoopSnapshot& Snapshot)
 {
     Net::FWriter Writer;
     Writer.Put(EMessage::Snapshot);
+    Writer.Put(LevelSerial);
     Writer.Put(Snapshot.Clock);
     Writer.Put(uint8_t(Snapshot.bPaused ? 1 : 0));
     Writer.Put(Snapshot.Money);
@@ -470,6 +527,8 @@ void FCoopLink::SendSnapshot(const FCoopSnapshot& Snapshot)
         Writer.Put(Player.ShieldMax);
         Writer.Put(uint8_t((Player.bDown ? 1 : 0) | (Player.bDead ? 2 : 0)));
         Writer.Put(Player.Collected);
+        Writer.Put(Player.Surprises);
+        Writer.Put(Player.Surprise);
         Writer.Put(uint32_t(Player.Ammo.size()));
         for (const float Count : Player.Ammo)
         {
@@ -546,7 +605,7 @@ void FCoopLink::SendMessages(const uint8_t Slot, const std::span<const std::pair
         return;
     }
 
-    // ponytail: an animation message (a surprise's icon) does not travel; send its GAF animation index when one is missed.
+    // An animation message, a surprise's icon, does not travel: the client's own run of the surprise shows it.
     const auto IsText = [](const std::pair<FMessage, EMessagePlacement>& Entry) { return !Entry.first.Animation; };
     const uint32_t Count = uint32_t(std::ranges::count_if(Messages, IsText));
     if (Count == 0)
@@ -602,7 +661,8 @@ std::optional<FCoopSnapshot> FCoopLink::TakeSnapshot()
 
 std::vector<FCoopCreated> FCoopLink::TakeCreated()
 {
-    return std::exchange(PendingCreated, {});
+    // Objects made after a level change the game has yet to take belong to the next level.
+    return PendingLevel ? std::vector<FCoopCreated>() : std::exchange(PendingCreated, {});
 }
 
 std::vector<uint8_t> FCoopLink::TakeJoined()

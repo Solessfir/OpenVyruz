@@ -179,6 +179,15 @@ std::vector<FEvent> FEndpoint::Poll()
     return Events;
 }
 
+namespace
+{
+// ENet sends the fragments of a packet over the MTU reliably unless told otherwise, which would queue a large snapshot behind lost packets; a lost fragment now drops only that snapshot.
+constexpr uint32_t PacketFlags(const EChannel Channel)
+{
+    return Channel == EChannel::Reliable ? ENET_PACKET_FLAG_RELIABLE : ENET_PACKET_FLAG_UNRELIABLE_FRAGMENT;
+}
+}
+
 void FEndpoint::Send(const uint32_t Peer, const std::span<const uint8_t> Bytes, const EChannel Channel)
 {
     ENetPeer* const Target = State->Host ? State->PeerOf(Peer) : nullptr;
@@ -187,8 +196,7 @@ void FEndpoint::Send(const uint32_t Peer, const std::span<const uint8_t> Bytes, 
         return;
     }
 
-    const uint32_t Flags = Channel == EChannel::Reliable ? ENET_PACKET_FLAG_RELIABLE : 0;
-    if (ENetPacket* const Packet = enet_packet_create(Bytes.data(), Bytes.size(), Flags))
+    if (ENetPacket* const Packet = enet_packet_create(Bytes.data(), Bytes.size(), PacketFlags(Channel)))
     {
         enet_peer_send(Target, uint8_t(Channel), Packet);
     }
@@ -201,8 +209,7 @@ void FEndpoint::SendToAll(const std::span<const uint8_t> Bytes, const EChannel C
         return;
     }
 
-    const uint32_t Flags = Channel == EChannel::Reliable ? ENET_PACKET_FLAG_RELIABLE : 0;
-    if (ENetPacket* const Packet = enet_packet_create(Bytes.data(), Bytes.size(), Flags))
+    if (ENetPacket* const Packet = enet_packet_create(Bytes.data(), Bytes.size(), PacketFlags(Channel)))
     {
         enet_host_broadcast(State->Host, uint8_t(Channel), Packet);
     }
@@ -217,14 +224,19 @@ void FEndpoint::Close()
             enet_peer_disconnect(Peer, 0);
         }
 
-        // The goodbyes go out with the next service; the host then forgets the peers.
+        // The goodbyes go out with the next services, until every peer has answered or the time is up; the host then forgets the peers.
+        // A one-millisecond wait can last a whole timer tick, some 16 ms on Windows, so the time is read rather than the waits counted.
+        size_t Answering = State->Peers.size();
+        const enet_uint32 Start = enet_time_get();
         ENetEvent Event{};
-        for (uint32_t Waited = 0; Waited < CloseMilliseconds && enet_host_service(State->Host, &Event, 1) >= 0; ++Waited)
+        while (Answering > 0 && enet_time_get() - Start < CloseMilliseconds && enet_host_service(State->Host, &Event, 1) >= 0)
         {
             if (Event.type == ENET_EVENT_TYPE_RECEIVE)
             {
                 enet_packet_destroy(Event.packet);
             }
+
+            Answering -= Event.type == ENET_EVENT_TYPE_DISCONNECT ? 1 : 0;
         }
 
         enet_host_destroy(State->Host);
