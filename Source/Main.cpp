@@ -1160,7 +1160,7 @@ void UpdateObjectSprites(FObjectSprites& Sprites, const FLevel& Level, const std
 }
 
 // The original took the mouse for itself through DirectInput, so the system cursor never showed and never left the game; it draws its own where it wants one.
-// The port keeps the cursor inside the window (GLFW lets go while the window is unfocused) and hides it with a blank image.
+// The port keeps the cursor inside a fullscreen window, so it cannot wander to a second monitor, but lets it leave a window (GLFW lets go while either is unfocused); it hides it with a blank image.
 GLFWcursor* BlankCursor = nullptr;
 // Windows can drop the confinement on some focus changes, so it is applied again whenever the game becomes active.
 bool bCursorToCapture = true;
@@ -1175,7 +1175,11 @@ void CaptureCursor(GLFWwindow* const Window)
     }
 
     glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-    glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_CAPTURED);
+    if (glfwGetWindowMonitor(Window))
+    {
+        glfwSetInputMode(Window, GLFW_CURSOR, GLFW_CURSOR_CAPTURED);
+    }
+
     glfwSetCursor(Window, BlankCursor);
     bCursorToCapture = false;
 }
