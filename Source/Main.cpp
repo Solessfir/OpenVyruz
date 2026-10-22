@@ -6220,7 +6220,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             {
                 ToggleMap();
             }
-            else
+            // A network game cannot stop for one player.
+            else if (!Coop)
             {
                 bPaused = !bPaused;
             }
@@ -6517,7 +6518,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         }
 
         uint32_t RemainingMilliseconds = Clock.Poll(ClockMilliseconds());
-        if (bPaused || !PageText.empty() || MenuFadeStep < MenuFadeSteps || LiftFadeStep)
+        // A network game's world goes on under the page, since the others play on; the reader's ship only waits.
+        if (bPaused || (!PageText.empty() && !Coop) || MenuFadeStep < MenuFadeSteps || LiftFadeStep)
         {
             RemainingMilliseconds = 0;
         }
@@ -6665,7 +6667,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     StepCodeTimeouts(Owned, *Level, MessagesOf(Each), StepMilliseconds);
 
                     // Only the local player has keys, a mouse and a pad here; until the others' input comes from elsewhere, they follow it.
-                    const FPlayerIntent Intent = bLocal ? ReadPlayerIntent() : FollowIntent(State);
+                    const FPlayerIntent Intent = !bLocal ? FollowIntent(State) : PageText.empty() ? ReadPlayerIntent() : FPlayerIntent{};
                     Each.bThrustInput = IsThrustIntent(Intent, Owned.Surprises, bFinaleStarted);
                     FPlayerCommand Command = PlayerCommandFromIntent(Intent, Owned.Surprises, bFinaleStarted);
                     // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its velocity in collision units, and drives with the replayed input.
@@ -6860,7 +6862,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             continue;
                         }
 
-                        const bool bLiveFire = Each.DownTimer ? false : Each.bRemote ? Each.bNetFire : &Each != &Local ? false : Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
+                        const bool bLiveFire = Each.DownTimer ? false : Each.bRemote ? Each.bNetFire : &Each != &Local || !PageText.empty() ? false : Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
                         Each.bFireInput = bLiveFire;
                         const bool bFire = !Each.Inventory.Surprises.bBlockedMotor && !bFinaleStarted && bLiveFire;
                         if (!Each.DeathTimer && !Each.DownTimer)
