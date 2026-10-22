@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <iterator>
 #include <utility>
 
 namespace
@@ -15,6 +16,7 @@ enum class EMessage : uint8_t
     Ship,
     Snapshot,
     Created,
+    Messages,
 };
 
 // Lists in a message are bounded, so a bad count cannot make a reader allocate without end.
@@ -247,6 +249,7 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
             PendingLevel = std::move(Path);
             PendingCreated.clear();
             PendingSnapshot.reset();
+            PendingMessages.clear();
         }
 
         break;
@@ -347,6 +350,37 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
         if (!bHost && Reader.IsGood())
         {
             PendingCreated.insert(PendingCreated.end(), Created.begin(), Created.end());
+        }
+
+        break;
+    }
+    case EMessage::Messages:
+    {
+        std::vector<std::pair<FMessage, EMessagePlacement>> Messages(GetCount(Reader));
+        for (auto& [Message, Placement] : Messages)
+        {
+            Message.Text = Reader.GetString();
+            Message.X = Reader.Get<float>();
+            Message.Y = Reader.Get<float>();
+            Message.VelocityX = Reader.Get<float>();
+            Message.VelocityY = Reader.Get<float>();
+            Message.LifeMilliseconds = Reader.Get<uint32_t>();
+            const uint8_t Flags = Reader.Get<uint8_t>();
+            Message.bWorld = (Flags & 1) != 0;
+            Message.bTypewriter = (Flags & 2) != 0;
+            Message.bFade = (Flags & 4) != 0;
+            Message.Gaf = EMessageGaf(std::min<uint8_t>(Reader.Get<uint8_t>(), uint8_t(EMessageGaf::Surprise)));
+            Message.Font = Reader.Get<uint32_t>();
+            Message.Color.Alpha = Reader.Get<uint32_t>();
+            Message.Color.Diffuse = Reader.Get<uint32_t>();
+            Message.Color.Specular = Reader.Get<uint32_t>();
+            Message.BlinkPeriod = Reader.Get<int32_t>();
+            Placement = EMessagePlacement(std::min<uint8_t>(Reader.Get<uint8_t>(), uint8_t(EMessagePlacement::KeepExisting)));
+        }
+
+        if (!bHost && Reader.IsGood())
+        {
+            PendingMessages.insert(PendingMessages.end(), std::make_move_iterator(Messages.begin()), std::make_move_iterator(Messages.end()));
         }
 
         break;
@@ -476,6 +510,56 @@ void FCoopLink::SendCreatedTo(const std::optional<uint32_t> Peer, const std::vec
     {
         Endpoint.SendToAll(Writer.Data(), Net::EChannel::Reliable);
     }
+}
+
+void FCoopLink::SendMessages(const uint8_t Slot, const std::span<const std::pair<FMessage, EMessagePlacement>> Messages)
+{
+    const auto Peer = std::ranges::find(PeerSlots, Slot, &std::pair<uint32_t, uint8_t>::second);
+    if (Peer == PeerSlots.end())
+    {
+        return;
+    }
+
+    // ponytail: an animation message (a surprise's icon) does not travel; send its GAF animation index when one is missed.
+    const auto IsText = [](const std::pair<FMessage, EMessagePlacement>& Entry) { return !Entry.first.Animation; };
+    const uint32_t Count = uint32_t(std::ranges::count_if(Messages, IsText));
+    if (Count == 0)
+    {
+        return;
+    }
+
+    Net::FWriter Writer;
+    Writer.Put(EMessage::Messages);
+    Writer.Put(Count);
+    for (const auto& [Message, Placement] : Messages)
+    {
+        if (Message.Animation)
+        {
+            continue;
+        }
+
+        Writer.PutString(Message.Text);
+        Writer.Put(Message.X);
+        Writer.Put(Message.Y);
+        Writer.Put(Message.VelocityX);
+        Writer.Put(Message.VelocityY);
+        Writer.Put(Message.LifeMilliseconds);
+        Writer.Put(uint8_t((Message.bWorld ? 1 : 0) | (Message.bTypewriter ? 2 : 0) | (Message.bFade ? 4 : 0)));
+        Writer.Put(uint8_t(Message.Gaf));
+        Writer.Put(Message.Font);
+        Writer.Put(Message.Color.Alpha);
+        Writer.Put(Message.Color.Diffuse);
+        Writer.Put(Message.Color.Specular);
+        Writer.Put(Message.BlinkPeriod);
+        Writer.Put(uint8_t(Placement));
+    }
+
+    Endpoint.Send(Peer->first, Writer.Data(), Net::EChannel::Reliable);
+}
+
+std::vector<std::pair<FMessage, EMessagePlacement>> FCoopLink::TakeMessages()
+{
+    return std::exchange(PendingMessages, {});
 }
 
 std::optional<FCoopSnapshot> FCoopLink::TakeSnapshot()

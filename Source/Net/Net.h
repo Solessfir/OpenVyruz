@@ -71,9 +71,8 @@ public:
         requires std::is_trivially_copyable_v<T>
     void Put(const T Value)
     {
-        const size_t At = Bytes.size();
-        Bytes.resize(At + sizeof(T));
-        std::memcpy(Bytes.data() + At, &Value, sizeof(T));
+        const auto* const Raw = reinterpret_cast<const uint8_t*>(&Value);
+        Bytes.insert(Bytes.end(), Raw, Raw + sizeof(T));
     }
 
     void PutString(std::string_view Text);

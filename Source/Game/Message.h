@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // The GAF whose fonts a message is printed in.
@@ -81,6 +82,9 @@ public:
     void SetLife(int32_t X, int32_t Y, uint32_t LifeMilliseconds);
     // Both passes move and type the messages by the step; the update pass also ages them and the draw pass prints them with the scroll origin.
     void Update(int32_t StepMilliseconds, int32_t OriginX, int32_t OriginY, const FDraw* Draw);
+    // A remote co-op player's list keeps nothing but hands what is added to the network, for that player's machine to show.
+    void Forward() { bForwarding = true; }
+    std::vector<std::pair<FMessage, EMessagePlacement>> TakeForwarded() { return std::exchange(Forwarded, {}); }
 
     // The view's width at session +0xf84, from which the screen messages are placed: 640 in the original, wider in the port's wide view.
     int32_t ViewWidth = 640;
@@ -90,4 +94,6 @@ private:
     std::vector<std::optional<FMessage>> Slots;
     std::optional<size_t> FreeSlot;
     uint32_t NextId = 1;
+    bool bForwarding = false;
+    std::vector<std::pair<FMessage, EMessagePlacement>> Forwarded;
 };

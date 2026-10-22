@@ -24,6 +24,12 @@ uint32_t FMessages::Add(FMessage Message, const EMessagePlacement Placement)
         return 0;
     }
 
+    if (bForwarding)
+    {
+        Forwarded.emplace_back(std::move(Message), Placement);
+        return 0;
+    }
+
     const int32_t X = TruncateLow(Message.X);
     const int32_t Y = TruncateLow(Message.Y);
     if (Placement == EMessagePlacement::KeepExisting && Exists(X, Y))

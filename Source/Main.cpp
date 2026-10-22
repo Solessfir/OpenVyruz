@@ -4291,6 +4291,8 @@ struct FLevelPlayer
     bool bFireInput = false;
     // The host's count of what the player collected, which a client hears its own pickups by.
     uint32_t Collected = 0;
+    // What a player other than the local one is told, which the host sends on to that player's machine.
+    FMessages Messages;
 };
 
 // Command-line cheats, which the original does not have (its own are typed codes): each holds for the whole game and none touches a demo.
@@ -4510,6 +4512,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         Added.Index = *Created;
         Added.Slot = Slot;
         Added.Name = std::move(Name);
+        Added.Messages.Forward();
         if (std::expected<FMovementClass, std::string> AddedClass = ReadMovementClass(*Added.Object))
         {
             Added.Class = *AddedClass;
@@ -4992,21 +4995,26 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     FCollisionPoint TeamRespawn = PlayerObject ? FCollisionPoint{ .X = PlayerObject->X, .Y = PlayerObject->Y } : FCollisionPoint{};
     // A co-op player's ship, once a teammate is out of energy, waits to be revived rather than exploding.
     const auto IsCoop = [&] { return ActivePlayers() > 1; };
-    // The port's co-op messages, centred as the original's key and code messages are.
-    const auto SayToLocal = [&](std::string Text, const uint32_t Color)
+    // The port's co-op messages about one player, centred as the original's key and code messages are: that player reads its own words and every other player the others'.
+    const auto SayToPlayers = [&](const FLevelPlayer& Subject, const std::string& Own, const std::string& Others, const uint32_t Color)
     {
         constexpr int32_t CentreOffset = -100;
         constexpr uint32_t LifeMilliseconds = 3000;
         constexpr uint32_t Font = 6;
-        Messages.Add({
-            .Text = std::move(Text),
-            .X = float((Messages.ViewWidth >> 1) + CentreOffset),
-            .Y = float((int32_t(ScreenHeight) >> 1) + CentreOffset),
-            .LifeMilliseconds = LifeMilliseconds,
-            .Font = Font,
-            .Color = { .Diffuse = Color },
-        }, EMessagePlacement::Replace);
+        for (FLevelPlayer& Viewer : Players)
+        {
+            FMessages& Shown = &Viewer == &Local ? Messages : Viewer.Messages;
+            Shown.Add({
+                .Text = &Viewer == &Subject ? Own : Others,
+                .X = float((Shown.ViewWidth >> 1) + CentreOffset),
+                .Y = float((int32_t(ScreenHeight) >> 1) + CentreOffset),
+                .LifeMilliseconds = LifeMilliseconds,
+                .Font = Font,
+                .Color = { .Diffuse = Color },
+            }, EMessagePlacement::Replace);
+        }
     };
+    const auto NameOf = [&](const FLevelPlayer& Each) { return &Each == &Local ? Settings.PlayerName : Each.Name; };
     double CameraX = PlayerObject ? PlayerObject->X - GameViewWidth * 0.5 : 0.0;
     double CameraY = PlayerObject ? PlayerObject->Y - ScreenHeight * 0.5 : 0.0;
     std::printf("%s: %s, %zu objects, %zu sprite parts\n", LevelPath.c_str(), Level->Name.c_str(), Level->Objects.size(), Objects->Sprites.size());
@@ -6469,6 +6477,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 RescaleHunters();
                 for (FLevelPlayer& Each : Players)
                 {
+                    if (&Each != &Local)
+                    {
+                        Coop->SendMessages(Each.Slot, Each.Messages.TakeForwarded());
+                    }
+
                     if (const std::optional<FCoopShip> Ship = Each.bRemote ? Coop->TakeShip(Each.Slot) : std::nullopt)
                     {
                         ApplyShip(Each, *Ship);
@@ -6488,6 +6501,13 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
 
                 TakeCreated(Coop->TakeCreated());
+                // The host placed its screen messages in a 640-pixel view; this one may be wider.
+                for (auto& [Message, Placement] : Coop->TakeMessages())
+                {
+                    Message.X += Message.bWorld ? 0.f : float((Messages.ViewWidth - int32_t(ScreenWidth)) / 2);
+                    Messages.Add(std::move(Message), Placement);
+                }
+
                 if (const std::optional<FCoopSnapshot> Snapshot = Coop->TakeSnapshot())
                 {
                     TakeSnapshot(*Snapshot);
@@ -6780,9 +6800,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         LiftWait = FLiftWait{ .Door = size_t(Lift - Doors->data()), .Timer = LiftWaitMilliseconds };
                         const auto Rider = std::ranges::find_if(Players, [&](const FLevelPlayer& Each)
                             { return LiftHolds(*Lift, Each); });
-                        const bool bLocalRode = Rider == Players.end() || &*Rider == &Local;
-                        SayToLocal(bLocalRode ? Format("The lift leaves in %d seconds.", LiftWaitMilliseconds / 1000)
-                                              : Format("%s is in the lift !\nIt leaves in %d seconds.", Rider->Name, LiftWaitMilliseconds / 1000), LiftColor);
+                        const FLevelPlayer& Subject = Rider == Players.end() ? Local : *Rider;
+                        SayToPlayers(Subject, Format("The lift leaves in %d seconds.", LiftWaitMilliseconds / 1000),
+                            Format("%s is in the lift !\nIt leaves in %d seconds.", NameOf(Subject), LiftWaitMilliseconds / 1000), LiftColor);
                     }
                     else
                     {
@@ -7006,7 +7026,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             Each.ReviveTime = 0;
                             Each.State->bDying = true;
                             Owned.Energy = 0.f;
-                            SayToLocal(bLocal ? Format("You are down !\nStay close to a teammate to get back up.") : Format("%s is down !\nGet close to bring them back.", Each.Name), DownColor);
+                            SayToPlayers(Each, Format("You are down !\nStay close to a teammate to get back up."), Format("%s is down !\nGet close to bring them back.", NameOf(Each)), DownColor);
                         }
 
                         if (!Each.DeathTimer && !Each.DownTimer && Owned.Energy <= 0.f && (!bPuppet || Each.bNetDead))
@@ -7093,7 +7113,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         Each.ReviveTime = 0;
                         State.bDying = false;
                         Owned.Energy = Owned.EnergyMax * (bRevived ? ReviveEnergyShare : RespawnEnergyShare);
-                        SayToLocal(bLocal ? Format("Back in the fight !") : Format("%s is back !", Each.Name), BackColor);
+                        SayToPlayers(Each, Format("Back in the fight !"), Format("%s is back !", NameOf(Each)), BackColor);
                     }
                 }
                 // Objects the step created, such as dropped items, join the pickups and the drawn objects.
@@ -7148,10 +7168,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                 for (FLevelPlayer& Each : Players)
                 {
-                    FMessages Unheard;
                     const bool bLocal = &Each == &Local;
                     const size_t Collected = !bPuppet && Each.State && Each.Class && !Each.DeathTimer && !Each.DownTimer
-                        ? CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Unheard, Combat ? &*Combat : nullptr, Each.Index, ActivePlayers(),
+                        ? CollectPickups(*Each.State, *Each.Class, Each.Inventory, Pickups, *Level, bLocal ? Messages : Each.Messages, Combat ? &*Combat : nullptr, Each.Index, ActivePlayers(),
                               bLocal ? nullptr : &Local.Inventory)
                         : 0;
                     Each.Collected += uint32_t(Collected);
