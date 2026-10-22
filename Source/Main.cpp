@@ -5634,12 +5634,45 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         return Ship;
     };
+    // The network's positions come in steps, twenty a second from the host and some sixty from a client. Each networked object is drawn gliding from where it was drawn to the newest position over the time the one before took to come, a step behind but without the stairs.
+    struct FGlide
+    {
+        FCollisionPoint From;
+        FCollisionPoint To;
+        uint32_t At = 0;
+        uint32_t Span = 1;
+    };
+    std::unordered_map<size_t, FGlide> Glides;
+    const auto GlideAt = [](const FGlide& Glide, const uint32_t Now)
+    {
+        const float Share = std::min(1.f, float(Now - Glide.At) / float(Glide.Span));
+        return FCollisionPoint{ .X = Glide.From.X + (Glide.To.X - Glide.From.X) * Share, .Y = Glide.From.Y + (Glide.To.Y - Glide.From.Y) * Share };
+    };
+    const auto NoteGlide = [&](const size_t Index, const FCollisionPoint Position)
+    {
+        // A late update glides no slower than this, and a teleport, a respawn or a lift does not glide at all.
+        constexpr uint32_t LongestSpan = 250;
+        constexpr float JumpDistance = 160.f;
+        const uint32_t Now = ClockMilliseconds();
+        const auto [Found, bNew] = Glides.try_emplace(Index, FGlide{ .From = Position, .To = Position, .At = Now });
+        if (bNew)
+        {
+            return;
+        }
+
+        FGlide& Glide = Found->second;
+        const FCollisionPoint Drawn = GlideAt(Glide, Now);
+        const bool bJump = std::hypot(Position.X - Drawn.X, Position.Y - Drawn.Y) > JumpDistance;
+        Glide = { .From = bJump ? Position : Drawn, .To = Position, .At = Now, .Span = std::clamp(Now - Glide.At, 1u, LongestSpan) };
+    };
     const auto ApplyShip = [&](FLevelPlayer& Each, const FCoopShip& Ship)
     {
         if (!Each.State)
         {
             return;
         }
+
+        NoteGlide(Each.Index, Ship.Position);
 
         FPlayerState& State = *Each.State;
         State.PreviousPosition = State.Position;
@@ -5878,6 +5911,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 continue;
             }
 
+            NoteGlide(Body->ObjectIndex, Sent.Position);
             Body->State.PreviousPosition = Body->State.Position;
             Body->State.Position = Sent.Position;
             Body->State.Center = CollisionFromWorld(Sent.Position);
@@ -6426,7 +6460,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 RescaleHunters();
                 for (FLevelPlayer& Each : Players)
                 {
-                    if (const std::optional<FCoopShip> Ship = Each.bRemote ? Coop->GetShip(Each.Slot) : std::nullopt)
+                    if (const std::optional<FCoopShip> Ship = Each.bRemote ? Coop->TakeShip(Each.Slot) : std::nullopt)
                     {
                         ApplyShip(Each, *Ship);
                     }
@@ -7264,6 +7298,20 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         Each.SpriteSize = float(std::min(Bitmap.Width, Bitmap.Height));
                     }
                 }
+            }
+        }
+
+        if (!Glides.empty())
+        {
+            const uint32_t Now = ClockMilliseconds();
+            for (FObjectSprite& Sprite : Objects->Sprites)
+            {
+                if (const auto Glide = Glides.find(Sprite.ObjectIndex); Glide != Glides.end())
+                {
+                    const FLevelObject& Object = Level->Objects[Sprite.ObjectIndex];
+                    const FCollisionPoint Drawn = GlideAt(Glide->second, Now);
+                    Sprite.X += Drawn.X - Object.X;
+                    Sprite.Y += Drawn.Y - Object.Y;                }
             }
         }
 

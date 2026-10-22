@@ -122,9 +122,9 @@ public:
     std::optional<std::string> TakeLevel();
     bool HasLevel() const { return PendingLevel.has_value(); }
 
-    // Client: its own ship. Host: the latest each client sent, by slot.
+    // Client: its own ship. Host: the latest each client sent since the last call, by slot.
     void SendShip(const FCoopShip& Ship);
-    std::optional<FCoopShip> GetShip(uint8_t Slot) const;
+    std::optional<FCoopShip> TakeShip(uint8_t Slot);
 
     // Host: the world now, and the objects it created since the last snapshot. Client: the latest snapshot, once, and every created object since.
     void SendSnapshot(const FCoopSnapshot& Snapshot);

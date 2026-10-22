@@ -376,9 +376,9 @@ void FCoopLink::SendShip(const FCoopShip& Ship)
     Endpoint.SendToAll(Writer.Data(), Net::EChannel::Unreliable);
 }
 
-std::optional<FCoopShip> FCoopLink::GetShip(const uint8_t Slot) const
+std::optional<FCoopShip> FCoopLink::TakeShip(const uint8_t Slot)
 {
-    return Slot < Ships.size() ? Ships[Slot] : std::nullopt;
+    return Slot < Ships.size() ? std::exchange(Ships[Slot], std::nullopt) : std::nullopt;
 }
 
 void FCoopLink::SendSnapshot(const FCoopSnapshot& Snapshot)
