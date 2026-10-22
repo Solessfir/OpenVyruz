@@ -6727,12 +6727,10 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
                 // Every player meets the step's bodies, actors, doors, generators, turrets and shots, each as its own target.
                 std::vector<FPlayerTarget> Targets;
-                std::vector<FLevelPlayer*> TargetPlayers;
                 for (FLevelPlayer& Each : Players)
                 {
                     if (Each.State && Each.Class)
                     {
-                        TargetPlayers.push_back(&Each);
                         Targets.push_back({
                             .State = *Each.State,
                             .Radius = Each.Class->Radius,
@@ -6754,10 +6752,17 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 {
                     Warp.WarpCounter = Warp.WarpDivisor;
                     const std::vector<FCollisionPoint> Pushes = StepObjectBodies(Bodies, StepMilliseconds, *Terrain, *Level, Targets);
-                    for (size_t Target = 0; Target < Targets.size(); ++Target)
+                    // The pushes come in the targets' order, which is the players' with a ship.
+                    size_t Target = 0;
+                    for (FLevelPlayer& Each : Players)
                     {
-                        FPlayerState& State = *TargetPlayers[Target]->State;
-                        const FCollisionPoint Push = Pushes[Target];
+                        if (!Each.State || !Each.Class)
+                        {
+                            continue;
+                        }
+
+                        FPlayerState& State = *Each.State;
+                        const FCollisionPoint Push = Pushes[Target++];
                         State.Velocity.X = float(double(Push.X) + double(State.Velocity.X));
                         State.Velocity.Y = float(double(Push.Y) + double(State.Velocity.Y));
                         State.bPushed = State.bPushed || Push.X != 0.f || Push.Y != 0.f;
@@ -9171,11 +9176,6 @@ Tools (each comes first, runs on its own and exits; anything else on the line is
         // A co-op client goes where the host does: the level it changed to, or the next one it announces.
         if (Coop && !Coop->IsHost())
         {
-            if (End->Kind == ELevelEnd::Quit)
-            {
-                break;
-            }
-
             if (Coop->IsLost())
             {
                 Coop.reset();
