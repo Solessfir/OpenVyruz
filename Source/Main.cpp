@@ -6231,6 +6231,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     size_t FrameFullUpdates = 0;
     // A menu is up over a network game's level, which goes on while the local ship waits.
     bool bInMenu = false;
+    // The local ship takes no command under the page or a menu, or while a network game's window is out of focus, whose mouse and pad belong to another window.
+    const auto IsLocalWaiting = [&] { return !PageText.empty() || bInMenu || glfwGetWindowAttrib(Window, GLFW_FOCUSED) == 0; };
     // The network and the world's steps for the time gone by, which a network game also runs while a menu is up over the level.
     const auto AdvanceWorld = [&]() -> std::optional<FLevelEnd>
     {
@@ -6461,7 +6463,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         StepCodeTimeouts(Owned, *Level, MessagesOf(Each), StepMilliseconds);
 
                         // Only the local player has keys, a mouse and a pad here; until the others' input comes from elsewhere, they follow it.
-                        const FPlayerIntent Intent = !bLocal ? FollowIntent(State) : PageText.empty() && !bInMenu ? ReadPlayerIntent() : FPlayerIntent{};
+                        const FPlayerIntent Intent = !bLocal ? FollowIntent(State) : !IsLocalWaiting() ? ReadPlayerIntent() : FPlayerIntent{};
                         Each.bThrustInput = IsThrustIntent(Intent, Owned.Surprises, bFinaleStarted);
                         FPlayerCommand Command = PlayerCommandFromIntent(Intent, Owned.Surprises, bFinaleStarted);
                         // ReplayPlayerInput (00438800) puts the player where the record before the cursor has it, facing its way, with the move as its velocity in collision units, and drives with the replayed input.
@@ -6656,7 +6658,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                                 continue;
                             }
 
-                            const bool bLiveFire = Each.DownTimer ? false : Each.bRemote ? Each.bNetFire : &Each != &Local || !PageText.empty() || bInMenu ? false : Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
+                            const bool bLiveFire = Each.DownTimer ? false : Each.bRemote ? Each.bNetFire : &Each != &Local || IsLocalWaiting() ? false : Demo ? (DemoInput & FireBit) != 0 : ActionDown(EAction::Fire);
                             Each.bFireInput = bLiveFire;
                             const bool bFire = !Each.Inventory.Surprises.bBlockedMotor && !bFinaleStarted && bLiveFire;
                             if (!Each.DeathTimer && !Each.DownTimer)
