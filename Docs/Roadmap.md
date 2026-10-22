@@ -9,6 +9,6 @@ Version 1, the single-player campaign with the intro and cutscenes, is done. Pla
   - **Enemies:** health scales with the players, about `1 + 0.6 * (players - 1)`; damage stays, or rises at most 10 to 15% a player. Fire rate or scan range may rise a little so the pressure holds when the targets split.
   - **Pickups:** ammo, energy and shield packs are per player, so nobody races a friend for them; keys and codes unlock for everyone; money is shared.
   - **Death:** at zero energy a player is downed instead of exploding and a teammate standing close for about 2 seconds revives them. Unrevived after about 30 seconds, they respawn at the team's last saving plot. With everyone down at once the team reloads the last save.
-  - **Lifts:** the first player in starts a countdown of about 10 seconds for the others, cut short once everyone is in.
+  - **Lifts:** a lift waits until every standing player is in it.
   - **Saves:** the host's session is the game; saving plots save it for the team, and joining players play on the host's progress.
   - **Friendly fire:** off by default, with an option.

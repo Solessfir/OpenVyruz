@@ -4972,13 +4972,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     // EngineReadActionKeys (0043b5c0) and InputActionPressed (0041d4c0) read the actions through the device's bindings (InputActionDown at 0041d650).
     const auto ActionDown = [&](const EAction Action) { return IsActionDown(Window, Settings.Controls(), Action) || IsGamepadActionDown(Action); };
     bool bEscapeDown = ActionDown(EAction::Menu);
-    // The port's co-op: the lift the first player took, by index, and the time left before it leaves with everyone.
-    struct FLiftWait
-    {
-        size_t Door = 0;
-        int32_t Timer = 0;
-    };
-    std::optional<FLiftWait> LiftWait;
+    // The port's co-op: the lift the first player took, by index, which waits for the others.
+    std::optional<size_t> LiftWait;
     // Whether a player stands fully inside a lift's box, as ObjectUpdateLevelExit asks of the rider.
     const auto LiftHolds = [&](const FDoor& Lift, const FLevelPlayer& Each)
     {
@@ -6795,19 +6790,24 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         GameAudio->UpdateVoices();
                     }
                 };
+                // A lift everyone has left again no longer waits, so the team may take another.
+                const auto Standing = [](const FLevelPlayer& Each) { return Each.State && !Each.DownTimer && !Each.DeathTimer; };
+                if (LiftWait && std::ranges::none_of(Players, [&](const FLevelPlayer& Each) { return LiftHolds((*Doors)[*LiftWait], Each); }))
+                {
+                    LiftWait.reset();
+                }
+
                 if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, Targets, StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer && !LiftWait && !bPuppet)
                 {
-                    // In co-op the first player in starts the lift's countdown for the others.
+                    // In co-op the lift waits until every standing player is in it, so nobody is taken along from elsewhere.
                     if (IsCoop())
                     {
-                        constexpr int32_t LiftWaitMilliseconds = 10000;
                         constexpr uint32_t LiftColor = 0xffc040;
-                        LiftWait = FLiftWait{ .Door = size_t(Lift - Doors->data()), .Timer = LiftWaitMilliseconds };
+                        LiftWait = size_t(Lift - Doors->data());
                         const auto Rider = std::ranges::find_if(Players, [&](const FLevelPlayer& Each)
                             { return LiftHolds(*Lift, Each); });
                         const FLevelPlayer& Subject = Rider == Players.end() ? Local : *Rider;
-                        SayToPlayers(Subject, Format("The lift leaves in %d seconds.", LiftWaitMilliseconds / 1000),
-                            Format("%s is in the lift !\nIt leaves in %d seconds.", NameOf(Subject), LiftWaitMilliseconds / 1000), LiftColor);
+                        SayToPlayers(Subject, Format("The lift waits for the others."), Format("%s is in the lift !\nJoin them to go on.", NameOf(Subject)), LiftColor);
                     }
                     else
                     {
@@ -6815,13 +6815,11 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     }
                 }
 
-                // The countdown ends early once every player still standing is in the lift.
+                // A downed or dead player is not waited for.
                 if (LiftWait && !NextLevel && !DeathTimer)
                 {
-                    const FDoor& Lift = (*Doors)[LiftWait->Door];
-                    LiftWait->Timer -= int32_t(StepMilliseconds);
-                    const bool bAllIn = std::ranges::all_of(Players, [&](const FLevelPlayer& Each) { return !Each.State || Each.DownTimer || Each.DeathTimer || LiftHolds(Lift, Each); });
-                    if (LiftWait->Timer <= 0 || bAllIn)
+                    const FDoor& Lift = (*Doors)[*LiftWait];
+                    if (std::ranges::all_of(Players, [&](const FLevelPlayer& Each) { return !Standing(Each) || LiftHolds(Lift, Each); }))
                     {
                         TakeLift(Lift);
                         LiftWait.reset();
@@ -7062,7 +7060,6 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     constexpr float ReviveEnergyShare = 0.3f;
                     constexpr float RespawnEnergyShare = 0.5f;
                     constexpr uint32_t BackColor = 0x80ff20;
-                    const auto Standing = [](const FLevelPlayer& Each) { return Each.State && !Each.DownTimer && !Each.DeathTimer; };
                     const bool bTeamLost = !bPuppet && IsCoop() && std::ranges::none_of(Players, Standing) && std::ranges::any_of(Players, [](const FLevelPlayer& Each) { return Each.DownTimer.has_value(); });
                     for (FLevelPlayer& Each : Players)
                     {

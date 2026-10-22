@@ -390,10 +390,10 @@ constexpr FTranslation PortTranslations[] = {
     { "Start a new game that friends can join.", "Начать новую игру, к которой подключатся друзья." },
     { "Type the host's address, as 192.168.1.20.", "Введите адрес хоста, например 192.168.1.20." },
     { "Waiting for the host ...", "Ожидание хоста ..." },
-    { "%s is in the lift !\nIt leaves in %d seconds.", "%s в лифте !\nОн уходит через %d сек." },
+    { "%s is in the lift !\nJoin them to go on.", "%s в лифте !\nПрисоединяйтесь, чтобы ехать дальше." },
     { "%s is down !\nGet close to bring them back.", "%s подбит !\nПодлетите ближе, чтобы помочь." },
     { "Back in the fight !", "Снова в бою !" },
-    { "The lift leaves in %d seconds.", "Лифт уходит через %d сек." },
+    { "The lift waits for the others.", "Лифт ждет остальных." },
     { "You are down !\nStay close to a teammate to get back up.", "Вы подбиты !\nДержитесь рядом с напарником, чтобы подняться." },
 };
 

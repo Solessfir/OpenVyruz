@@ -21,7 +21,7 @@ At zero energy a player is down instead of exploding: its ship coasts to a stop 
 
 ## Lifts
 
-The first player into a lift starts a 10-second countdown; the level changes when it runs out, or at once when every standing player is inside the lift.
+With a single player the lift leaves at once, as in the original. In co-op the lift a player enters waits until every standing player is inside it, a downed or dead one not counted, so nobody is taken along from elsewhere; once all have left it again, it waits no more and the team may take another.
 
 ## Over the network
 
