@@ -1342,7 +1342,7 @@ void StepFullscreenKey(GLFWwindow* const Window)
 
 // A network game never stands still for a window out of focus, since the other players go on.
 bool bNetworkAwake = false;
-// A network game's world, which goes on while a menu is up over its level; it tells when the level has ended under the menu, which then closes every menu.
+// A network game's world, or the lobby's link, which goes on while a menu is up; it tells when the level has ended under the menu, which then closes every menu.
 std::function<bool()> WorldUnderMenu;
 bool bWorldEndedUnderMenu = false;
 
@@ -3804,7 +3804,15 @@ std::unique_ptr<FCoopLink> RunCoopLobby(GLFWwindow* const Window, FRenderer& Ren
         if (*Item == LoadItem)
         {
             const std::vector<FSession> Saved = ReadSavedSessions(Settings.Folder);
-            if (const std::optional<size_t> Index = RunSessionMenu(Window, Renderer, Art, Sheets, Random, Saved))
+            // The link goes on under the list, so those who joined are not dropped.
+            WorldUnderMenu = [&]
+            {
+                Link->Poll();
+                return false;
+            };
+            const std::optional<size_t> Index = RunSessionMenu(Window, Renderer, Art, Sheets, Random, Saved);
+            WorldUnderMenu = nullptr;
+            if (Index)
             {
                 Loaded = Saved[*Index];
                 return Link;
@@ -4817,6 +4825,30 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             }
                         }
                     }
+
+                    // Teammates who came through the lift keep their inventories as the local player does, with this level's class values and, if they fit, their weapons.
+                    for (const auto& [Slot, Kept] : Carried ? Carried->Team : decltype(Carried->Team){})
+                    {
+                        const auto Mate = std::ranges::find(Players, Slot, &FLevelPlayer::Slot);
+                        if (Mate == Players.end() || &*Mate == &Local)
+                        {
+                            continue;
+                        }
+
+                        FPlayerInventory Class = std::exchange(Mate->Inventory, Kept);
+                        Mate->Inventory.Absorptions = std::move(Class.Absorptions);
+                        Mate->Inventory.Weight = Class.Weight;
+                        Mate->Inventory.ShieldUpStep = Class.ShieldUpStep;
+                        ApplyDifficulty(Settings.Difficulty(), *Combat, {}, Mate->Inventory, true);
+                        const FPlayerArms& KeptArms = Kept.Arms;
+                        Mate->Inventory.Arms = std::move(Class.Arms);
+                        if (KeptArms.Weapon.Weapon < Combat->Weapons.size() && KeptArms.SlotStates.size() == Mate->Inventory.Arms.SlotStates.size())
+                        {
+                            Mate->Inventory.Arms.Weapon = KeptArms.Weapon;
+                            Mate->Inventory.Arms.Slot = KeptArms.Slot;
+                            Mate->Inventory.Arms.SlotStates = KeptArms.SlotStates;
+                        }
+                    }
                 }
 
                 RescaleHunters();
@@ -4915,7 +4947,15 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             .State = Player ? &*Player : nullptr,
             .TurnTimeout = PlayerClass ? PlayerClass->TurnTimeout : 0,
         };
-        std::pair<FSession, std::string> Current(Written, FormatSessionObjects(*Level, Bodies, *Doors, Writer, Settings.DifficultyLevel));
+        // A session keeps the hunters as a lone player meets them, since loading it toughens them again for the players then.
+        std::vector<FObjectBody> Unscaled;
+        if (HunterScale != 1.f)
+        {
+            Unscaled = Bodies;
+            ScaleHunters(Unscaled, 1.f / HunterScale);
+        }
+
+        std::pair<FSession, std::string> Current(Written, FormatSessionObjects(*Level, Unscaled.empty() ? Bodies : Unscaled, *Doors, Writer, Settings.DifficultyLevel));
         for (const auto& [Object, bRemoved] : Others)
         {
             Object->bRemoved = bRemoved;
@@ -5066,7 +5106,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
     };
     const auto CarriedNow = [&]
     {
-        return FCarriedPlayer{
+        FCarriedPlayer Now{
             .Object = *PlayerObject,
             .State = *Player,
             .Inventory = Inventory,
@@ -5075,12 +5115,21 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             .WeaponSlots = Inventory.Arms.SlotStates,
             .Clock = Combat ? Combat->Clock : 1,
         };
+        for (const FLevelPlayer& Each : Players)
+        {
+            if (&Each != &Local && Each.State && !Each.DownTimer && !Each.DeathTimer)
+            {
+                Now.Team.emplace_back(Each.Slot, Each.Inventory);
+            }
+        }
+
+        return Now;
     };
     std::optional<FMenuSheets> MenuSheets;
     // EngineReadActionKeys (0043b5c0) and InputActionPressed (0041d4c0) read the actions through the device's bindings (InputActionDown at 0041d650).
     const auto ActionDown = [&](const EAction Action) { return IsActionDown(Window, Settings.Controls(), Action) || IsGamepadActionDown(Action); };
     bool bEscapeDown = ActionDown(EAction::Menu);
-    // The port's co-op: the lift the first player took, by index, which waits for the others.
+    // The port's co-op: the lift, by index, that has said it waits for the others; it says so again only after everyone has left it.
     std::optional<size_t> LiftWait;
     // Whether a player stands fully inside a lift's box, as ObjectUpdateLevelExit asks of the rider.
     const auto LiftHolds = [&](const FDoor& Lift, const FLevelPlayer& Each)
@@ -5586,7 +5635,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         FFrameClock ScreenClock(FramePeriod);
         ScreenClock.Poll(ClockMilliseconds());
         // The frame that closes the screen still shows its window, empty.
-        while (!glfwWindowShouldClose(Window))
+        while (!glfwWindowShouldClose(Window) && !bWorldEndedUnderMenu)
         {
             PollEvents(Window);
             const bool bActionNow = ActionDown(Action);
@@ -6662,8 +6711,9 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                         StepActors(Combat ? &*Combat : nullptr, Bodies, StepMilliseconds, *Terrain, *Level, Targets);
                     }
 
-                    const auto TakeLift = [&](const FDoor& Lift)
+                    const auto TakeLift = [&](FDoor& Lift)
                     {
+                        RideLift(Lift, Bodies, Local.Inventory);
                         // A starred 3do-file (only "*End of Tower 3*" in the campaign) ends the game instead of loading a level.
                         NextLevel = Lift.NextLevel.starts_with('*') ? Lift.NextLevel : NextLevelPath(LevelPath, Lift);
                         // ObjectUpdateLevelExit drops the queued lines and says Well Done.
@@ -6674,17 +6724,21 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             GameAudio->UpdateVoices();
                         }
                     };
-                    // A lift everyone has left again no longer waits, so the team may take another.
                     const auto Standing = [](const FLevelPlayer& Each) { return Each.State && !Each.DownTimer && !Each.DeathTimer; };
                     if (LiftWait && std::ranges::none_of(Players, [&](const FLevelPlayer& Each) { return LiftHolds((*Doors)[*LiftWait], Each); }))
                     {
                         LiftWait.reset();
                     }
 
-                    if (const FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, Targets, StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer && !LiftWait && !bPuppet)
+                    if (FDoor* const Lift = bFullUpdate ? StepDoors(*Doors, *Level, Bodies, Targets, StepMilliseconds, Messages) : nullptr; Lift && !NextLevel && !DeathTimer && !bPuppet)
                     {
-                        // In co-op the lift waits until every standing player is in it, so nobody is taken along from elsewhere.
-                        if (IsCoop())
+                        // In co-op the lift waits until every standing player is in it, so nobody is taken along from elsewhere; a downed or dead player is not waited for.
+                        if (!IsCoop() || std::ranges::all_of(Players, [&](const FLevelPlayer& Each) { return !Standing(Each) || LiftHolds(*Lift, Each); }))
+                        {
+                            TakeLift(*Lift);
+                            LiftWait.reset();
+                        }
+                        else if (!LiftWait)
                         {
                             constexpr uint32_t LiftColor = 0xffc040;
                             LiftWait = size_t(Lift - Doors->data());
@@ -6693,22 +6747,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                             const FLevelPlayer& Subject = Rider == Players.end() ? Local : *Rider;
                             SayToPlayers(Subject, Format("The lift waits for the others."), Format("%s is in the lift !\nJoin them to go on.", NameOf(Subject)), LiftColor);
                         }
-                        else
-                        {
-                            TakeLift(*Lift);
-                        }
                     }
 
-                    // A downed or dead player is not waited for.
-                    if (LiftWait && !NextLevel && !DeathTimer)
-                    {
-                        const FDoor& Lift = (*Doors)[*LiftWait];
-                        if (std::ranges::all_of(Players, [&](const FLevelPlayer& Each) { return !Standing(Each) || LiftHolds(Lift, Each); }))
-                        {
-                            TakeLift(Lift);
-                            LiftWait.reset();
-                        }
-                    }
                     if (Combat)
                     {
                         // Each player's numbers before the step's shots and blasts, which the finale keeps and the local player's hit flash and log compare against.
@@ -7130,6 +7170,26 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         return std::nullopt;
     };
+    // A network game goes on under a menu or screen, which closes when the level ends there: the host lost, a lift taken or the game over.
+    const auto OverWorld = [&](const auto& Run) -> std::optional<FLevelEnd>
+    {
+        std::optional<FLevelEnd> EndUnderMenu;
+        if (Coop)
+        {
+            bInMenu = true;
+            WorldUnderMenu = [&]
+            {
+                EndUnderMenu = AdvanceWorld();
+                return EndUnderMenu || NextLevel || (DeathTimer && *DeathTimer <= 0);
+            };
+        }
+
+        Run();
+        WorldUnderMenu = nullptr;
+        bWorldEndedUnderMenu = false;
+        bInMenu = false;
+        return EndUnderMenu;
+    };
 
     while (!glfwWindowShouldClose(Window))
     {
@@ -7225,30 +7285,18 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                     GameAudio->StopLevelChannels();
                 }
 
-                // A network game goes on under the menu, which closes when the level ends there: the host lost, a lift taken or the game over.
-                std::optional<FLevelEnd> EndUnderMenu;
-                if (Coop)
+                std::optional<ELevelEnd> End;
+                const std::optional<FLevelEnd> EndUnderMenu = OverWorld([&]
                 {
-                    bInMenu = true;
-                    WorldUnderMenu = [&]
+                    FRandom MenuRandom;
+                    const std::optional<ELevelEnd> Chosen = RunGameMenu(Window, Renderer, *MenuArt, *MenuSheets, Combat ? Combat->Random : MenuRandom, Settings, !bPuppet);
+                    End = bWorldEndedUnderMenu ? std::nullopt : Chosen;
+                    // MenuGame fades its backdrop out however it closes, with fade.wav unless the game ends, and only a resumed game fades back in.
+                    if (End != ELevelEnd::Quit)
                     {
-                        EndUnderMenu = AdvanceWorld();
-                        return EndUnderMenu || NextLevel || (DeathTimer && *DeathTimer <= 0);
-                    };
-                }
-
-                FRandom MenuRandom;
-                const std::optional<ELevelEnd> Chosen = RunGameMenu(Window, Renderer, *MenuArt, *MenuSheets, Combat ? Combat->Random : MenuRandom, Settings, !bPuppet);
-                const std::optional<ELevelEnd> End = bWorldEndedUnderMenu ? std::nullopt : Chosen;
-                // MenuGame fades its backdrop out however it closes, with fade.wav unless the game ends, and only a resumed game fades back in.
-                if (End != ELevelEnd::Quit)
-                {
-                    FadeMenuBackdrop(Window, Renderer, *MenuArt, *MenuSheets, Settings.Details.bGammaFx, !End);
-                }
-
-                WorldUnderMenu = nullptr;
-                bWorldEndedUnderMenu = false;
-                bInMenu = false;
+                        FadeMenuBackdrop(Window, Renderer, *MenuArt, *MenuSheets, Settings.Details.bGammaFx, !End);
+                    }
+                });
                 if (EndUnderMenu)
                 {
                     return *EndUnderMenu;
@@ -8649,14 +8697,21 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         {
             // EngineRunLevel takes the inventory first; its loop leaves the bit set until it closes.
             const std::optional<std::vector<uint16_t>> Backdrop = Renderer.TakeCapture();
-            if (std::exchange(bInventoryPending, false))
+            const std::optional<FLevelEnd> EndUnderScreen = OverWorld([&]
             {
-                RunInfoScreen(false, Backdrop);
-            }
+                if (std::exchange(bInventoryPending, false))
+                {
+                    RunInfoScreen(false, Backdrop);
+                }
 
-            if (std::exchange(bHelpPending, false))
+                if (std::exchange(bHelpPending, false) && !bWorldEndedUnderMenu)
+                {
+                    RunInfoScreen(true, Backdrop);
+                }
+            });
+            if (EndUnderScreen)
             {
-                RunInfoScreen(true, Backdrop);
+                return *EndUnderScreen;
             }
 
             // PgPoll(0x1e000) as a screen closes: its time is not game time, and the keys it took start over.

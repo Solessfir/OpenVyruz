@@ -1180,9 +1180,11 @@ std::vector<FCollisionPoint> StepObjectBodies(std::span<FObjectBody> Bodies, uin
 // Every gate and lift of the level, in their activation state (AnimInitializeGraphics at 00417b30): open ones are passable and show the last frame of their first animation.
 std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, FResourceArchive& Archive, std::span<FObjectBody> Bodies);
 // One step of every gate (GateUpdate at 00443620) and lift (ObjectUpdateLevelExit at 00442bf0) after its animation advances.
-// Returns the lift the player has taken, if any.
-const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, std::span<FObjectBody> Bodies, FPlayerTargets Players,
+// Returns the lift a player can ride, if any.
+FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, std::span<FObjectBody> Bodies, FPlayerTargets Players,
     uint32_t StepMilliseconds, FMessages& Messages);
+// The ride ObjectUpdateLevelExit takes as the lift leaves: its fare from the purse and one of its uses. Co-op takes it only once the whole team is in.
+void RideLift(FDoor& Lift, std::span<const FObjectBody> Bodies, FPlayerInventory& Purse);
 // The player's contact with a closed lift or gate tells it what the door is waiting for.
 void ReportDoorContact(std::span<const FDoor> Doors, const FObjectBody& Body, const FPlayerState& Player, const FPlayerInventory& Inventory, FMessages& Messages);
 // ObjectUpdateLevelExit names the next level within the current zone, or within the lift's Scenery when the zone changes.

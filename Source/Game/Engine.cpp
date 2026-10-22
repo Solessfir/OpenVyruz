@@ -2876,8 +2876,7 @@ void StepGate(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
 }
 
 // ObjectUpdateLevelExit at 00442bf0.
-// A lift leaves when nothing stands on it and comes back after its delay; the player rides it once fully inside its box, which returns true.
-// A negative Reward is its fare.
+// A lift leaves when nothing stands on it and comes back after its delay; the player can ride it once fully inside its box, which returns true, and RideLift takes the ride.
 bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::vector<FObjectBody*>& BodyOf, const FPlayerTargets Players,
     const int32_t Step, FMessages& Messages)
 {
@@ -2961,19 +2960,7 @@ bool StepLift(FDoor& Door, FObjectBody& Body, const FLevel& Level, const std::ve
         return !Player.State.bInvisible && Lift.MinX <= Rider.MinX && Rider.MaxX <= Lift.MaxX && Lift.MinY <= Rider.MinY && Rider.MaxY <= Lift.MaxY &&
                !(Body.Reward < 0.f && PurseOf(Player).Money < -Body.Reward);
     };
-    const auto Rider = bAccess ? std::ranges::find_if(Players, Rides) : Players.end();
-    if (Rider == Players.end())
-    {
-        return false;
-    }
-
-    if (Body.Reward < 0.f)
-    {
-        PurseOf(*Rider).Money += Body.Reward;
-    }
-
-    --Door.UsageCount;
-    return true;
+    return bAccess && std::ranges::any_of(Players, Rides);
 }
 
 // AreaDamage at 0043cb20: every live object near the blast takes damage falling off linearly over Damage-zone collision units.
@@ -4142,12 +4129,12 @@ std::expected<std::vector<FDoor>, std::string> CreateDoors(const FLevel& Level, 
     return Doors;
 }
 
-const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std::span<FObjectBody> Bodies, const FPlayerTargets Players,
+FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std::span<FObjectBody> Bodies, const FPlayerTargets Players,
     const uint32_t StepMilliseconds, FMessages& Messages)
 {
     const std::vector<FObjectBody*> BodyOf = BodiesByObject(Level, Bodies);
     const int32_t Step = int32_t(StepMilliseconds);
-    const FDoor* Exit = nullptr;
+    FDoor* Exit = nullptr;
     for (FDoor& Door : Doors)
     {
         FObjectBody* const Body = BodyOf[Door.ObjectIndex];
@@ -4176,6 +4163,17 @@ const FDoor* StepDoors(std::vector<FDoor>& Doors, const FLevel& Level, const std
     }
 
     return Exit;
+}
+
+void RideLift(FDoor& Lift, const std::span<const FObjectBody> Bodies, FPlayerInventory& Purse)
+{
+    // A negative Reward is the lift's fare.
+    if (const auto Body = std::ranges::find(Bodies, Lift.ObjectIndex, &FObjectBody::ObjectIndex); Body != Bodies.end() && Body->Reward < 0.f)
+    {
+        Purse.Money += Body->Reward;
+    }
+
+    --Lift.UsageCount;
 }
 
 void ReportDoorContact(const std::span<const FDoor> Doors, const FObjectBody& Body, const FPlayerState& Player, const FPlayerInventory& Inventory,

@@ -10,6 +10,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // What LoopLevels (004467d0) keeps of the player object for the next level: everything but its position and velocity.
@@ -22,6 +23,8 @@ struct FCarriedPlayer
     size_t WeaponSlot = 1;
     std::vector<FWeaponState> WeaponSlots;
     uint32_t Clock = 1;
+    // The port's co-op: the other standing players' inventories by slot, which they keep into the next level.
+    std::vector<std::pair<uint8_t, FPlayerInventory>> Team;
 };
 
 // A session of the original's own format (SessionWrite at 0042ad70): a folder, session\<name>\default or s%03d in the game folder, holding last.txt (FUN_0042b190),
