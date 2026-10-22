@@ -9,11 +9,12 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // The port's co-op over the network (Coop.md): the host runs the level and sends what it is; each client moves its own ship and sends that.
 // Slot 0 is the host's player, 1 to 3 the clients'.
-inline constexpr uint32_t CoopProtocolVersion = 3;
+inline constexpr uint32_t CoopProtocolVersion = 4;
 inline constexpr uint8_t HostSlot = 0;
 
 // A ship as its owner moves it, and whether it fires and with which weapon slot.
@@ -84,6 +85,8 @@ struct FCoopCreated
 struct FCoopSnapshot
 {
     uint32_t Clock = 0;
+    // Any player's pause holds everyone's game.
+    bool bPaused = false;
     float Money = 0.f;
     float Earned = 0.f;
     std::vector<FCoopKey> Keys;
@@ -139,6 +142,10 @@ public:
     void SendMessages(uint8_t Slot, std::span<const std::pair<FMessage, EMessagePlacement>> Messages);
     std::vector<std::pair<FMessage, EMessagePlacement>> TakeMessages();
 
+    // Client: asks the host to pause or go on. Host: how many such asks came since the last call.
+    void RequestPause();
+    uint32_t TakePauseRequests() { return std::exchange(PauseRequests, 0); }
+
     // Host: members who joined or left since the last call.
     std::vector<uint8_t> TakeJoined();
     std::vector<uint8_t> TakeLeft();
@@ -167,6 +174,7 @@ private:
     std::vector<std::pair<FMessage, EMessagePlacement>> PendingMessages;
     // Host: every object created in the current level, for whoever joins during it.
     std::vector<FCoopCreated> AllCreated;
+    uint32_t PauseRequests = 0;
     std::vector<uint8_t> Joined;
     std::vector<uint8_t> Left;
 };

@@ -17,6 +17,7 @@ enum class EMessage : uint8_t
     Snapshot,
     Created,
     Messages,
+    Pause,
 };
 
 // Lists in a message are bounded, so a bad count cannot make a reader allocate without end.
@@ -271,6 +272,7 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
     {
         FCoopSnapshot Snapshot;
         Snapshot.Clock = Reader.Get<uint32_t>();
+        Snapshot.bPaused = Reader.Get<uint8_t>() != 0;
         Snapshot.Money = Reader.Get<float>();
         Snapshot.Earned = Reader.Get<float>();
         Snapshot.Keys.resize(GetCount(Reader));
@@ -354,6 +356,9 @@ void FCoopLink::Receive(const uint32_t Peer, const std::span<const uint8_t> Byte
 
         break;
     }
+    case EMessage::Pause:
+        PauseRequests += bHost && SlotOf(Peer) ? 1 : 0;
+        break;
     case EMessage::Messages:
     {
         std::vector<std::pair<FMessage, EMessagePlacement>> Messages(GetCount(Reader));
@@ -421,6 +426,7 @@ void FCoopLink::SendSnapshot(const FCoopSnapshot& Snapshot)
     Net::FWriter Writer;
     Writer.Put(EMessage::Snapshot);
     Writer.Put(Snapshot.Clock);
+    Writer.Put(uint8_t(Snapshot.bPaused ? 1 : 0));
     Writer.Put(Snapshot.Money);
     Writer.Put(Snapshot.Earned);
     Writer.Put(uint32_t(Snapshot.Keys.size()));
@@ -555,6 +561,13 @@ void FCoopLink::SendMessages(const uint8_t Slot, const std::span<const std::pair
     }
 
     Endpoint.Send(Peer->first, Writer.Data(), Net::EChannel::Reliable);
+}
+
+void FCoopLink::RequestPause()
+{
+    Net::FWriter Writer;
+    Writer.Put(EMessage::Pause);
+    Endpoint.SendToAll(Writer.Data(), Net::EChannel::Reliable);
 }
 
 std::vector<std::pair<FMessage, EMessagePlacement>> FCoopLink::TakeMessages()

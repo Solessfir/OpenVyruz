@@ -5722,7 +5722,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
 
         SentObjects = Level->Objects.size();
         Coop->SendCreated(Created);
-        FCoopSnapshot Snapshot{ .Clock = Combat ? Combat->Clock : 0, .Money = Local.Inventory.Money, .Earned = Local.Inventory.Earned };
+        FCoopSnapshot Snapshot{ .Clock = Combat ? Combat->Clock : 0, .bPaused = bPaused, .Money = Local.Inventory.Money, .Earned = Local.Inventory.Earned };
         for (const FCarriedKey& Key : Local.Inventory.Keys)
         {
             Snapshot.Keys.push_back({ .Id = Key.Id, .bCode = Key.bCode, .PartId = Key.PartId, .PartCount = Key.PartCount, .CodeString = Key.CodeString });
@@ -5843,6 +5843,8 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
         {
             Combat->Clock = Snapshot.Clock;
         }
+
+        bPaused = Snapshot.bPaused;
 
         Local.Inventory.Money = Snapshot.Money;
         Local.Inventory.Earned = Snapshot.Earned;
@@ -6220,8 +6222,12 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
             {
                 ToggleMap();
             }
-            // A network game cannot stop for one player.
-            else if (!Coop)
+            // A network game's pause is the host's, which any player may ask for.
+            else if (Coop && !Coop->IsHost())
+            {
+                Coop->RequestPause();
+            }
+            else
             {
                 bPaused = !bPaused;
             }
@@ -6471,6 +6477,7 @@ std::expected<FLevelEnd, std::string> RunLevel(GLFWwindow* const Window, FRender
                 }
 
                 RescaleHunters();
+                bPaused = Coop->TakePauseRequests() % 2 != 0 ? !bPaused : bPaused;
                 for (FLevelPlayer& Each : Players)
                 {
                     if (&Each != &Local)
